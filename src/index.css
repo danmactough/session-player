@@ -366,6 +366,7 @@ mark {
   border: 1px solid var(--line);
   border-radius: 4px;
   color: var(--muted);
+  white-space: nowrap;
 }
 .toggle {
   display: inline-flex;
@@ -555,6 +556,7 @@ mark {
 }
 .t-eyebrow {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 7px;
   font: 11px var(--mono);

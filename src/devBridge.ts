@@ -56,11 +56,12 @@ const sessions: SessionRow[] = TITLES.map(([source, title_source, title], i) => 
     input_tokens: 12_000 * turns,
     output_tokens: 1_900 * turns,
     cache_read_tokens: 90_000 * turns,
-    models: [source === "claude" ? "claude-opus-5-5" : source === "codex" ? "gpt-5.4" : "glm-5.3-flash"],
+    models: i === 11 ? [] : [source === "claude" ? "claude-opus-5-5" : source === "codex" ? "gpt-5.4" : "glm-5.3-flash"],
     git_branch: i % 3 ? "main" : "feature/cookies",
     is_subagent: i === 17,
     parent_id: i === 17 ? "000013-demo-pi" : null,
     size: 40_000 * turns,
+    imported_from: i === 11 ? "Claude Code" : null,
   };
 });
 

@@ -90,6 +90,8 @@ pub struct Parsed {
     pub is_subagent: bool,
     pub parent_id: Option<String>,
     pub started_at: Option<i64>,
+    /// The agent a session was imported from (Codex can import Claude Code sessions).
+    pub imported_from: Option<String>,
 }
 
 impl Parsed {
@@ -106,6 +108,7 @@ impl Parsed {
             is_subagent: false,
             parent_id: None,
             started_at: None,
+            imported_from: None,
         }
     }
 
@@ -142,4 +145,5 @@ pub struct SessionRow {
     pub is_subagent: bool,
     pub parent_id: Option<String>,
     pub size: i64,
+    pub imported_from: Option<String>,
 }

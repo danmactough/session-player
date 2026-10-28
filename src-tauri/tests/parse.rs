@@ -34,6 +34,25 @@ fn codex_session() {
     assert_eq!(row.cache_read_tokens, 800);
     assert!(events.iter().any(|e| e.starts_with("tool_result!:")), "non-zero exit marks an error: {events:?}");
     assert!(!events.iter().any(|e| e.contains("environment_context")));
+    assert_eq!(row.imported_from, None);
+}
+
+#[test]
+fn codex_session_imported_from_claude_code() {
+    // The import record sits next to the sessions folder, as in ~/.codex.
+    let home = std::env::temp_dir().join(format!("sp-codex-import-{}", std::process::id()));
+    let day = home.join("sessions/2026/01/02");
+    std::fs::create_dir_all(&day).unwrap();
+    let rollout = day.join("rollout-2026-01-02T10-00-00-019d-codex.jsonl");
+    std::fs::copy(fixture("codex.jsonl"), &rollout).unwrap();
+    std::fs::write(
+        home.join("external_agent_session_imports.json"),
+        r#"{"records":[{"source_path":"/Users/x/.claude/projects/-work/abc.jsonl","imported_thread_id":"019d-codex"}]}"#,
+    )
+    .unwrap();
+    let (row, _) = index_one(&rollout.to_string_lossy());
+    std::fs::remove_dir_all(&home).unwrap();
+    assert_eq!(row.imported_from.as_deref(), Some("Claude Code"));
 }
 
 #[test]

@@ -152,6 +152,7 @@ export function Transcript({ session, parent, children, highlight, onOpen }: Pro
             </>
           )}
           {session.is_subagent && <span className="tag">subagent</span>}
+          {session.imported_from && <span className="tag">imported from {session.imported_from}</span>}
         </div>
         <h1 className="t-title">{session.title}</h1>
         {session.title_source !== "prompt" && session.first_prompt && (
@@ -178,11 +179,20 @@ export function Transcript({ session, parent, children, highlight, onOpen }: Pro
               {compact(totalIn)} <span className="dim">in</span> · {compact(session.output_tokens)} <span className="dim">out</span>
             </dd>
           </div>
-          {session.models.length > 0 && (
+          {session.models.length > 0 ? (
             <div>
               <dt>Model</dt>
               <dd>{session.models.join(", ")}</dd>
             </div>
+          ) : (
+            session.imported_from && (
+              <div>
+                <dt>Model</dt>
+                <dd title={`Codex imported this session from ${session.imported_from} without recording the model`}>
+                  <span className="dim">not recorded</span>
+                </dd>
+              </div>
+            )
           )}
         </dl>
         <div className="t-actions">

@@ -22,6 +22,7 @@ export interface SessionRow {
   is_subagent: boolean;
   parent_id: string | null;
   size: number;
+  imported_from: string | null;
 }
 
 export type EventKind =

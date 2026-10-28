@@ -11,7 +11,7 @@ use crate::model::{EventKind, Parsed, SessionRow, Source};
 use crate::parse;
 
 /// Bump when parsing changes so existing indexes are rebuilt on launch.
-const INDEX_VERSION: &str = "5";
+const INDEX_VERSION: &str = "6";
 const FTS_BODY_LIMIT: usize = 400_000;
 const SKIP_DIRS: &[&str] = &["memory", "tool-results", "subagent-artifacts", "node_modules", ".git"];
 
@@ -35,7 +35,7 @@ pub fn open(db_path: &Path) -> anyhow::Result<Connection> {
             tool_calls INTEGER NOT NULL, input_tokens INTEGER NOT NULL,
             output_tokens INTEGER NOT NULL, cache_read_tokens INTEGER NOT NULL,
             models TEXT NOT NULL, git_branch TEXT, is_subagent INTEGER NOT NULL,
-            parent_id TEXT, size INTEGER NOT NULL);
+            parent_id TEXT, size INTEGER NOT NULL, imported_from TEXT);
          CREATE INDEX IF NOT EXISTS sessions_updated ON sessions(updated_at);
          CREATE VIRTUAL TABLE IF NOT EXISTS session_fts USING fts5(
             path UNINDEXED, title, body, tokenize='porter unicode61');",
@@ -44,13 +44,17 @@ pub fn open(db_path: &Path) -> anyhow::Result<Connection> {
         .query_row("SELECT value FROM settings WHERE key='index_version'", [], |r| r.get(0))
         .optional()?;
     if version.as_deref() != Some(INDEX_VERSION) {
+        // Dropping the table lets schema changes take effect: reopening
+        // recreates it with the current columns.
         conn.execute_batch(
-            "DELETE FROM files; DELETE FROM sessions; DELETE FROM session_fts;",
+            "DELETE FROM files; DROP TABLE sessions; DELETE FROM session_fts;",
         )?;
         conn.execute(
             "INSERT OR REPLACE INTO settings(key, value) VALUES('index_version', ?1)",
             [INDEX_VERSION],
         )?;
+        drop(conn);
+        return open(db_path);
     }
     Ok(conn)
 }
@@ -185,12 +189,12 @@ pub fn run(
 
     let total = changed.len();
     let done = std::sync::atomic::AtomicUsize::new(0);
-    let titles = CodexTitles::default();
+    let sidecars = CodexSidecars::default();
     progress(0, total);
     let results: Vec<Indexed> = changed
         .into_par_iter()
         .map(|file| {
-            let out = index_file(file, &titles);
+            let out = index_file(file, &sidecars);
             let n = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
             if n % 10 == 0 || n == total {
                 progress(n, total);
@@ -229,8 +233,8 @@ pub fn run(
             "INSERT INTO sessions(path, root, source, native_id, cwd, project, title, title_source,
                 first_prompt, started_at, updated_at, user_turns, assistant_msgs, tool_calls,
                 input_tokens, output_tokens, cache_read_tokens, models, git_branch, is_subagent,
-                parent_id, size)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)",
+                parent_id, size, imported_from)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)",
             params![
                 row.path,
                 r.file.root,
@@ -254,6 +258,7 @@ pub fn run(
                 row.is_subagent,
                 row.parent_id,
                 row.size,
+                row.imported_from,
             ],
         )?;
         tx.execute(
@@ -273,35 +278,34 @@ pub fn run(
 
 #[doc(hidden)]
 pub fn index_parsed(path: &str, source: Source, mut parsed: Parsed) -> Option<(SessionRow, String)> {
-    if source == Source::Codex
-        && let Some(t) = CodexTitles::default().lookup(Path::new(path), &parsed.native_id)
-    {
-        parsed.title = Some((t, "thread"));
+    enrich(Path::new(path), source, &mut parsed, &CodexSidecars::default());
+    let file = FileInfo { path: path.to_string(), root: String::new(), mtime: 0, size: 0 };
+    build_row(&file, parsed)
+}
+
+/// Applies what lives outside the session file: Codex thread names and import
+/// records, then title cleanup.
+fn enrich(path: &Path, source: Source, parsed: &mut Parsed, sidecars: &CodexSidecars) {
+    if source == Source::Codex {
+        if let Some(t) = sidecars.title(path, &parsed.native_id) {
+            parsed.title = Some((t, "thread"));
+        }
+        parsed.imported_from = sidecars.imported_from(path, &parsed.native_id);
     }
     parsed.title = parsed
         .title
         .take()
         .and_then(|(t, s)| clean_title(&t, parsed.git_branch.as_deref()).map(|t| (t, s)));
-    let file = FileInfo { path: path.to_string(), root: String::new(), mtime: 0, size: 0 };
-    build_row(&file, parsed)
 }
 
-fn index_file(file: FileInfo, titles: &CodexTitles) -> Indexed {
+fn index_file(file: FileInfo, sidecars: &CodexSidecars) -> Indexed {
     let path = PathBuf::from(&file.path);
     let Some(source) = parse::detect(&path) else {
         return Indexed { file, source: None, row: None, error: None };
     };
     match parse::parse_file(&path, source) {
         Ok(mut parsed) => {
-            if source == Source::Codex
-                && let Some(t) = titles.lookup(&path, &parsed.native_id)
-            {
-                parsed.title = Some((t, "thread"));
-            }
-            parsed.title = parsed
-                .title
-                .take()
-                .and_then(|(t, s)| clean_title(&t, parsed.git_branch.as_deref()).map(|t| (t, s)));
+            enrich(&path, source, &mut parsed, sidecars);
             let row = build_row(&file, parsed);
             Indexed { file, source: Some(source), row, error: None }
         }
@@ -405,6 +409,7 @@ fn build_row(file: &FileInfo, p: Parsed) -> Option<(SessionRow, String)> {
         is_subagent: p.is_subagent,
         parent_id: p.parent_id,
         size: file.size,
+        imported_from: p.imported_from,
     };
     Some((row, body))
 }
@@ -445,25 +450,69 @@ fn project_of(cwd: Option<&str>) -> String {
     cwd.trim_end_matches('/').to_string()
 }
 
+type SidecarCache = std::sync::Mutex<HashMap<PathBuf, std::sync::Arc<HashMap<String, String>>>>;
+
+/// Files Codex keeps next to its sessions folder, read once per index pass.
 #[derive(Default)]
-struct CodexTitles {
-    cache: std::sync::Mutex<HashMap<PathBuf, std::sync::Arc<HashMap<String, String>>>>,
+struct CodexSidecars {
+    titles: SidecarCache,
+    imports: SidecarCache,
 }
 
-impl CodexTitles {
-    fn lookup(&self, rollout: &Path, id: &str) -> Option<String> {
-        let index = rollout
-            .ancestors()
-            .skip(1)
-            .take(6)
-            .map(|a| a.join("session_index.jsonl"))
-            .find(|p| p.is_file())?;
-        let map = {
-            let mut cache = self.cache.lock().unwrap();
-            cache.entry(index.clone()).or_insert_with(|| std::sync::Arc::new(read_codex_index(&index))).clone()
-        };
-        map.get(id).cloned()
+impl CodexSidecars {
+    fn title(&self, rollout: &Path, id: &str) -> Option<String> {
+        lookup_sidecar(&self.titles, rollout, "session_index.jsonl", read_codex_index, id)
     }
+
+    fn imported_from(&self, rollout: &Path, id: &str) -> Option<String> {
+        lookup_sidecar(&self.imports, rollout, "external_agent_session_imports.json", read_codex_imports, id)
+    }
+}
+
+fn lookup_sidecar(
+    cache: &SidecarCache,
+    rollout: &Path,
+    file_name: &str,
+    read: fn(&Path) -> HashMap<String, String>,
+    id: &str,
+) -> Option<String> {
+    let file = rollout
+        .ancestors()
+        .skip(1)
+        .take(6)
+        .map(|a| a.join(file_name))
+        .find(|p| p.is_file())?;
+    let map = {
+        let mut cache = cache.lock().unwrap();
+        cache.entry(file.clone()).or_insert_with(|| std::sync::Arc::new(read(&file))).clone()
+    };
+    map.get(id).cloned()
+}
+
+/// Maps imported Codex thread ids to the agent the conversation came from. The
+/// original files are often deleted after import, so the source path is the
+/// only record of where a thread started.
+fn read_codex_imports(path: &Path) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    let Ok(text) = std::fs::read_to_string(path) else { return map };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { return map };
+    for r in v.get("records").and_then(|r| r.as_array()).into_iter().flatten() {
+        let (Some(id), Some(src)) = (
+            r.get("imported_thread_id").and_then(|x| x.as_str()),
+            r.get("source_path").and_then(|x| x.as_str()),
+        ) else {
+            continue;
+        };
+        let agent = if src.contains("/.claude/") {
+            "Claude Code"
+        } else if src.contains("/.pi/") {
+            "pi"
+        } else {
+            "another agent"
+        };
+        map.insert(id.to_string(), agent.to_string());
+    }
+    map
 }
 
 fn read_codex_index(path: &Path) -> HashMap<String, String> {
@@ -487,10 +536,10 @@ fn apply_codex_titles(conn: &Connection) -> anyhow::Result<()> {
         let mut stmt = conn.prepare("SELECT path, native_id, git_branch FROM sessions WHERE source='codex'")?;
         stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<Result<_, _>>()?
     };
-    let titles = CodexTitles::default();
+    let sidecars = CodexSidecars::default();
     for (path, id, branch) in rows {
-        if let Some(t) = titles
-            .lookup(Path::new(&path), &id)
+        if let Some(t) = sidecars
+            .title(Path::new(&path), &id)
             .and_then(|t| clean_title(&t, branch.as_deref()))
         {
             conn.execute(
@@ -506,7 +555,8 @@ pub fn list(conn: &Connection) -> anyhow::Result<Vec<SessionRow>> {
     let mut stmt = conn.prepare(
         "SELECT path, source, native_id, cwd, project, title, title_source, first_prompt,
                 started_at, updated_at, user_turns, assistant_msgs, tool_calls, input_tokens,
-                output_tokens, cache_read_tokens, models, git_branch, is_subagent, parent_id, size
+                output_tokens, cache_read_tokens, models, git_branch, is_subagent, parent_id, size,
+                imported_from
          FROM sessions ORDER BY updated_at DESC",
     )?;
     let mut rows: Vec<SessionRow> = stmt
@@ -534,6 +584,7 @@ pub fn list(conn: &Connection) -> anyhow::Result<Vec<SessionRow>> {
                 is_subagent: r.get(18)?,
                 parent_id: r.get(19)?,
                 size: r.get(20)?,
+                imported_from: r.get(21)?,
             })
         })?
         .collect::<Result<_, _>>()?;

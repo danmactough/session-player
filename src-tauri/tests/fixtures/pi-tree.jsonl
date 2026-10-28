@@ -1,0 +1,11 @@
+{"type":"session","version":3,"id":"01b-tree","timestamp":"2026-02-01T10:00:00.000Z","cwd":"/work/tree"}
+{"type":"message","id":"m1","parentId":null,"timestamp":"2026-02-01T10:00:01.000Z","message":{"role":"user","content":"first question here please"}}
+{"type":"message","id":"m2","parentId":"m1","timestamp":"2026-02-01T10:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"answer one"}]}}
+{"type":"message","id":"b1","parentId":"m2","timestamp":"2026-02-01T10:01:00.000Z","message":{"role":"user","content":"try a different approach here"}}
+{"type":"message","id":"b1a","parentId":"b1","timestamp":"2026-02-01T10:01:01.000Z","message":{"role":"assistant","content":[{"type":"text","text":"different answer"}]}}
+{"type":"message","id":"b1b","parentId":"b1a","timestamp":"2026-02-01T10:01:02.000Z","message":{"role":"user","content":"keep going with the alternative"}}
+{"type":"message","id":"b1c","parentId":"b1b","timestamp":"2026-02-01T10:01:03.000Z","message":{"role":"assistant","content":[{"type":"text","text":"kept going"}]}}
+{"type":"message","id":"b2","parentId":"b1a","timestamp":"2026-02-01T10:02:00.000Z","message":{"role":"user","content":"go deeper on that idea"}}
+{"type":"message","id":"b2a","parentId":"b2","timestamp":"2026-02-01T10:02:01.000Z","message":{"role":"assistant","content":[{"type":"text","text":"deeper answer"}]}}
+{"type":"message","id":"m3","parentId":"m2","timestamp":"2026-02-01T10:03:00.000Z","message":{"role":"user","content":"follow up on the main branch"}}
+{"type":"message","id":"m4","parentId":"m3","timestamp":"2026-02-01T10:03:01.000Z","message":{"role":"assistant","content":[{"type":"text","text":"main reply"}]}}

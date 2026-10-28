@@ -50,6 +50,9 @@ pub struct Event {
     pub images: Vec<String>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub sidechain: bool,
+    /// The pi entry this event came from, used to place fork markers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entry: Option<String>,
 }
 
 impl Event {
@@ -64,6 +67,7 @@ impl Event {
             model: None,
             images: Vec::new(),
             sidechain: false,
+            entry: None,
         }
     }
 }
@@ -92,6 +96,30 @@ pub struct Parsed {
     pub started_at: Option<i64>,
     /// The agent a session was imported from (Codex can import Claude Code sessions).
     pub imported_from: Option<String>,
+    /// Alternate branches in a pi session tree, other than the active one.
+    pub branches: Vec<Branch>,
+    /// For a pi fork file: the last entry it shares with the session it was
+    /// forked from, and how many prompts precede that point.
+    pub fork_entry: Option<String>,
+    pub fork_turn: Option<i64>,
+}
+
+/// A pi branch that is not the active one.
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+pub struct Branch {
+    /// Id of the branch's last entry; pass it back to load the branch.
+    pub leaf: String,
+    pub label: String,
+    pub started_at: Option<i64>,
+    pub updated_at: Option<i64>,
+    /// Prompts made on the branch after it split off.
+    pub user_turns: i64,
+    /// How many prompts precede the split.
+    pub fork_turn: i64,
+    /// The last entry shared with the source branch.
+    pub fork_entry: Option<String>,
+    /// The branch this one split from; None means the active branch.
+    pub parent_leaf: Option<String>,
 }
 
 impl Parsed {
@@ -109,6 +137,9 @@ impl Parsed {
             parent_id: None,
             started_at: None,
             imported_from: None,
+            branches: Vec::new(),
+            fork_entry: None,
+            fork_turn: None,
         }
     }
 
@@ -146,4 +177,7 @@ pub struct SessionRow {
     pub parent_id: Option<String>,
     pub size: i64,
     pub imported_from: Option<String>,
+    pub branches: Vec<Branch>,
+    pub fork_entry: Option<String>,
+    pub fork_turn: Option<i64>,
 }

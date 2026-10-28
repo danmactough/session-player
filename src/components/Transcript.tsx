@@ -17,16 +17,20 @@ import {
   toolSummary,
 } from "../lib/format";
 import { Markdown } from "./Markdown";
+import { BranchIcon } from "./BranchIcon";
 
 interface Props {
   session: SessionRow;
   parent?: SessionRow;
   children: SessionRow[];
   highlight: string;
-  onOpen: (path: string) => void;
+  /** Opens a session; `focus` names a child whose split point to scroll to. */
+  onOpen: (path: string, focus?: string) => void;
+  /** A child whose split point should be scrolled into view on open. */
+  focus?: string | null;
 }
 
-export function Transcript({ session, parent, children, highlight, onOpen }: Props) {
+export function Transcript({ session, parent, children, highlight, onOpen, focus }: Props) {
   const [events, setEvents] = useState<SessionEvent[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showTools, setShowTools] = useState(true);
@@ -45,7 +49,7 @@ export function Transcript({ session, parent, children, highlight, onOpen }: Pro
     let live = true;
     setError(null);
     api
-      .loadSession(session.path)
+      .loadSession(session.branch_of ?? session.path, session.branch_leaf)
       .then((ev) => {
         if (!live) return;
         setEvents(ev);
@@ -59,21 +63,32 @@ export function Transcript({ session, parent, children, highlight, onOpen }: Pro
       live = false;
     };
     // Reload when the file changes on disk (updated_at/size move with it).
-  }, [session.path, session.size, session.updated_at]);
+  }, [session.path, session.branch_of, session.branch_leaf, session.size, session.updated_at]);
 
   useEffect(() => {
     setFind(highlight);
     setFindIdx(0);
   }, [highlight, session.path]);
 
+  // Branches and pi fork files start where they split off, so they get a
+  // link back to that point; children that split off from this transcript
+  // get a marker where they do.
+  const forks = useMemo(() => {
+    const isSplit = session.branch_of || session.fork_entry;
+    return {
+      from: isSplit && parent ? { source: parent, self: session } : undefined,
+      to: children.filter((c) => c.fork_entry),
+    };
+  }, [session, parent, children]);
+
   const blocks = useMemo(() => {
     if (!events) return [];
-    return buildBlocks(events).filter((b) => {
+    return buildBlocks(events, forks).filter((b) => {
       if (!showTools && (b.type === "tools" || b.type === "orphan_result")) return false;
       if (!showThinking && b.type === "thinking") return false;
       return true;
     });
-  }, [events, showTools, showThinking]);
+  }, [events, forks, showTools, showThinking]);
 
   const matches = useMemo(() => {
     const terms = find.toLowerCase().split(/\s+/).filter(Boolean);
@@ -117,6 +132,13 @@ export function Transcript({ session, parent, children, highlight, onOpen }: Pro
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [matches, findIdx, events]);
 
+  // Arriving from a child's "split from" link: show the split point.
+  const focusIndex = focus ? blocks.findIndex((b) => b.type === "fork_to" && b.child.path === focus) : -1;
+  useEffect(() => {
+    if (focusIndex >= 0) virt.scrollToIndex(focusIndex, { align: "center" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusIndex]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "f") {
@@ -152,6 +174,7 @@ export function Transcript({ session, parent, children, highlight, onOpen }: Pro
             </>
           )}
           {session.is_subagent && <span className="tag">subagent</span>}
+          {session.branch_of && <span className="tag">branch</span>}
           {session.imported_from && <span className="tag">imported from {session.imported_from}</span>}
         </div>
         <h1 className="t-title">{session.title}</h1>
@@ -173,12 +196,15 @@ export function Transcript({ session, parent, children, highlight, onOpen }: Pro
               {session.user_turns} <span className="dim">/ {session.tool_calls} tools</span>
             </dd>
           </div>
-          <div>
-            <dt>Tokens</dt>
-            <dd title={`${session.input_tokens.toLocaleString()} input · ${session.cache_read_tokens.toLocaleString()} cache read · ${session.output_tokens.toLocaleString()} output`}>
-              {compact(totalIn)} <span className="dim">in</span> · {compact(session.output_tokens)} <span className="dim">out</span>
-            </dd>
-          </div>
+          {/* Token totals belong to the whole file; a branch has none of its own. */}
+          {!session.branch_of && (
+            <div>
+              <dt>Tokens</dt>
+              <dd title={`${session.input_tokens.toLocaleString()} input · ${session.cache_read_tokens.toLocaleString()} cache read · ${session.output_tokens.toLocaleString()} output`}>
+                {compact(totalIn)} <span className="dim">in</span> · {compact(session.output_tokens)} <span className="dim">out</span>
+              </dd>
+            </div>
+          )}
           {session.models.length > 0 ? (
             <div>
               <dt>Model</dt>
@@ -209,17 +235,19 @@ export function Transcript({ session, parent, children, highlight, onOpen }: Pro
           <div className="t-family">
             {parent && (
               <button className="link" onClick={() => onOpen(parent.path)}>
-                ↖ Parent: {parent.title}
+                ↖ {session.branch_of ? "Branched from" : session.fork_entry ? "Forked from" : "Parent"}: {parent.title}
               </button>
             )}
             {children.length > 0 && (
               <span className="kids">
-                {children.length} subagent{children.length === 1 ? "" : "s"}:
+                {childSummary(children)}:
                 {children.slice(0, 8).map((c) => (
                   <button key={c.path} className="link" onClick={() => onOpen(c.path)}>
+                    {c.branch_of && <BranchIcon className="inline" />}
                     {c.title}
                   </button>
                 ))}
+                {children.length > 8 && <span className="dim">and {children.length - 8} more in the list</span>}
               </span>
             )}
           </div>
@@ -278,10 +306,10 @@ export function Transcript({ session, parent, children, highlight, onOpen }: Pro
                   key={item.key}
                   data-index={item.index}
                   ref={virt.measureElement}
-                  className={`row ${matchSet.has(item.index) ? "hit" : ""} ${isCurrent ? "hit-current" : ""}`}
+                  className={`row ${matchSet.has(item.index) ? "hit" : ""} ${isCurrent ? "hit-current" : ""} ${item.index === focusIndex ? "focused" : ""}`}
                   style={{ transform: `translateY(${item.start}px)` }}
                 >
-                  <BlockView block={b} />
+                  <BlockView block={b} onOpen={onOpen} />
                 </div>
               );
             })}
@@ -293,7 +321,7 @@ export function Transcript({ session, parent, children, highlight, onOpen }: Pro
             {outline.map(({ b, i }) => (
               <button key={i} onClick={() => virt.scrollToIndex(i, { align: "start" })} title={b.ev.text.slice(0, 400)}>
                 <span className="o-n">{b.turn}</span>
-                <span className="o-t">{b.ev.text.slice(0, 90) || "(image)"}</span>
+                <span className="o-t">{b.ev.text.replace(FILE_TAG, "").trim().slice(0, 90) || "(image)"}</span>
               </button>
             ))}
           </nav>
@@ -303,8 +331,52 @@ export function Transcript({ session, parent, children, highlight, onOpen }: Pro
   );
 }
 
-const BlockView = memo(function BlockView({ block: b }: { block: Block }) {
+function childSummary(children: SessionRow[]): string {
+  const branches = children.filter((c) => c.branch_of).length;
+  const subs = children.filter((c) => !c.branch_of && c.is_subagent).length;
+  const forks = children.length - branches - subs;
+  const part = (n: number, one: string, many: string) => (n ? `${n} ${n === 1 ? one : many}` : "");
+  return [part(branches, "branch", "branches"), part(subs, "subagent", "subagents"), part(forks, "fork", "forks")]
+    .filter(Boolean)
+    .join(", ");
+}
+
+const forkNoun = (s: SessionRow) => (s.branch_of ? "Branch" : s.is_subagent ? "Subagent" : "Fork");
+const afterPrompt = (n: number | null | undefined) => (n ? `after prompt ${n}` : "before the first prompt");
+
+const BlockView = memo(function BlockView({
+  block: b,
+  onOpen,
+}: {
+  block: Block;
+  onOpen: (path: string, focus?: string) => void;
+}) {
   switch (b.type) {
+    case "fork_from":
+      return (
+        <div className="b-fork from">
+          <BranchIcon className="glyph" />
+          <span>
+            {b.self.branch_of ? "Branched" : "Forked"} {afterPrompt(b.self.fork_turn)} of{" "}
+            <button className="link" onClick={() => onOpen(b.source.path, b.self.path)}>
+              {b.source.title}
+            </button>
+          </span>
+        </div>
+      );
+    case "fork_to":
+      return (
+        <div className="b-fork to">
+          <BranchIcon className="glyph" />
+          <span>
+            {forkNoun(b.child)}{" "}
+            <button className="link" onClick={() => onOpen(b.child.path)}>
+              {b.child.title}
+            </button>{" "}
+            splits off here
+          </span>
+        </div>
+      );
     case "user":
       return (
         <section className={`b-user ${b.ev.sidechain ? "side" : ""}`}>
@@ -312,7 +384,7 @@ const BlockView = memo(function BlockView({ block: b }: { block: Block }) {
             <span>{b.ev.sidechain ? "Delegated" : `Prompt ${b.turn}`}</span>
             <time>{clock(b.ev.ts)}</time>
           </div>
-          {b.ev.text && <div className="b-user-text">{b.ev.text}</div>}
+          {b.ev.text && <UserText text={b.ev.text} />}
           <Images images={b.ev.images} />
         </section>
       );
@@ -519,6 +591,80 @@ function Output({ text, isError, lines = 30 }: { text: string; isError?: boolean
   return <Clamp lines={all.length} max={lines} render={(n) => (
     <pre className={`code out ${isError ? "err" : ""}`}>{all.slice(0, n).join("\n")}</pre>
   )} />;
+}
+
+// Attached files, in the form the backend normalizes every agent's file
+// mentions to (pi writes it natively for `@path` arguments):
+//   <file name="/abs/path" note="active file">contents</file>
+// plus <open_tabs>one path per line</open_tabs> from Codex's IDE context.
+const ATTACHMENT = /<file name="([^"]*)"(?: note="([^"]*)")?>([\s\S]*?)<\/file>|<open_tabs>([\s\S]*?)<\/open_tabs>/g;
+const FILE_TAG = /<file name="[^"]*"(?: note="[^"]*")?>|<\/file>|<open_tabs>[\s\S]*?<\/open_tabs>/g;
+
+type PromptPart =
+  | { kind: "text"; text: string }
+  | { kind: "file"; name: string; note: string; body: string }
+  | { kind: "tabs"; paths: string[] };
+
+/** A user prompt, with attached files shown as cards. */
+function UserText({ text }: { text: string }) {
+  const parts: PromptPart[] = [];
+  let at = 0;
+  for (const m of text.matchAll(ATTACHMENT)) {
+    const before = text.slice(at, m.index).trim();
+    if (before) parts.push({ kind: "text", text: before });
+    if (m[4] !== undefined) parts.push({ kind: "tabs", paths: m[4].split("\n").filter(Boolean) });
+    else parts.push({ kind: "file", name: m[1], note: m[2] ?? "", body: m[3].replace(/^\n+|\s+$/g, "") });
+    at = m.index + m[0].length;
+  }
+  const rest = text.slice(at).trim();
+  if (rest) parts.push({ kind: "text", text: rest });
+  return (
+    <>
+      {parts.map((p, i) =>
+        p.kind === "text" ? (
+          <div key={i} className="b-user-text">
+            {p.text}
+          </div>
+        ) : p.kind === "tabs" ? (
+          <div key={i} className="open-tabs" title={p.paths.join("\n")}>
+            Open in editor: {p.paths.map((x) => basename(x)).join(", ")}
+          </div>
+        ) : (
+          <FileCard key={i} name={p.name} note={p.note} body={p.body} />
+        ),
+      )}
+    </>
+  );
+}
+
+function FileCard({ name, note, body }: { name: string; note: string; body: string }) {
+  const [open, setOpen] = useState(false);
+  const file = basename(name);
+  // Temporary files (subagent task files, pasted images) have no useful directory to show.
+  const dir = /^\/(private\/)?(var\/folders|tmp)\//.test(name)
+    ? "temporary file"
+    : name.includes("/")
+      ? tildify(name.slice(0, -file.length - 1))
+      : "";
+  const lines = useMemo(() => body.split("\n"), [body]);
+  const meta = [note, dir, body ? `${lines.length} ${lines.length === 1 ? "line" : "lines"}` : ""].filter(Boolean).join(" · ");
+  return (
+    <div className={`file-card ${open ? "open" : ""}`}>
+      <button className="file-head" title={name} onClick={() => setOpen((o) => !o)} disabled={!body}>
+        {body ? <span className="caret">▸</span> : null}
+        <svg className="file-icon" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+          <path d="M2.5 1h4.5l2.5 2.5V11h-7z M7 1v2.5h2.5" />
+        </svg>
+        <span className="file-name">{file}</span>
+        <span className="file-dir">{meta}</span>
+      </button>
+      {open && (
+        <div className="file-body">
+          <Clamp lines={lines.length} max={40} render={(n) => <pre className="code">{lines.slice(0, n).join("\n")}</pre>} />
+        </div>
+      )}
+    </div>
+  );
 }
 
 function Clamp({ lines, max, render }: { lines: number; max: number; render: (n: number) => React.ReactNode }) {

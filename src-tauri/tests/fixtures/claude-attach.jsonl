@@ -1,0 +1,3 @@
+{"type":"user","sessionId":"att","uuid":"u1","cwd":"/work","timestamp":"2026-03-01T10:00:00Z","message":{"role":"user","content":"@/tmp/handoff.md pick this up"}}
+{"type":"attachment","sessionId":"att","uuid":"a1","parentUuid":"u1","timestamp":"2026-03-01T10:00:00Z","attachment":{"type":"file","filename":"/tmp/handoff.md","content":{"type":"text","file":{"filePath":"/tmp/handoff.md","content":"# Handoff\n- step one"}},"displayPath":"../tmp/handoff.md"}}
+{"type":"assistant","sessionId":"att","timestamp":"2026-03-01T10:00:01Z","message":{"id":"m1","model":"claude-opus-5-5","role":"assistant","content":[{"type":"text","text":"On it."}]}}

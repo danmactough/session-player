@@ -46,6 +46,7 @@ pub fn parse(path: &Path) -> anyhow::Result<Parsed> {
             "agent-name" => agent_name = str_of(&v, "agentName").map(str::to_string),
             "summary" => summary = str_of(&v, "summary").map(str::to_string),
             "user" | "assistant" => handle_message(&mut p, &v, t, &mut usage),
+            "attachment" => handle_attachment(&mut p, &v),
             "system" => {
                 let ts = parse_ts(v.get("timestamp"));
                 match str_of(&v, "subtype") {
@@ -197,6 +198,30 @@ fn handle_message(
     }
 }
 
+/// An `@file` mention: Claude Code records the file's contents as an
+/// attachment right after the prompt. Show it inside that prompt.
+fn handle_attachment(p: &mut Parsed, v: &Value) {
+    let Some(a) = v.get("attachment").filter(|a| str_of(a, "type") == Some("file")) else {
+        return;
+    };
+    let Some(path) = str_of(a, "filename") else { return };
+    let content = a.get("content");
+    let body = content
+        .and_then(|c| c.get("file"))
+        .and_then(|f| str_of(f, "content"))
+        .or_else(|| content.and_then(Value::as_str))
+        .unwrap_or("");
+    let is_image = content.and_then(|c| str_of(c, "type")) == Some("image");
+    let tag = super::file_tag(path, if is_image { "image" } else { "" }, if is_image { "" } else { body });
+    match p.events.iter_mut().rev().take(4).find(|e| e.kind == EventKind::User) {
+        Some(e) => {
+            e.text.push('\n');
+            e.text.push_str(&tag);
+        }
+        None => p.events.push(Event::new(EventKind::User, parse_ts(v.get("timestamp")), tag)),
+    }
+}
+
 fn push_user_text(p: &mut Parsed, raw: &str, ts: Option<i64>, sidechain: bool) {
     if let Some(mut e) = user_text_event(raw, ts) {
         e.sidechain = sidechain;
@@ -237,8 +262,7 @@ pub fn user_text_event(raw: &str, ts: Option<i64>) -> Option<Event> {
         }
         Event::new(EventKind::System, ts, text)
     } else {
-        let cleaned = strip_tag_blocks(s, "system-reminder");
-        let cleaned = cleaned.trim();
+        let cleaned = super::normalize_prompt(&strip_tag_blocks(s, "system-reminder"));
         if cleaned.is_empty() {
             return None;
         }

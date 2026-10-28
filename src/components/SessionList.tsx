@@ -1,50 +1,93 @@
-import { memo, useEffect, useMemo, useRef } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import type { SearchHit, SessionRow } from "../types";
+import type { SearchHit } from "../types";
+import type { ListRow } from "../lib/tree";
 import { basename, compact, dayBucket, relTime } from "../lib/format";
+import { BranchIcon } from "./BranchIcon";
 
-type Item = { kind: "head"; label: string } | { kind: "row"; s: SessionRow };
+type Item = { kind: "head"; label: string } | { kind: "row"; row: ListRow };
 
 interface Props {
-  sessions: SessionRow[];
+  rows: ListRow[];
   selected: string | null;
   onSelect: (path: string) => void;
+  onToggle: (path: string) => void;
   hits: Map<string, SearchHit> | null;
   showProject: boolean;
   groupByDay: boolean;
 }
 
-export function SessionList({ sessions, selected, onSelect, hits, showProject, groupByDay }: Props) {
+const itemKey = (it: Item) => (it.kind === "head" ? `head:${it.label}` : it.row.s.path);
+
+export function SessionList({ rows, selected, onSelect, onToggle, hits, showProject, groupByDay }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const items = useMemo<Item[]>(() => {
-    if (!groupByDay) return sessions.map((s) => ({ kind: "row", s }));
+    if (!groupByDay) return rows.map((row) => ({ kind: "row", row }));
     const out: Item[] = [];
     let last = "";
     const now = new Date();
-    for (const s of sessions) {
-      const b = dayBucket(s.updated_at, now);
-      if (b !== last) {
-        out.push({ kind: "head", label: b });
-        last = b;
+    for (const row of rows) {
+      // Children sit under their parent regardless of their own dates.
+      if (row.depth === 0) {
+        const b = dayBucket(row.s.updated_at, now);
+        if (b !== last) {
+          out.push({ kind: "head", label: b });
+          last = b;
+        }
       }
-      out.push({ kind: "row", s });
+      out.push({ kind: "row", row });
     }
     return out;
-  }, [sessions, groupByDay]);
+  }, [rows, groupByDay]);
+  const keys = useMemo(() => items.map(itemKey), [items]);
 
   const virt = useVirtualizer({
     count: items.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: (i) => (items[i].kind === "head" ? 34 : hits ? 96 : 66),
+    // Stable keys let measured heights follow an item when the list changes.
+    getItemKey: (i) => keys[i],
     overscan: 12,
     paddingEnd: 24,
   });
 
-  const selIndex = items.findIndex((it) => it.kind === "row" && it.s.path === selected);
-  useEffect(() => {
-    if (selIndex >= 0) virt.scrollToIndex(selIndex, { align: "auto" });
+  // Scroll anchoring: when the list changes (filters, expanding a session),
+  // keep the top-most visible item where it was on screen so everything else
+  // reflows around it. The scroll offset is read during render, before React
+  // touches the DOM (afterwards the browser may already have clamped it), and
+  // compared with item positions from the previous commit.
+  const scrollTopBeforeCommit = scrollRef.current?.scrollTop ?? 0;
+  const previous = useRef<{ keys: string[]; positions: { start: number; end: number }[] } | null>(null);
+
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    const prev = previous.current;
+    if (!el || !prev || prev.keys === keys) return;
+    const top = scrollTopBeforeCommit;
+    const oldIndex = prev.positions.findIndex((m) => m.end > top);
+    if (oldIndex < 0) return;
+    const indexOf = new Map(keys.map((k, i) => [k, i]));
+    let idx: number | undefined;
+    // If the anchor item disappeared, use the next one that survived.
+    for (let i = oldIndex; idx === undefined && i < prev.keys.length; i++) idx = indexOf.get(prev.keys[i]);
+    const m = idx === undefined ? undefined : virt.measurementsCache[idx];
+    if (m) el.scrollTop = Math.max(0, m.start - (prev.positions[oldIndex].start - top));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selIndex]);
+  }, [keys]);
+
+  // Runs after the effect above on every commit, so it always sees the
+  // positions from the commit before.
+  useLayoutEffect(() => {
+    previous.current = { keys, positions: virt.measurementsCache.map((m) => ({ start: m.start, end: m.end })) };
+  });
+
+  // Bring a newly selected session into view (keyboard navigation, links),
+  // but not when the list merely reflows around an existing selection.
+  useEffect(() => {
+    const i = keys.indexOf(selected ?? "");
+    if (i >= 0) virt.scrollToIndex(i, { align: "auto" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected]);
 
   return (
     <div className="list-scroll" ref={scrollRef}>
@@ -63,10 +106,11 @@ export function SessionList({ sessions, selected, onSelect, hits, showProject, g
                 <div className="list-head">{it.label}</div>
               ) : (
                 <Row
-                  s={it.s}
-                  active={it.s.path === selected}
+                  row={it.row}
+                  active={it.row.s.path === selected}
                   onSelect={onSelect}
-                  hit={hits?.get(it.s.path)}
+                  onToggle={onToggle}
+                  hit={hits?.get(it.row.s.path)}
                   showProject={showProject}
                 />
               )}
@@ -79,33 +123,62 @@ export function SessionList({ sessions, selected, onSelect, hits, showProject, g
 }
 
 const Row = memo(function Row({
-  s,
+  row,
   active,
   onSelect,
+  onToggle,
   hit,
   showProject,
 }: {
-  s: SessionRow;
+  row: ListRow;
   active: boolean;
   onSelect: (p: string) => void;
+  onToggle: (p: string) => void;
   hit?: SearchHit;
   showProject: boolean;
 }) {
+  const { s, depth, kind } = row;
   return (
-    <button className={`srow ${active ? "active" : ""}`} onClick={() => onSelect(s.path)}>
+    <div
+      className={`srow ${active ? "active" : ""} ${depth ? "child" : ""}`}
+      style={depth ? { paddingLeft: 18 + depth * 18 } : undefined}
+      role="button"
+      tabIndex={-1}
+      onClick={() => onSelect(s.path)}
+    >
       <div className="srow-title">
-        <span className={`sdot src-${s.source}`} title={s.source} />
+        {kind === "branch" ? <BranchIcon className="branch-glyph" /> : <span className={`sdot src-${s.source}`} title={s.source} />}
         <span className="t">{s.title}</span>
       </div>
       {hit && <Snippet text={hit.snippet} />}
       <div className="srow-meta">
-        {showProject && <span className="sproj">{basename(s.project)}</span>}
+        {kind && (
+          <span className="kind">
+            {kind}
+            {s.fork_entry ? (s.fork_turn ? ` after prompt ${s.fork_turn}` : " from the start") : ""}
+          </span>
+        )}
+        {showProject && !depth && <span className="sproj">{basename(s.project)}</span>}
         <span>{relTime(s.updated_at)}</span>
-        <span>{s.user_turns} {s.user_turns === 1 ? "prompt" : "prompts"}</span>
+        <span>
+          {s.user_turns} {s.user_turns === 1 ? "prompt" : "prompts"}
+        </span>
         {s.output_tokens > 0 && <span>{compact(s.output_tokens)} out</span>}
-        {s.is_subagent && <span className="tag">sub</span>}
+        {!depth && s.is_subagent && <span className="tag">sub</span>}
       </div>
-    </button>
+      {row.childCount > 0 && (
+        <button
+          className={`kids-toggle ${row.expanded ? "open" : ""}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggle(s.path);
+          }}
+        >
+          <span className="caret">▸</span>
+          {row.childSummary}
+        </button>
+      )}
+    </div>
   );
 });
 

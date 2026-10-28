@@ -4,7 +4,7 @@ import type { RootInfo, SearchHit, SessionEvent, SessionRow } from "./types";
 export const api = {
   listSessions: () => invoke<SessionRow[]>("list_sessions"),
   search: (query: string) => invoke<SearchHit[]>("search", { query }),
-  loadSession: (path: string) => invoke<SessionEvent[]>("load_session", { path }),
+  loadSession: (path: string, branch?: string) => invoke<SessionEvent[]>("load_session", { path, branch: branch ?? null }),
   getRoots: () => invoke<RootInfo[]>("get_roots"),
   suggestedRoots: () => invoke<string[]>("suggested_roots"),
   addRoot: (path: string) => invoke<void>("add_root", { path }),

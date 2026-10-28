@@ -4,18 +4,25 @@ use std::path::Path;
 use serde_json::Value;
 
 use super::{between, content_text, for_each_line, parse_ts, pretty, str_of};
-use crate::model::{Event, EventKind, Parsed, Source};
+use crate::model::{Branch, Event, EventKind, Parsed, Source};
 
 pub fn parse(path: &Path) -> anyhow::Result<Parsed> {
+    parse_branch(path, None)
+}
+
+/// Parses the session, rendering the branch that ends at `leaf`, or the
+/// active branch (the one ending at the last entry) when `leaf` is None.
+pub fn parse_branch(path: &Path, leaf: Option<&str>) -> anyhow::Result<Parsed> {
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
     let fallback_id = stem.rsplit('_').next().unwrap_or(stem);
     let mut p = Parsed::new(Source::Pi, fallback_id.to_string());
 
     // pi stores a session as a tree (entries point at parentId) so the user can
-    // rewind and branch. Collect everything, then render only the branch that
-    // ends at the last entry, which is what the user last saw.
+    // rewind and branch. Collect everything, then render one root-to-leaf path.
+    // Every other leaf is reported in `branches` so the UI can open it.
     let mut entries: Vec<Value> = Vec::new();
     let mut name: Option<String> = None;
+    let mut parent_file: Option<String> = None;
     for_each_line(path, |line| {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             return;
@@ -28,6 +35,7 @@ pub fn parse(path: &Path) -> anyhow::Result<Parsed> {
                 p.cwd = str_of(&v, "cwd").map(str::to_string);
                 p.started_at = parse_ts(v.get("timestamp"));
                 if let Some(parent) = str_of(&v, "parentSession") {
+                    parent_file = Some(parent.to_string());
                     p.parent_id = Path::new(parent)
                         .file_stem()
                         .and_then(|s| s.to_str())
@@ -66,8 +74,39 @@ pub fn parse(path: &Path) -> anyhow::Result<Parsed> {
         }
     }
 
-    for v in active_branch(&entries) {
+    let active = path_to(&entries, None);
+    p.branches = branches(&entries, &active);
+    let shown = match leaf {
+        Some(id) => path_to(&entries, Some(id)),
+        None => active.clone(),
+    };
+    // A branch or fork is shown from the point where it split off; the UI
+    // links back to the split point in its source.
+    let start = match leaf {
+        Some(id) => p
+            .branches
+            .iter()
+            .find(|b| b.leaf == id)
+            .and_then(|b| b.fork_entry.as_deref())
+            .and_then(|f| shown.iter().position(|v| str_of(v, "id") == Some(f)))
+            .map_or(0, |i| i + 1),
+        None => match parent_file.as_deref().and_then(|f| shared_prefix(&shown, Path::new(f))) {
+            Some(n) => {
+                p.fork_entry = last_shown_entry(&shown[..n]).map(str::to_string);
+                p.fork_turn = Some(count_prompts(&shown[..n]));
+                n
+            }
+            None => 0,
+        },
+    };
+    for v in &shown[start..] {
+        let before = p.events.len();
         handle_entry(&mut p, v);
+        // Entry ids let the UI place fork markers next to the right message.
+        let id = str_of(v, "id").map(str::to_string);
+        for e in &mut p.events[before..] {
+            e.entry = id.clone();
+        }
     }
     // Token usage counts every model call, including abandoned branches.
     for v in &entries {
@@ -81,17 +120,22 @@ pub fn parse(path: &Path) -> anyhow::Result<Parsed> {
     Ok(p)
 }
 
-fn active_branch(entries: &[Value]) -> Vec<&Value> {
+/// The root-to-leaf chain ending at `leaf`, or at the last entry in the file.
+fn path_to<'a>(entries: &'a [Value], leaf: Option<&str>) -> Vec<&'a Value> {
     let by_id: HashMap<&str, &Value> = entries
         .iter()
         .filter_map(|v| str_of(v, "id").map(|id| (id, v)))
         .collect();
-    let Some(leaf) = entries.iter().rev().find(|v| str_of(v, "id").is_some()) else {
+    let end = match leaf {
+        Some(id) => by_id.get(id).copied(),
+        None => entries.iter().rev().find(|v| str_of(v, "id").is_some()),
+    };
+    let Some(end) = end else {
         return entries.iter().collect();
     };
-    let mut chain = vec![leaf];
+    let mut chain = vec![end];
     let mut seen = HashSet::new();
-    let mut cur = leaf;
+    let mut cur = end;
     while let Some(pid) = str_of(cur, "parentId") {
         if !seen.insert(pid) {
             break;
@@ -104,13 +148,147 @@ fn active_branch(entries: &[Value]) -> Vec<&Value> {
             None => break,
         }
     }
-    // If the chain is implausibly short the file is probably linear without
-    // parent links; fall back to file order.
-    if chain.len() * 4 < by_id.len() {
+    // Without parent links there is no tree; show the file in order.
+    if chain.len() == 1 && entries.len() > 1 {
         return entries.iter().collect();
     }
     chain.reverse();
     chain
+}
+
+/// Every leaf other than the active one whose own part holds at least one
+/// message (leaves that only change a setting are not worth showing),
+/// arranged as a tree: a branch's source is whichever earlier branch (or the
+/// active one) it shares the longest history with.
+fn branches(entries: &[Value], active: &[&Value]) -> Vec<Branch> {
+    let parents: HashSet<&str> = entries.iter().filter_map(|v| str_of(v, "parentId")).collect();
+    let active_ids: HashSet<&str> = active.iter().filter_map(|v| str_of(v, "id")).collect();
+
+    struct Candidate<'a> {
+        leaf: &'a str,
+        chain: Vec<&'a Value>,
+        started_at: Option<i64>,
+    }
+    let mut candidates: Vec<Candidate> = entries
+        .iter()
+        .filter_map(|v| str_of(v, "id"))
+        .filter(|id| !parents.contains(id) && !active_ids.contains(id))
+        .filter_map(|leaf| {
+            let chain = path_to(entries, Some(leaf));
+            let split = common_prefix(&chain, active);
+            let own = &chain[split..];
+            if !own.iter().any(|v| is_message(v)) {
+                return None;
+            }
+            let started_at = own.iter().find_map(|v| parse_ts(v.get("timestamp")));
+            Some(Candidate { leaf, started_at, chain })
+        })
+        .collect();
+    candidates.sort_by_key(|c| c.started_at);
+
+    let mut out: Vec<Branch> = Vec::new();
+    for (i, c) in candidates.iter().enumerate() {
+        let mut source: Option<&str> = None;
+        let mut split = common_prefix(&c.chain, active);
+        for earlier in &candidates[..i] {
+            let n = common_prefix(&c.chain, &earlier.chain);
+            if n > split && out.iter().any(|b| b.leaf == earlier.leaf) {
+                split = n;
+                source = Some(earlier.leaf);
+            }
+        }
+        let own = &c.chain[split..];
+        let messages: Vec<&Value> = own.iter().filter(|v| is_message(v)).filter_map(|v| v.get("message")).collect();
+        if messages.is_empty() {
+            continue;
+        }
+        let is_user = |m: &Value| str_of(m, "role") == Some("user");
+        let label = messages
+            .iter()
+            .find(|m| is_user(m))
+            .and_then(|m| super::label_from_prompt(&prompt_text(m)))
+            .or_else(|| {
+                // No new prompt: the model was re-run from an earlier prompt.
+                c.chain[..split]
+                    .iter()
+                    .rev()
+                    .filter_map(|v| v.get("message"))
+                    .find(|m| is_user(m))
+                    .and_then(|m| super::label_from_prompt(&prompt_text(m)))
+                    .map(|l| format!("Retry: {l}"))
+            })
+            .unwrap_or_else(|| "Alternate branch".to_string());
+        out.push(Branch {
+            leaf: c.leaf.to_string(),
+            label,
+            started_at: c.started_at,
+            updated_at: own.iter().rev().find_map(|v| parse_ts(v.get("timestamp"))),
+            user_turns: messages.iter().filter(|m| is_user(m)).count() as i64,
+            fork_turn: count_prompts(&c.chain[..split]),
+            fork_entry: last_shown_entry(&c.chain[..split]).map(str::to_string),
+            parent_leaf: source.map(str::to_string),
+        });
+    }
+    out
+}
+
+fn common_prefix(a: &[&Value], b: &[&Value]) -> usize {
+    a.iter()
+        .zip(b)
+        .take_while(|(x, y)| str_of(x, "id").is_some() && str_of(x, "id") == str_of(y, "id"))
+        .count()
+}
+
+fn is_message(v: &Value) -> bool {
+    str_of(v, "type") == Some("message")
+}
+
+fn count_prompts(chain: &[&Value]) -> i64 {
+    chain
+        .iter()
+        .filter(|v| v.get("message").is_some_and(|m| str_of(m, "role") == Some("user")))
+        .count() as i64
+}
+
+/// The last entry in `chain` that produces something in the transcript, so a
+/// fork marker placed after it is visible.
+fn last_shown_entry<'a>(chain: &[&'a Value]) -> Option<&'a str> {
+    chain
+        .iter()
+        .rev()
+        .find(|v| match str_of(v, "type") {
+            Some("message") => v.get("message").is_some_and(|m| str_of(m, "role") != Some("system")),
+            Some("compaction") | Some("branch_summary") | Some("custom_message") => true,
+            _ => false,
+        })
+        .and_then(|v| str_of(v, "id"))
+}
+
+fn prompt_text(m: &Value) -> String {
+    let mut imgs = Vec::new();
+    let text = content_text(m.get("content").unwrap_or(&Value::Null), &mut imgs);
+    // Skill invocations inline the SKILL.md ahead of the user's own words.
+    match text.find("</skill>") {
+        Some(i) if text.starts_with("<skill name=") => text[i + "</skill>".len()..].to_string(),
+        _ => text,
+    }
+}
+
+/// How many leading entries of a fork file's chain were copied from the
+/// session it was forked from (pi keeps the entry ids when it copies them).
+fn shared_prefix(chain: &[&Value], parent: &Path) -> Option<usize> {
+    let mut ids: HashSet<String> = HashSet::new();
+    for_each_line(parent, |line| {
+        if let Ok(v) = serde_json::from_str::<Value>(line)
+            && let Some(id) = str_of(&v, "id")
+            && str_of(&v, "type") != Some("session")
+        {
+            ids.insert(id.to_string());
+        }
+    })
+    .ok()?;
+    let n = chain.iter().take_while(|v| str_of(v, "id").is_some_and(|id| ids.contains(id))).count();
+    (n > 0).then_some(n)
 }
 
 fn handle_entry(p: &mut Parsed, v: &Value) {

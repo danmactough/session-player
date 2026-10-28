@@ -11,7 +11,7 @@ use crate::model::{EventKind, Parsed, SessionRow, Source};
 use crate::parse;
 
 /// Bump when parsing changes so existing indexes are rebuilt on launch.
-const INDEX_VERSION: &str = "7";
+const INDEX_VERSION: &str = "10";
 const FTS_BODY_LIMIT: usize = 400_000;
 const SKIP_DIRS: &[&str] = &["memory", "tool-results", "subagent-artifacts", "node_modules", ".git"];
 
@@ -35,7 +35,8 @@ pub fn open(db_path: &Path) -> anyhow::Result<Connection> {
             tool_calls INTEGER NOT NULL, input_tokens INTEGER NOT NULL,
             output_tokens INTEGER NOT NULL, cache_read_tokens INTEGER NOT NULL,
             models TEXT NOT NULL, git_branch TEXT, is_subagent INTEGER NOT NULL,
-            parent_id TEXT, size INTEGER NOT NULL, imported_from TEXT);
+            parent_id TEXT, size INTEGER NOT NULL, imported_from TEXT,
+            branches TEXT NOT NULL DEFAULT '[]', fork_entry TEXT, fork_turn INTEGER);
          CREATE INDEX IF NOT EXISTS sessions_updated ON sessions(updated_at);
          CREATE VIRTUAL TABLE IF NOT EXISTS session_fts USING fts5(
             path UNINDEXED, title, body, tokenize='porter unicode61');",
@@ -233,8 +234,8 @@ pub fn run(
             "INSERT INTO sessions(path, root, source, native_id, cwd, project, title, title_source,
                 first_prompt, started_at, updated_at, user_turns, assistant_msgs, tool_calls,
                 input_tokens, output_tokens, cache_read_tokens, models, git_branch, is_subagent,
-                parent_id, size, imported_from)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)",
+                parent_id, size, imported_from, branches, fork_entry, fork_turn)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26)",
             params![
                 row.path,
                 r.file.root,
@@ -259,6 +260,9 @@ pub fn run(
                 row.parent_id,
                 row.size,
                 row.imported_from,
+                serde_json::to_string(&row.branches)?,
+                row.fork_entry,
+                row.fork_turn,
             ],
         )?;
         tx.execute(
@@ -410,6 +414,9 @@ fn build_row(file: &FileInfo, p: Parsed) -> Option<(SessionRow, String)> {
         parent_id: p.parent_id,
         size: file.size,
         imported_from: p.imported_from,
+        branches: p.branches,
+        fork_entry: p.fork_entry,
+        fork_turn: p.fork_turn,
     };
     Some((row, body))
 }
@@ -556,7 +563,7 @@ pub fn list(conn: &Connection) -> anyhow::Result<Vec<SessionRow>> {
         "SELECT path, source, native_id, cwd, project, title, title_source, first_prompt,
                 started_at, updated_at, user_turns, assistant_msgs, tool_calls, input_tokens,
                 output_tokens, cache_read_tokens, models, git_branch, is_subagent, parent_id, size,
-                imported_from
+                imported_from, branches, fork_entry, fork_turn
          FROM sessions ORDER BY updated_at DESC",
     )?;
     let mut rows: Vec<SessionRow> = stmt
@@ -585,6 +592,9 @@ pub fn list(conn: &Connection) -> anyhow::Result<Vec<SessionRow>> {
                 parent_id: r.get(19)?,
                 size: r.get(20)?,
                 imported_from: r.get(21)?,
+                branches: serde_json::from_str(&r.get::<_, String>(22)?).unwrap_or_default(),
+                fork_entry: r.get(23)?,
+                fork_turn: r.get(24)?,
             })
         })?
         .collect::<Result<_, _>>()?;

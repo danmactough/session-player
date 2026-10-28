@@ -6,6 +6,8 @@ import { basename, dirname, relTime, setHome, SOURCE_LABEL, tildify } from "./li
 import { SessionList } from "./components/SessionList";
 import { Transcript } from "./components/Transcript";
 import { SourcesSheet } from "./components/SourcesSheet";
+import { ancestors, branchChildren, branchRows, branchSourcePath, buildTree, type ListRow } from "./lib/tree";
+import { useScrollAnchor } from "./lib/useScrollAnchor";
 
 const ALL_SOURCES: Source[] = ["claude", "codex", "pi"];
 const SORTS: { key: SortKey; label: string }[] = [
@@ -39,6 +41,9 @@ export default function App() {
   const [version, setVersion] = useState(0);
   const [projectFilter, setProjectFilter] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
+  const projectsRef = useRef<HTMLElement>(null);
+  // Sessions whose subagents, forks and branches are shown in the list.
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
 
   const reload = useCallback(() => {
     api
@@ -186,19 +191,72 @@ export default function App() {
     return sorted;
   }, [base, scopeProject, p.sort, query, hits, matchesQuery]);
 
-  const byPath = useMemo(() => new Map((sessions ?? []).map((s) => [s.path, s])), [sessions]);
+  // Search results stay flat; browsing nests children under their session.
+  const rows = useMemo<ListRow[]>(
+    () =>
+      searching
+        ? list.map((s) => ({ s, depth: 0, childCount: 0, childSummary: "", expanded: false }))
+        : buildTree(list, expanded),
+    [list, searching, expanded],
+  );
+
+  // Every openable row: real sessions plus one per pi branch.
+  const allRows = useMemo(() => (sessions ?? []).flatMap((s) => [s, ...branchRows(s)]), [sessions]);
+  const byPath = useMemo(() => new Map(allRows.map((s) => [s.path, s])), [allRows]);
   const selected = p.selected ? byPath.get(p.selected) : undefined;
+
+  // Opening a nested session (from a link or a saved selection) expands its parents.
+  useEffect(() => {
+    if (!p.selected) return;
+    const up = ancestors(p.selected, allRows);
+    if (up.some((a) => !expanded.has(a))) setExpanded((e) => new Set([...e, ...up]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [p.selected, allRows]);
+
+  const toggleExpanded = useCallback((path: string) => {
+    setExpanded((e) => {
+      const next = new Set(e);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  }, []);
 
   const family = useMemo(() => {
     if (!selected || !sessions) return { parent: undefined, children: [] as SessionRow[] };
+    if (selected.branch_of) {
+      return {
+        parent: byPath.get(branchSourcePath(selected)!),
+        children: branchChildren(selected, byPath.get(selected.branch_of)),
+      };
+    }
     const parent = selected.parent_id
-      ? sessions.find((s) => s.native_id === selected.parent_id && s.path !== selected.path)
+      ? sessions.find((s) => s.source === selected.source && s.native_id === selected.parent_id && s.path !== selected.path)
       : undefined;
-    const children = sessions.filter((s) => s.parent_id === selected.native_id && s.path !== selected.path);
+    const children = [
+      ...branchChildren(selected, undefined),
+      ...sessions.filter((s) => s.source === selected.source && s.parent_id === selected.native_id && s.path !== selected.path),
+    ];
     return { parent, children };
-  }, [selected, sessions]);
+  }, [selected, sessions, byPath]);
 
-  const select = useCallback((path: string) => update({ selected: path }), [update]);
+  // A child whose split point the transcript should scroll to, set when
+  // following a "branched from" link back to the source.
+  const [focus, setFocus] = useState<string | null>(null);
+  const select = useCallback(
+    (path: string) => {
+      setFocus(null);
+      update({ selected: path });
+    },
+    [update],
+  );
+  const open = useCallback(
+    (path: string, focusChild?: string) => {
+      setFocus(focusChild ?? null);
+      update({ selected: path });
+    },
+    [update],
+  );
 
   // Keyboard: j/k or arrows move through the list, / or ⌘K focuses search.
   useEffect(() => {
@@ -212,16 +270,18 @@ export default function App() {
       }
       if (typing && e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
       const dir = e.key === "j" || e.key === "ArrowDown" ? 1 : e.key === "k" || e.key === "ArrowUp" ? -1 : 0;
-      if (!dir || !list.length) return;
+      if (!dir || !rows.length) return;
       if (typing && (e.target as HTMLElement) !== searchRef.current) return;
       e.preventDefault();
-      const i = list.findIndex((s) => s.path === p.selected);
-      const next = list[Math.max(0, Math.min(list.length - 1, i < 0 ? 0 : i + dir))];
-      if (next) select(next.path);
+      const i = rows.findIndex((r) => r.s.path === p.selected);
+      const next = rows[Math.max(0, Math.min(rows.length - 1, i < 0 ? 0 : i + dir))];
+      if (next) select(next.s.path);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [list, p.selected, select]);
+  }, [rows, p.selected, select]);
+
+  useScrollAnchor(projectsRef, [visibleProjects]);
 
   const toggleSource = (s: Source) => {
     const has = p.sources.includes(s);
@@ -293,8 +353,12 @@ export default function App() {
             />
           )}
         </div>
-        <nav className="projects">
-          <button className={`proj ${p.project === null ? "active" : ""}`} onClick={() => update({ project: null })}>
+        <nav className="projects" ref={projectsRef}>
+          <button
+            className={`proj ${p.project === null ? "active" : ""}`}
+            data-anchor="(all)"
+            onClick={() => update({ project: null })}
+          >
             <span className="proj-name">All projects</span>
             <span className="proj-n">{base.length}</span>
           </button>
@@ -302,6 +366,7 @@ export default function App() {
             <button
               key={x.project}
               className={`proj ${p.project === x.project ? "active" : ""}`}
+              data-anchor={x.project}
               onClick={() => update({ project: x.project })}
               title={tildify(x.project)}
             >
@@ -413,9 +478,10 @@ export default function App() {
           </div>
         ) : (
           <SessionList
-            sessions={list}
+            rows={rows}
             selected={p.selected}
             onSelect={select}
+            onToggle={toggleExpanded}
             hits={hits}
             showProject={!scopeProject}
             groupByDay={!query && (p.sort === "recent" || p.sort === "oldest")}
@@ -431,7 +497,8 @@ export default function App() {
             parent={family.parent}
             children={family.children}
             highlight={query.trim()}
-            onOpen={select}
+            onOpen={open}
+            focus={focus}
           />
         ) : (
           <div className="placeholder" data-tauri-drag-region>

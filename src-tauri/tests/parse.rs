@@ -1,7 +1,7 @@
 // Integration tests run against small synthetic transcripts in tests/fixtures.
 use std::path::Path;
 
-use session_player_lib::test_support::{index_one, Row};
+use session_player_lib::test_support::{index_one, load_branch, Row};
 
 fn fixture(name: &str) -> String {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name).to_string_lossy().into_owned()
@@ -67,6 +67,74 @@ fn pi_session() {
 }
 
 #[test]
+fn pi_alternate_branches_are_listed_and_loadable() {
+    let path = fixture("pi.jsonl");
+    let (row, _) = index_one(&path);
+    assert_eq!(row.branches.len(), 1);
+    let b = &row.branches[0];
+    assert_eq!(b.leaf, "a3");
+    assert_eq!(b.label, "Retry: stress test my caching plan");
+    assert_eq!(b.fork_turn, 1);
+    assert_eq!(b.fork_entry.as_deref(), Some("a2"));
+    assert_eq!(b.parent_leaf, None);
+    assert_eq!(b.user_turns, 0);
+    // A branch starts where it split off.
+    assert_eq!(load_branch(&path, "a3"), vec!["assistant:abandoned branch"]);
+}
+
+#[test]
+fn pi_branches_of_branches_nest_under_their_source() {
+    let path = fixture("pi-tree.jsonl");
+    let (row, events) = index_one(&path);
+    assert_eq!(events, vec!["user:first question here please", "assistant:answer one", "user:follow up on the main branch", "assistant:main reply"]);
+    let summary: Vec<_> = row
+        .branches
+        .iter()
+        .map(|b| (b.leaf.as_str(), b.label.as_str(), b.parent_leaf.as_deref(), b.fork_entry.as_deref(), b.fork_turn))
+        .collect();
+    assert_eq!(
+        summary,
+        vec![
+            ("b1c", "try a different approach here", None, Some("m2"), 1),
+            ("b2a", "go deeper on that idea", Some("b1c"), Some("b1a"), 2),
+        ]
+    );
+    assert_eq!(
+        load_branch(&path, "b1c"),
+        vec!["user:try a different approach here", "assistant:different answer", "user:keep going with the alternative", "assistant:kept going"]
+    );
+    assert_eq!(load_branch(&path, "b2a"), vec!["user:go deeper on that idea", "assistant:deeper answer"]);
+}
+
+#[test]
+fn pi_fork_file_starts_after_the_copied_history() {
+    let dir = std::env::temp_dir().join(format!("sp-pi-fork-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let parent = dir.join("2026-02-01T10-00-00-000Z_01b-tree.jsonl");
+    std::fs::copy(fixture("pi-tree.jsonl"), &parent).unwrap();
+    let lines: Vec<String> = std::fs::read_to_string(&parent).unwrap().lines().map(str::to_string).collect();
+    let fork = dir.join("2026-02-02T10-00-00-000Z_01c-fork.jsonl");
+    std::fs::write(
+        &fork,
+        [
+            format!(r#"{{"type":"session","version":3,"id":"01c-fork","timestamp":"2026-02-02T10:00:00.000Z","cwd":"/work/tree","parentSession":"{}"}}"#, parent.display()),
+            lines[1].clone(),
+            lines[2].clone(),
+            r#"{"type":"message","id":"f1","parentId":"m2","timestamp":"2026-02-02T10:00:01.000Z","message":{"role":"user","content":"forked question about caching"}}"#.into(),
+        ]
+        .join("\n"),
+    )
+    .unwrap();
+    let (row, events) = index_one(&fork.to_string_lossy());
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(row.parent_id.as_deref(), Some("01b-tree"));
+    assert_eq!(row.fork_entry.as_deref(), Some("m2"));
+    assert_eq!(row.fork_turn, Some(1));
+    assert_eq!(row.title, "forked question about caching");
+    assert_eq!(events, vec!["user:forked question about caching"]);
+}
+
+#[test]
 fn codex_imported_tool_markers_become_tool_events() {
     let (row, events) = index_one(&fixture("codex-imported.jsonl"));
     assert_eq!(row.tool_calls, 2);
@@ -81,5 +149,15 @@ fn codex_imported_tool_markers_become_tool_events() {
             "tool_call:{\n  \"file\": \"hooks/stop.sh\"\n}",
             "tool_result!:File not found",
         ]
+    );
+}
+
+#[test]
+fn claude_file_mentions_are_shown_inside_the_prompt() {
+    let (row, events) = index_one(&fixture("claude-attach.jsonl"));
+    assert_eq!(row.title, "@/tmp/handoff.md pick this up");
+    assert_eq!(
+        events,
+        vec!["user:@/tmp/handoff.md pick this up\n<file name=\"/tmp/handoff.md\"># Handoff\n- step one</file>\n", "assistant:On it."]
     );
 }

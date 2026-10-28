@@ -17,8 +17,8 @@ On first launch the app adds whichever of these exist: `~/.claude/projects`, `~/
 
 - **Rail**: toggle sources, pick a project. Project = the session's working directory; Claude Code worktrees (`<repo>/.claude/worktrees/*`) fold into their repo, and Codex worktrees (`~/.codex/worktrees/<hash>/<name>`) fold into the one project with the same folder name.
 - **Search** (`⌘K` or `/`): matches titles and paths instantly, plus full-text matches over prompts, replies and tool inputs (SQLite FTS5) with highlighted snippets. With a project selected, search starts scoped to it; switch between that project and **All projects** above the results. Clear with the × in the box, **Clear search**, or Esc. Opening a result carries the query into the transcript's find bar.
-- **List**: `j`/`k` or arrow keys move through sessions. Sort by recent, oldest, most prompts or most tokens. Subagent runs are hidden unless **Subagents** is on.
-- **Transcript**: prompts, replies (Markdown), collapsed reasoning, and tool calls grouped into compact rows; click a row for its input and output. Edits render as diffs, `apply_patch` as a colored patch. `⌘F` finds within the session, Enter/Shift-Enter steps through matches. At ≥1500px wide a prompt outline appears on the right.
+- **List**: `j`/`k` or arrow keys move through sessions. Sort by recent, oldest, most prompts or most tokens. Subagent runs, forks and pi branches are nested under the session they came from; click the "2 branches · 1 subagent" toggle to show them. Subagents are hidden unless **Subagents** is on. When filters change or a session expands, the top-most visible row stays put and the rest of the list reflows around it.
+- **Transcript**: prompts, replies (Markdown), collapsed reasoning, and tool calls grouped into compact rows; click a row for its input and output. Edits render as diffs, `apply_patch` as a colored patch, and files attached to a prompt as collapsed attachment cards (click to show the raw contents): pi's `<file name="…">` blocks from `@file` arguments, Claude Code's `@file` attachments and IDE "opened file" notices, and Codex's "Files mentioned" / IDE context preamble (active file, selection, open tabs). The backend rewrites all of these into pi's `<file>` form (`parse::normalize_prompt`), so one renderer handles every agent. `⌘F` finds within the session, Enter/Shift-Enter steps through matches. At ≥1500px wide a prompt outline appears on the right.
 - **Actions**: copy a resume command (`claude --resume`, `codex resume`, `pi --session`), reveal the file in Finder, jump between a subagent and its parent.
 
 The index updates on its own: a file watcher re-indexes changed files about 1.5s after an agent writes to them.
@@ -48,7 +48,7 @@ src/
 
 - The index lives at `~/Library/Application Support/com.danmactough.sessionplayer/index.sqlite`, along with the list of folders and UI preferences. Bump `INDEX_VERSION` in `index.rs` after a parser change to force a rebuild, or use **Rebuild index** in Sources.
 - Transcripts are re-parsed from the source file when opened (tens of ms even for 30 MB files). Embedded screenshots are served through a `spimg://` protocol instead of the IPC payload, so they load only when scrolled into view.
-- pi stores sessions as a tree; the transcript shows the branch that ends at the last entry, while token totals count every branch.
+- pi stores sessions as a tree. The session's own row shows the branch that ends at the last entry. Every other branch with at least one message is listed under the branch it split from (branches can have branches), and pi fork files are listed under their parent session. A branch or fork transcript starts at its split point with a link back to it; the source transcript shows a "splits off here" marker at that point, linking forward. Token totals count every branch.
 
 ### Previewing the UI in a browser
 

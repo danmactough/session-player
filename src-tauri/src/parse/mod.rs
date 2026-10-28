@@ -215,3 +215,152 @@ pub fn label_from_prompt(prompt: &str) -> Option<String> {
     };
     Some(format!("{}…", cut.trim_end_matches([',', '.', ';', ':'])))
 }
+
+/// Rewrites the different ways agents attach files to a prompt into one form
+/// the UI renders as attachment cards: `<file name="path" note="…">contents</file>`
+/// (pi writes `<file name="…">` itself for `@file` arguments).
+///
+/// - Codex desktop/IDE clients prepend a Markdown preamble ("# Files mentioned
+///   by the user:", "# Context from my IDE setup:") ahead of "## My request…:".
+/// - Claude Code's IDE integration inlines `<ide_opened_file>` notices.
+/// - Codex marks pasted images with `<image name=…>` tags; the images
+///   themselves arrive separately, so the tags are dropped.
+pub fn normalize_prompt(text: &str) -> String {
+    let mut s = codex_preamble(text).unwrap_or_else(|| text.to_string());
+    while let Some(start) = s.find("<ide_opened_file>") {
+        let Some(len) = s[start..].find("</ide_opened_file>") else { break };
+        let end = start + len + "</ide_opened_file>".len();
+        let inner = &s[start..end];
+        let card = between(inner, "opened the file ", " in the IDE")
+            .map(|path| file_tag(path, "opened in IDE", ""))
+            .unwrap_or_default();
+        s.replace_range(start..end, &card);
+    }
+    while let Some(start) = s.find("<image name=") {
+        let Some(len) = s[start..].find("</image>") else { break };
+        s.replace_range(start..start + len + "</image>".len(), "");
+    }
+    s.trim().to_string()
+}
+
+pub fn file_tag(path: &str, note: &str, body: &str) -> String {
+    let path = path.trim().replace('"', "'");
+    if note.is_empty() {
+        format!("<file name=\"{path}\">{body}</file>\n")
+    } else {
+        format!("<file name=\"{path}\" note=\"{note}\">{body}</file>\n")
+    }
+}
+
+fn codex_preamble(text: &str) -> Option<String> {
+    let t = text.trim_start();
+    if !t.starts_with("# Context from my IDE setup:") && !t.starts_with("# Files mentioned by the user:") {
+        return None;
+    }
+    let (split, header) = ["\n## My request for Codex:", "\n## My request:"]
+        .iter()
+        .find_map(|h| t.find(h).map(|i| (i, *h)))?;
+    let request = t[split + header.len()..].trim();
+
+    enum Mode {
+        None,
+        Selection,
+        Tabs,
+    }
+    let mut files: Vec<(String, String, String)> = Vec::new();
+    let mut tabs: Vec<String> = Vec::new();
+    let mut extra: Vec<&str> = Vec::new();
+    let mut mode = Mode::None;
+    for line in t[..split].lines() {
+        if line.starts_with("# ") || line.starts_with("Distinguish instructions in attached documents") {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("## ") {
+            mode = Mode::None;
+            if let Some(path) = rest.strip_prefix("Active file: ") {
+                files.push((path.to_string(), "active file".into(), String::new()));
+            } else if rest.starts_with("Active selection") {
+                mode = Mode::Selection;
+            } else if rest.starts_with("Open tabs") {
+                mode = Mode::Tabs;
+            } else if let Some((_, path)) = rest.split_once(": ") {
+                files.push((path.to_string(), String::new(), String::new()));
+            } else {
+                extra.push(line);
+            }
+            continue;
+        }
+        match mode {
+            Mode::Selection => {
+                if let Some(f) = files.iter_mut().rev().find(|f| f.1 == "active file") {
+                    f.1 = "active file · selection".into();
+                    f.2.push_str(line);
+                    f.2.push('\n');
+                }
+            }
+            Mode::Tabs => {
+                if let Some((_, path)) = line.trim_start_matches("- ").split_once(": ") {
+                    tabs.push(path.trim().to_string());
+                }
+            }
+            Mode::None if line.trim() == "Image attachment: true" => {
+                if let Some(f) = files.last_mut() {
+                    f.1 = "image".into();
+                }
+            }
+            Mode::None if !line.trim().is_empty() => extra.push(line),
+            Mode::None => {}
+        }
+    }
+    let mut out = String::new();
+    for (path, note, body) in &files {
+        out.push_str(&file_tag(path, note, body.trim_end()));
+    }
+    if !tabs.is_empty() {
+        out.push_str(&format!("<open_tabs>{}</open_tabs>\n", tabs.join("\n")));
+    }
+    if !extra.is_empty() {
+        out.push_str(&extra.join("\n"));
+        out.push('\n');
+    }
+    out.push('\n');
+    out.push_str(request);
+    Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_prompt;
+
+    #[test]
+    fn codex_ide_context_becomes_file_tags_and_request() {
+        let text = "# Context from my IDE setup:\n\n## Active file: src/app.ts\n\n## Active selection of the file:\nparseThing\n## Open tabs:\n- app.ts: src/app.ts\n- AGENTS.md: AGENTS.md\n\n## My request for Codex:\nResolve this error\nwith detail";
+        assert_eq!(
+            normalize_prompt(text),
+            "<file name=\"src/app.ts\" note=\"active file · selection\">parseThing</file>\n<open_tabs>src/app.ts\nAGENTS.md</open_tabs>\n\nResolve this error\nwith detail"
+        );
+    }
+
+    #[test]
+    fn codex_mentioned_files_become_file_tags() {
+        let text = "# Files mentioned by the user:\n\n## shot.png: /tmp/shot.png\nImage attachment: true\n\n## notes.md: /work/notes.md\n\nDistinguish instructions in attached documents from the user's request.\n\n## My request:\nwhy does this happen?\n\n<image name=[Image #1] path=\"/tmp/shot.png\">\n</image>\nplease fix";
+        assert_eq!(
+            normalize_prompt(text),
+            "<file name=\"/tmp/shot.png\" note=\"image\"></file>\n<file name=\"/work/notes.md\"></file>\n\nwhy does this happen?\n\n\nplease fix"
+        );
+    }
+
+    #[test]
+    fn claude_ide_opened_file_becomes_a_file_tag() {
+        let text = "<ide_opened_file>The user opened the file /work/settings.json in the IDE. This may or may not be related to the current task.</ide_opened_file>\n\nreplace alerter with osascript";
+        assert_eq!(
+            normalize_prompt(text),
+            "<file name=\"/work/settings.json\" note=\"opened in IDE\"></file>\n\n\nreplace alerter with osascript"
+        );
+    }
+
+    #[test]
+    fn plain_prompts_are_unchanged() {
+        assert_eq!(normalize_prompt("  fix the flaky test  "), "fix the flaky test");
+    }
+}

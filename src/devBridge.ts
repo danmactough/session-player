@@ -36,7 +36,8 @@ const TITLES: [Source, string, string][] = [
 ];
 
 const sessions: SessionRow[] = TITLES.map(([source, title_source, title], i) => {
-  const project = PROJECTS[i % PROJECTS.length];
+  // Sessions 9 (a fork) and 17 (a subagent) belong to session 13.
+  const project = PROJECTS[(i === 9 || i === 17 ? 13 : i) % PROJECTS.length];
   const updated = now - (i * i * 2.3 + i * 0.7) * H;
   const turns = 1 + ((i * 7) % 23);
   return {
@@ -59,9 +60,20 @@ const sessions: SessionRow[] = TITLES.map(([source, title_source, title], i) => 
     models: i === 11 ? [] : [source === "claude" ? "claude-opus-5-5" : source === "codex" ? "gpt-5.4" : "glm-5.3-flash"],
     git_branch: i % 3 ? "main" : "feature/cookies",
     is_subagent: i === 17,
-    parent_id: i === 17 ? "000013-demo-pi" : null,
+    parent_id: i === 17 || i === 9 ? "000013-demo-pi" : null,
     size: 40_000 * turns,
     imported_from: i === 11 ? "Claude Code" : null,
+    // Session 13 has three alternate branches; b3 split from b2.
+    branches:
+      i === 13
+        ? [
+            { leaf: "b1", label: "Retry: what is the status of @.scratch/v2-impl/", started_at: updated - 3 * H, updated_at: updated - 2.5 * H, user_turns: 0, fork_turn: 1, fork_entry: "e0", parent_leaf: null },
+            { leaf: "b2", label: "try the websocket approach instead", started_at: updated - 2 * H, updated_at: updated - H, user_turns: 3, fork_turn: 5, fork_entry: "e4", parent_leaf: null },
+            { leaf: "b3", label: "now add reconnect backoff", started_at: updated - 1.5 * H, updated_at: updated - 0.5 * H, user_turns: 2, fork_turn: 7, fork_entry: "b2e1", parent_leaf: "b2" },
+          ]
+        : [],
+    fork_entry: i === 9 ? "e2" : null,
+    fork_turn: i === 9 ? 3 : null,
   };
 });
 
@@ -71,7 +83,7 @@ const IMG =
     `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="200"><rect width="320" height="200" fill="#ddd"/><text x="160" y="105" font-family="sans-serif" font-size="16" text-anchor="middle" fill="#555">screenshot</text></svg>`,
   );
 
-function transcript(s: SessionRow): SessionEvent[] {
+function transcript(s: SessionRow, prefix = "e", turns = s.user_turns, setup = true): SessionEvent[] {
   const ev: SessionEvent[] = [];
   let t = s.started_at ?? now;
   const at = () => (t += 40_000);
@@ -80,13 +92,21 @@ function transcript(s: SessionRow): SessionEvent[] {
     ev.push({ kind: "tool_call", ts: at(), tool_name: name, call_id: id, text: typeof input === "string" ? input : JSON.stringify(input, null, 2) });
     ev.push({ kind: "tool_result", ts: at(), call_id: id, text: out, is_error: err });
   };
-  ev.push({ kind: "command", ts: at(), text: "/model opus" });
-  ev.push({ kind: "system", ts: at(), text: "Set model to opus" });
-  for (let turn = 0; turn < s.user_turns; turn++) {
+  if (setup) {
+    ev.push({ kind: "command", ts: at(), text: "/model opus" });
+    ev.push({ kind: "system", ts: at(), text: "Set model to opus" });
+  }
+  for (let turn = 0; turn < turns; turn++) {
+    const entry = `${prefix}${turn}`;
+    const first = ev.length;
     ev.push({
       kind: "user",
       ts: at(),
-      text: turn === 0 ? s.first_prompt ?? s.title : `Turn ${turn + 1}: looks good, now handle the edge case where the cookie is missing.\nAlso keep the old header path working for a release.`,
+      text: turn === 0 && s.is_subagent
+        ? `<file name="/var/folders/3h/demo/T/pi-subagent-6esdB2/task.md">\nTask: You are a delegated subagent running from a fork of the parent session.\n\n## Task\n\nImplement **issues 1–4** from the plan:\n\n- CLI skeleton\n- rendered Markdown display\n- \`changed-on-disk\` detection\n</file>`
+        : turn === 0 && s.source === "codex"
+          ? `<file name="apps/server/scripts/import-project.ts" note="active file · selection">parseClaudeSessionFile</file>\n<file name="/var/folders/3h/demo/T/codex-clipboard-0940ce70.png" note="image"></file>\n<open_tabs>apps/server/scripts/import-project.ts\nAGENTS.md\nscripts/tsconfig.json</open_tabs>\n\n${s.first_prompt ?? s.title}`
+          : turn === 0 ? s.first_prompt ?? s.title : `Turn ${turn + 1}: looks good, now handle the edge case where the cookie is missing.\nAlso keep the old header path working for a release.`,
       images: turn === 1 ? [IMG] : undefined,
     });
     ev.push({ kind: "thinking", ts: at(), text: "The user wants the middleware to skip the health check.\n\nI should look at how sessions are wired before changing anything." });
@@ -110,6 +130,7 @@ function transcript(s: SessionRow): SessionEvent[] {
     });
     if (turn === 3) ev.push({ kind: "compaction", ts: at(), text: "## Summary\nWe moved the health check ahead of the session middleware and fixed the 401 path." });
     if (turn === 2) ev.push({ kind: "system", ts: at(), text: "Interrupted by user" });
+    for (const e of ev.slice(first)) e.entry = entry;
   }
   return ev;
 }
@@ -121,7 +142,12 @@ const handlers: Record<string, Handler> = {
     sessions
       .filter((s) => s.title.toLowerCase().includes(String(query).split(" ")[0].toLowerCase()))
       .map((s) => ({ path: s.path, snippet: `… the \u0001${query}\u0002 path in ${s.title} …`, rank: -1 })),
-  load_session: ({ path }) => transcript(sessions.find((s) => s.path === path)!),
+  load_session: ({ path, branch }) => {
+    const s = sessions.find((x) => x.path === path)!;
+    if (!branch) return transcript(s);
+    const b = s.branches.find((x) => x.leaf === branch)!;
+    return transcript({ ...s, first_prompt: b.label }, `${branch}e`, Math.max(1, b.user_turns), false);
+  },
   get_roots: () => [
     { path: `${HOME}/.claude/projects`, exists: true, sessions: 7 },
     { path: `${HOME}/.codex/sessions`, exists: true, sessions: 5 },

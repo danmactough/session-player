@@ -23,6 +23,16 @@ pub mod test_support {
         let (row, _) = crate::index::index_parsed(path, source, parsed).expect("row");
         (row, events)
     }
+
+    /// Renders one pi branch as "kind:text" strings.
+    pub fn load_branch(path: &str, leaf: &str) -> Vec<String> {
+        crate::parse::pi::parse_branch(std::path::Path::new(path), Some(leaf))
+            .expect("parse")
+            .events
+            .iter()
+            .map(|e| format!("{}:{}", serde_json::to_value(e.kind).unwrap().as_str().unwrap(), e.text))
+            .collect()
+    }
 }
 
 use std::path::{Path, PathBuf};
@@ -205,12 +215,16 @@ fn search(state: State<Shared>, query: String) -> Result<Vec<index::SearchHit>, 
 }
 
 #[tauri::command]
-async fn load_session(state: State<'_, Shared>, path: String) -> Result<Vec<Event>, String> {
+async fn load_session(state: State<'_, Shared>, path: String, branch: Option<String>) -> Result<Vec<Event>, String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let p = PathBuf::from(&path);
         let source = parse::detect(&p).ok_or_else(|| "Unrecognized session format".to_string())?;
-        let mut events = parse::parse_file(&p, source).map_err(err)?.events;
+        let parsed = match (&branch, source) {
+            (Some(leaf), model::Source::Pi) => parse::pi::parse_branch(&p, Some(leaf)),
+            _ => parse::parse_file(&p, source),
+        };
+        let mut events = parsed.map_err(err)?.events;
         let mut cache = state.images.lock().unwrap();
         let generation = cache.0 + 1;
         let mut images = Vec::with_capacity(events.len());

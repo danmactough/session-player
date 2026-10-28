@@ -23,6 +23,27 @@ export interface SessionRow {
   parent_id: string | null;
   size: number;
   imported_from: string | null;
+  branches: Branch[];
+  /** pi forks and branches: the last entry shared with the source, and how many prompts precede it. */
+  fork_entry: string | null;
+  fork_turn: number | null;
+  /** Set on rows the UI makes for pi branches: the real session file. */
+  branch_of?: string;
+  branch_leaf?: string;
+  /** The branch this branch split from; null means the session's active branch. */
+  branch_parent?: string | null;
+}
+
+/** A pi branch other than the active one. */
+export interface Branch {
+  leaf: string;
+  label: string;
+  started_at: number | null;
+  updated_at: number | null;
+  user_turns: number;
+  fork_turn: number;
+  fork_entry: string | null;
+  parent_leaf: string | null;
 }
 
 export type EventKind =
@@ -45,6 +66,7 @@ export interface SessionEvent {
   model?: string;
   images?: string[];
   sidechain?: boolean;
+  entry?: string;
 }
 
 export interface RootInfo {

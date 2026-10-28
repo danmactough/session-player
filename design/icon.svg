@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#25272c"/>
+      <stop offset="1" stop-color="#121315"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.10"/>
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#bg)"/>
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#sheen)"/>
+  <rect x="101" y="101" width="822" height="822" rx="185" fill="none" stroke="#ffffff" stroke-opacity="0.08" stroke-width="2"/>
+  <g stroke-linecap="round" stroke-width="44">
+    <circle cx="282" cy="352" r="34" fill="#e58a5c"/>
+    <line x1="372" y1="352" x2="742" y2="352" stroke="#e8e6e1"/>
+    <circle cx="282" cy="512" r="34" fill="#6fa9e8"/>
+    <line x1="372" y1="512" x2="642" y2="512" stroke="#e8e6e1" stroke-opacity="0.72"/>
+    <circle cx="282" cy="672" r="34" fill="#a98cf0"/>
+    <line x1="372" y1="672" x2="702" y2="672" stroke="#e8e6e1" stroke-opacity="0.45"/>
+  </g>
+</svg>

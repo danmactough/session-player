@@ -1,0 +1,6 @@
+{"type":"session","version":3,"id":"01a-pi","timestamp":"2026-01-03T10:00:00.000Z","cwd":"/work/pi"}
+{"type":"model_change","id":"a1","parentId":null,"timestamp":"2026-01-03T10:00:00.000Z","provider":"x","modelId":"glm-5"}
+{"type":"message","id":"a2","parentId":"a1","timestamp":"2026-01-03T10:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"<skill name=\"grill-me\" location=\"/s/SKILL.md\">\nlong skill body\n</skill>\n\nstress test my caching plan"}]}}
+{"type":"message","id":"a3","parentId":"a2","timestamp":"2026-01-03T10:00:02.000Z","message":{"role":"assistant","model":"glm-5","content":[{"type":"text","text":"abandoned branch"}],"usage":{"input":5,"output":1,"cacheRead":0}}}
+{"type":"message","id":"a4","parentId":"a2","timestamp":"2026-01-03T10:00:03.000Z","message":{"role":"assistant","model":"glm-5","content":[{"type":"text","text":"kept branch"}],"usage":{"input":7,"output":2,"cacheRead":3}}}
+{"type":"session_info","id":"a5","parentId":"a4","timestamp":"2026-01-03T10:00:04.000Z","name":"Caching plan review"}

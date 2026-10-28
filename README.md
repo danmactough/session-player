@@ -13,6 +13,10 @@ npm test           # Rust parser/indexer tests
 
 On first launch the app adds whichever of these exist: `~/.claude/projects`, `~/.codex/sessions`, `~/.codex/archived_sessions`, `~/.pi/agent/sessions`. Add or remove folders from **Sources** in the bottom-left corner. Any folder works: every `.jsonl` file below it is checked, and its format is detected from its first lines.
 
+## Releasing
+
+`./build-and-publish.sh` builds a signed, notarized `.dmg` and publishes it as GitHub release `v<version>`, using `version` from `src-tauri/tauri.conf.json` (bump it first). It refuses to run with uncommitted changes, off `main`, or when the tag already exists. `--no-publish` stops after building and verifying. One-time setup (Developer ID certificate, notarization password in the keychain) is described at the top of the script.
+
 ## Using it
 
 - **Rail**: toggle sources, pick a project. Project = the session's working directory; Claude Code worktrees (`<repo>/.claude/worktrees/*`) fold into their repo, and Codex worktrees (`~/.codex/worktrees/<hash>/<name>`) fold into the one project with the same folder name.

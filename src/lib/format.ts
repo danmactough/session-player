@@ -141,7 +141,7 @@ export function toolSummary(name: string | undefined, input: string): string {
     return undefined;
   };
   const n = (name || "").toLowerCase();
-  const path = pick("file_path", "path", "notebook_path", "filePath");
+  const path = pick("file_path", "path", "notebook_path", "filePath", "file");
   if (path && /read|write|edit|notebook|ls/.test(n)) return tildify(path);
   const cmd = pick("command", "cmd");
   if (cmd) return firstLine(cmd);

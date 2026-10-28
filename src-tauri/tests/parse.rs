@@ -65,3 +65,21 @@ fn pi_session() {
     // Tokens include every model call, abandoned branches too.
     assert_eq!(row.output_tokens, 3);
 }
+
+#[test]
+fn codex_imported_tool_markers_become_tool_events() {
+    let (row, events) = index_one(&fixture("codex-imported.jsonl"));
+    assert_eq!(row.tool_calls, 2);
+    assert_eq!(
+        events,
+        vec![
+            "user:debug the shutdown loop in this plugin",
+            "assistant:I'll investigate the plugin.",
+            "tool_call:{\n  \"command\": \"ls -la hooks/ &&\\n  cat plugin.json\",\n  \"description\": \"List hooks\"\n}",
+            "tool_result:stop.sh\nhooks.json",
+            "assistant:Now the hook.",
+            "tool_call:{\n  \"file\": \"hooks/stop.sh\"\n}",
+            "tool_result!:File not found",
+        ]
+    );
+}

@@ -120,6 +120,12 @@ fn handle_item(p: &mut Parsed, item: &Value, ts: Option<i64>, model: Option<&str
                 };
                 e.images = images;
                 e
+            } else if trimmed.contains("[external_agent_tool_") {
+                for mut e in imported_events(trimmed, ts, &p.events) {
+                    e.model = model.map(str::to_string);
+                    p.events.push(e);
+                }
+                return;
             } else {
                 Event::new(EventKind::Assistant, ts, trimmed)
             }
@@ -175,6 +181,103 @@ fn handle_item(p: &mut Parsed, item: &Value, ts: Option<i64>, model: Option<&str
         e.model = model.map(str::to_string);
     }
     p.events.push(e);
+}
+
+/// Sessions Codex imported from other agents flatten every tool call and
+/// result into assistant text:
+///
+///   [external_agent_tool_call: Bash]
+///   description: List hook files
+///   command: ls -la hooks/
+///   [/external_agent_tool_call]
+///   [external_agent_tool_result: error]
+///   ...output...
+///   [/external_agent_tool_result]
+///
+/// This splits such text back into tool calls (with the `key: value` lines
+/// turned into a JSON object) and results. Results are paired with the most
+/// recent call, since the markers carry no ids.
+fn imported_events(text: &str, ts: Option<i64>, prior: &[Event]) -> Vec<Event> {
+    const CALL: &str = "[external_agent_tool_call:";
+    const CALL_END: &str = "[/external_agent_tool_call]";
+    const RESULT: &str = "[external_agent_tool_result";
+    const RESULT_END: &str = "[/external_agent_tool_result]";
+
+    let mut out: Vec<Event> = Vec::new();
+    let mut calls = prior
+        .iter()
+        .filter(|e| e.kind == EventKind::ToolCall && e.call_id.as_deref().is_some_and(|c| c.starts_with("ext-")))
+        .count();
+    let mut rest = text;
+    while !rest.is_empty() {
+        let next_call = rest.find(CALL);
+        let next_result = rest.find(RESULT);
+        let start = match (next_call, next_result) {
+            (Some(a), Some(b)) => a.min(b),
+            (Some(a), None) | (None, Some(a)) => a,
+            (None, None) => rest.len(),
+        };
+        let before = rest[..start].trim();
+        if !before.is_empty() {
+            out.push(Event::new(EventKind::Assistant, ts, before));
+        }
+        rest = &rest[start..];
+        if rest.is_empty() {
+            break;
+        }
+        let is_call = rest.starts_with(CALL);
+        let (end_marker, open) = if is_call { (CALL_END, CALL) } else { (RESULT_END, RESULT) };
+        let header_end = rest.find(']').unwrap_or(rest.len() - 1);
+        let label = rest[open.len()..header_end].trim_start_matches(':').trim();
+        let body_end = rest.find(end_marker).unwrap_or(rest.len());
+        let body = rest[(header_end + 1).min(body_end)..body_end].trim_matches('\n');
+        if is_call {
+            calls += 1;
+            let mut e = Event::new(EventKind::ToolCall, ts, key_values_json(body));
+            e.tool_name = Some(label.to_string());
+            e.call_id = Some(format!("ext-{calls}"));
+            out.push(e);
+        } else {
+            let mut e = Event::new(EventKind::ToolResult, ts, body);
+            e.is_error = label == "error";
+            e.call_id = Some(format!("ext-{calls}"));
+            out.push(e);
+        }
+        rest = rest.get(body_end + end_marker.len()..).unwrap_or("");
+    }
+    out
+}
+
+/// "key: value" lines (values may continue onto following lines) -> pretty JSON.
+fn key_values_json(body: &str) -> String {
+    let mut map = serde_json::Map::new();
+    let mut current: Option<(String, String)> = None;
+    for line in body.lines() {
+        let key = line
+            .split_once(": ")
+            .map(|(k, v)| (k, v))
+            .or_else(|| line.strip_suffix(':').map(|k| (k, "")))
+            .filter(|(k, _)| !k.is_empty() && k.len() <= 30 && k.chars().all(|c| c.is_ascii_lowercase() || c == '_'));
+        match key {
+            Some((k, v)) => {
+                if let Some((pk, pv)) = current.take() {
+                    map.insert(pk, Value::String(pv));
+                }
+                current = Some((k.to_string(), v.to_string()));
+            }
+            None => match current.as_mut() {
+                Some((_, v)) => {
+                    v.push('\n');
+                    v.push_str(line);
+                }
+                None => return body.to_string(),
+            },
+        }
+    }
+    if let Some((k, v)) = current {
+        map.insert(k, Value::String(v));
+    }
+    serde_json::to_string_pretty(&Value::Object(map)).unwrap_or_else(|_| body.to_string())
 }
 
 fn exit_code_from_text(text: &str) -> Option<i64> {

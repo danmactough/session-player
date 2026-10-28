@@ -170,7 +170,7 @@ fn handle_item(p: &mut Parsed, item: &Value, ts: Option<i64>, model: Option<&str
                 e.is_error = code.is_some_and(|c| c != 0);
             } else {
                 e.text = content_text(output, &mut e.images);
-                e.is_error = exit_code_from_text(&e.text).is_some_and(|c| c != 0);
+                e.is_error = output_failed(&e.text);
             }
             e.call_id = str_of(item, "call_id").map(str::to_string);
             e
@@ -280,14 +280,32 @@ fn key_values_json(body: &str) -> String {
     serde_json::to_string_pretty(&Value::Object(map)).unwrap_or_else(|_| body.to_string())
 }
 
-fn exit_code_from_text(text: &str) -> Option<i64> {
+/// Codex tool output carries no error flag. A call failed when the output
+/// reports a non-zero exit code ("Process exited with code 2", "Exit code: 1")
+/// or opens with "<tool> failed…" ("exec_command failed for …",
+/// "apply_patch verification failed: …").
+fn output_failed(text: &str) -> bool {
     let head: String = text.chars().take(400).collect();
-    let idx = head.find("exited with code ")?;
-    head[idx + 17..]
-        .split(|c: char| !c.is_ascii_digit() && c != '-')
-        .next()?
-        .parse()
-        .ok()
+    let code = ["exited with code ", "Exit code: "].iter().find_map(|marker| {
+        let idx = head.find(marker)?;
+        head[idx + marker.len()..]
+            .split(|c: char| !c.is_ascii_digit() && c != '-')
+            .next()?
+            .parse::<i64>()
+            .ok()
+    });
+    if let Some(c) = code {
+        return c != 0;
+    }
+    let first = head.lines().next().unwrap_or("");
+    // The prefix must look like a tool name (exec_command, write_stdin), so
+    // ordinary prose that mentions a failure does not count.
+    first.find(" failed").is_some_and(|i| {
+        let words: Vec<&str> = first[..i].split(' ').collect();
+        words.len() <= 2
+            && words[0].contains('_')
+            && words.iter().all(|w| w.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+    })
 }
 
 fn find_key(v: &Value, key: &str) -> Option<String> {
@@ -299,5 +317,21 @@ fn find_key(v: &Value, key: &str) -> Option<String> {
             map.values().find_map(|x| find_key(x, key))
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::output_failed;
+
+    #[test]
+    fn detects_failed_tool_output() {
+        assert!(output_failed("Command: ls\nProcess exited with code 2\nOutput:\nnope"));
+        assert!(!output_failed("Command: ls\nProcess exited with code 0\nOutput:\nok"));
+        assert!(output_failed("Exit code: 1\nWall time: 0.2s"));
+        assert!(output_failed("exec_command failed for `ls`: SandboxDenied { message: \"no\" }"));
+        assert!(output_failed("apply_patch verification failed: Failed to find expected lines"));
+        assert!(!output_failed("Success. Updated the following files:\nM README.md"));
+        assert!(!output_failed("the test failed earlier but passes now"));
     }
 }

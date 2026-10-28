@@ -20,6 +20,7 @@ fn claude_session() {
     // Usage repeated across content-block lines of one message counts once.
     assert_eq!(row.output_tokens, 5);
     assert_eq!(row.first_prompt.as_deref(), Some("Fix the flaky login test please"));
+    assert_eq!(row.error_count, 1);
     assert_eq!(events, vec!["command:/model haiku", "user:Fix the flaky login test please", "thinking:hmm", "tool_call:{\n  \"command\": \"npm test\"\n}", "tool_result!:1 failing"]);
 }
 
@@ -138,6 +139,7 @@ fn pi_fork_file_starts_after_the_copied_history() {
 fn codex_imported_tool_markers_become_tool_events() {
     let (row, events) = index_one(&fixture("codex-imported.jsonl"));
     assert_eq!(row.tool_calls, 2);
+    assert_eq!(row.error_count, 1);
     assert_eq!(
         events,
         vec![

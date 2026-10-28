@@ -164,6 +164,11 @@ const Row = memo(function Row({
           {s.user_turns} {s.user_turns === 1 ? "prompt" : "prompts"}
         </span>
         {s.output_tokens > 0 && <span>{compact(s.output_tokens)} out</span>}
+        {s.error_count > 0 && (
+          <span className="err-count">
+            {s.error_count} {s.error_count === 1 ? "error" : "errors"}
+          </span>
+        )}
         {!depth && s.is_subagent && <span className="tag">sub</span>}
       </div>
       {row.childCount > 0 && (

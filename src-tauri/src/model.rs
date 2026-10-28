@@ -180,4 +180,6 @@ pub struct SessionRow {
     pub branches: Vec<Branch>,
     pub fork_entry: Option<String>,
     pub fork_turn: Option<i64>,
+    /// Failed tool calls plus model/API errors.
+    pub error_count: i64,
 }

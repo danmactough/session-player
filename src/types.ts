@@ -27,6 +27,8 @@ export interface SessionRow {
   /** pi forks and branches: the last entry shared with the source, and how many prompts precede it. */
   fork_entry: string | null;
   fork_turn: number | null;
+  /** Failed tool calls plus model/API errors. */
+  error_count: number;
   /** Set on rows the UI makes for pi branches: the real session file. */
   branch_of?: string;
   branch_leaf?: string;

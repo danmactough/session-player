@@ -74,6 +74,8 @@ const sessions: SessionRow[] = TITLES.map(([source, title_source, title], i) => 
         : [],
     fork_entry: i === 9 ? "e2" : null,
     fork_turn: i === 9 ? 3 : null,
+    // Every demo transcript has one failed Bash call per prompt.
+    error_count: turns + 1,
   };
 });
 
@@ -132,6 +134,8 @@ function transcript(s: SessionRow, prefix = "e", turns = s.user_turns, setup = t
     if (turn === 2) ev.push({ kind: "system", ts: at(), text: "Interrupted by user" });
     for (const e of ev.slice(first)) e.entry = entry;
   }
+  // A one-line error notice at the very end, like pi's aborted-operation message.
+  ev.push({ kind: "system", ts: at(), text: "This operation was aborted", is_error: true });
   return ev;
 }
 

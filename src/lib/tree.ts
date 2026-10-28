@@ -31,6 +31,8 @@ export function branchRows(s: SessionRow): SessionRow[] {
     input_tokens: 0,
     output_tokens: 0,
     cache_read_tokens: 0,
+    // Counted for the whole file; a branch has no count of its own.
+    error_count: 0,
     branches: [],
     fork_entry: b.fork_entry,
     fork_turn: b.fork_turn,

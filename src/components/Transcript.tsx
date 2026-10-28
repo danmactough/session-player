@@ -134,6 +134,32 @@ export function Transcript({ session, parent, children, highlight, onOpen, focus
 
   // Arriving from a child's "split from" link: show the split point.
   const focusIndex = focus ? blocks.findIndex((b) => b.type === "fork_to" && b.child.path === focus) : -1;
+
+  // Error navigator: blocks holding a failed tool call or an error notice.
+  const errorBlocks = useMemo(() => {
+    const out: number[] = [];
+    blocks.forEach((b, i) => {
+      const failed =
+        b.type === "tools"
+          ? b.steps.some((s) => s.result?.is_error)
+          : b.type === "command"
+            ? !!b.output?.is_error
+            : b.type === "system" || b.type === "orphan_result"
+              ? !!b.ev.is_error
+              : false;
+      if (failed) out.push(i);
+    });
+    return out;
+  }, [blocks]);
+  const [errIdx, setErrIdx] = useState<number | null>(null);
+  const errorTarget = errIdx === null ? -1 : (errorBlocks[errIdx] ?? -1);
+  const stepError = (dir: 1 | -1) => {
+    if (!errorBlocks.length) return;
+    const n = errorBlocks.length;
+    const next = errIdx === null ? (dir === 1 ? 0 : n - 1) : (errIdx + dir + n) % n;
+    setErrIdx(next);
+    virt.scrollToIndex(errorBlocks[next], { align: "center" });
+  };
   useEffect(() => {
     if (focusIndex >= 0) virt.scrollToIndex(focusIndex, { align: "center" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -194,6 +220,12 @@ export function Transcript({ session, parent, children, highlight, onOpen, focus
             <dt>Turns</dt>
             <dd>
               {session.user_turns} <span className="dim">/ {session.tool_calls} tools</span>
+              {session.error_count > 0 && (
+                <span className="err-count">
+                  {" "}
+                  · {session.error_count} {session.error_count === 1 ? "error" : "errors"}
+                </span>
+              )}
             </dd>
           </div>
           {/* Token totals belong to the whole file; a branch has none of its own. */}
@@ -263,6 +295,21 @@ export function Transcript({ session, parent, children, highlight, onOpen, focus
           <input type="checkbox" checked={showThinking} onChange={(e) => setShowThinking(e.target.checked)} />
           Reasoning
         </label>
+        {errorBlocks.length > 0 && (
+          <div className="err-nav" title="Jump between failed tool calls and errors">
+            <span className="err-dot" />
+            <span className="err-label">
+              {errIdx === null ? errorBlocks.length : `${errIdx + 1}/${errorBlocks.length}`}{" "}
+              {errorBlocks.length === 1 ? "error" : "errors"}
+            </span>
+            <button aria-label="Previous error" onClick={() => stepError(-1)}>
+              ↑
+            </button>
+            <button aria-label="Next error" onClick={() => stepError(1)}>
+              ↓
+            </button>
+          </div>
+        )}
         <div className={`t-find ${findOpen || find ? "open" : ""}`}>
           <input
             ref={findRef}
@@ -306,10 +353,10 @@ export function Transcript({ session, parent, children, highlight, onOpen, focus
                   key={item.key}
                   data-index={item.index}
                   ref={virt.measureElement}
-                  className={`row ${matchSet.has(item.index) ? "hit" : ""} ${isCurrent ? "hit-current" : ""} ${item.index === focusIndex ? "focused" : ""}`}
+                  className={`row ${matchSet.has(item.index) ? "hit" : ""} ${isCurrent ? "hit-current" : ""} ${item.index === focusIndex || (item.index === errorTarget && b.type !== "tools") ? "focused" : ""}`}
                   style={{ transform: `translateY(${item.start}px)` }}
                 >
-                  <BlockView block={b} onOpen={onOpen} />
+                  <BlockView block={b} onOpen={onOpen} openErrors={item.index === errorTarget} />
                 </div>
               );
             })}
@@ -347,9 +394,12 @@ const afterPrompt = (n: number | null | undefined) => (n ? `after prompt ${n}` :
 const BlockView = memo(function BlockView({
   block: b,
   onOpen,
+  openErrors,
 }: {
   block: Block;
   onOpen: (path: string, focus?: string) => void;
+  /** Expand failed tool calls (set while the error navigator points here). */
+  openErrors?: boolean;
 }) {
   switch (b.type) {
     case "fork_from":
@@ -397,7 +447,7 @@ const BlockView = memo(function BlockView({
     case "thinking":
       return <Thinking ev={b.ev} />;
     case "tools":
-      return <Tools steps={b.steps} />;
+      return <Tools steps={b.steps} openErrors={openErrors} />;
     case "command":
       return (
         <section className="b-command">
@@ -406,7 +456,15 @@ const BlockView = memo(function BlockView({
         </section>
       );
     case "system":
-      return <div className={`b-system ${b.ev.is_error ? "err" : ""}`}>{b.ev.text}</div>;
+      return b.ev.is_error ? (
+        // Laid out like a failed tool call: guide line, red dot, message.
+        <div className="b-system err">
+          <span className="dot" />
+          <span>{b.ev.text}</span>
+        </div>
+      ) : (
+        <div className="b-system">{b.ev.text}</div>
+      );
     case "compaction":
       return <Compaction ev={b.ev} />;
     case "orphan_result":
@@ -447,7 +505,7 @@ function Compaction({ ev }: { ev: SessionEvent }) {
   );
 }
 
-function Tools({ steps }: { steps: ToolStep[] }) {
+function Tools({ steps, openErrors }: { steps: ToolStep[]; openErrors?: boolean }) {
   const errors = steps.filter((s) => s.result?.is_error).length;
   return (
     <section className="b-tools">
@@ -457,19 +515,23 @@ function Tools({ steps }: { steps: ToolStep[] }) {
         </div>
       )}
       {steps.map((s, i) => (
-        <ToolRow key={s.call.call_id ?? i} step={s} />
+        <ToolRow key={s.call.call_id ?? i} step={s} forceOpen={openErrors && s.result?.is_error} />
       ))}
     </section>
   );
 }
 
-function ToolRow({ step }: { step: ToolStep }) {
+function ToolRow({ step, forceOpen }: { step: ToolStep; forceOpen?: boolean }) {
   const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (forceOpen) setOpen(true);
+  }, [forceOpen]);
   const { call, result } = step;
   const summary = useMemo(() => toolSummary(call.tool_name, call.text), [call]);
   const status = !result ? "pending" : result.is_error ? "error" : "ok";
   return (
-    <div className={`tool ${open ? "open" : ""} ${status}`}>
+    // In a group of tool calls, the error navigator marks only the failed call.
+    <div className={`tool ${open ? "open" : ""} ${status} ${forceOpen ? "focused-step" : ""}`}>
       <button className="tool-head" onClick={() => setOpen((o) => !o)}>
         <span className="dot" />
         <span className="tool-name">{toolLabel(call.tool_name)}</span>

@@ -24,7 +24,7 @@
   --select-ink: #f4f4f2;
   --accent: #2f6b4f;
   --mark: rgba(214, 178, 52, 0.38);
-  --hit: rgba(214, 178, 52, 0.16);
+  --warn: #d4a017;
 
   --claude: #c8643b;
   --codex: #2f72b8;
@@ -56,7 +56,7 @@
     --select-ink: #121315;
     --accent: #8fd1a8;
     --mark: rgba(230, 196, 80, 0.32);
-    --hit: rgba(230, 196, 80, 0.08);
+    --warn: #e6c450;
 
     --claude: #e58a5c;
     --codex: #6fa9e8;
@@ -803,6 +803,39 @@ mark {
   padding: 8px 40px;
   border-bottom: 1px solid var(--line-2);
 }
+.err-nav {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: 11.5px var(--mono);
+  color: var(--err);
+}
+.err-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--err);
+}
+.err-nav button {
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  border: 1px solid var(--line);
+  text-align: center;
+  color: var(--ink-2);
+  font-size: 12px;
+}
+.err-nav button:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+.err-nav + .t-find {
+  margin-left: 12px;
+}
+.err-count {
+  color: var(--err);
+}
 .t-find {
   margin-left: auto;
   position: relative;
@@ -864,12 +897,43 @@ mark {
 .row > * {
   max-width: 860px;
 }
-.row.hit > * {
-  box-shadow: -14px 0 0 -11px var(--mark);
+/* Highlights for find matches (faint), the current match, and the target of
+   the error navigator or a fork link. Blocks that already have a 1px guide
+   line on the left (tool groups, error notices) recolor that line; other
+   blocks get a 1px line of their own just outside their left edge. No
+   background: it would box the block in without matching padding. */
+.row.hit > *,
+.row.hit-current > *,
+.row.focused > * {
+  position: relative;
 }
-.row.hit-current > * {
-  background: var(--hit);
-  border-radius: 8px;
+.row.hit > *::before,
+.row.hit-current > *::before,
+.row.focused > *::before {
+  content: "";
+  position: absolute;
+  left: -12px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--mark);
+}
+.row.hit-current > *::before,
+.row.focused > *::before {
+  background: var(--warn);
+}
+.row > .b-tools::before,
+.row > .b-system.err::before {
+  display: none;
+}
+.row.hit > .b-tools,
+.row.hit > .b-system.err {
+  border-left-color: var(--mark);
+}
+.row.hit-current > .b-tools,
+.row.hit-current > .b-system.err,
+.row.focused > .b-system.err {
+  border-left-color: var(--warn);
 }
 
 .t-outline {
@@ -1318,9 +1382,19 @@ mark {
   color: var(--ink);
   font-weight: 500;
 }
-.row.focused > * {
-  background: var(--hit);
-  border-color: var(--mark);
+/* Recolors the tool group's guide line beside just the failed call: the call
+   sits 12px of padding plus the 1px line in from the group's edge. */
+.tool.focused-step {
+  position: relative;
+}
+.tool.focused-step::before {
+  content: "";
+  position: absolute;
+  left: -13px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--warn);
 }
 .b-system {
   margin: 8px 0;
@@ -1329,10 +1403,25 @@ mark {
   white-space: pre-wrap;
   word-break: break-word;
   max-height: 220px;
-  overflow: hidden;
+  /* Cut off long output at the bottom, but leave room on the left for the
+     highlight bar (overflow: hidden would clip it). */
+  clip-path: inset(0 0 0 -16px);
 }
 .b-system.err {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  padding: 3px 0 3px 12px;
+  border-left: 1px solid var(--line);
   color: var(--err);
+}
+.b-system.err .dot {
+  width: 5px;
+  height: 5px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--err);
+  transform: translateY(-1px);
 }
 .b-compaction {
   margin: 22px 0;

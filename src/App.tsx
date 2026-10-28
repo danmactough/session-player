@@ -22,9 +22,10 @@ interface Prefs {
   sort: SortKey;
   sources: Source[];
   showSub: boolean;
+  errorsOnly: boolean;
   selected: string | null;
 }
-const DEFAULT_PREFS: Prefs = { project: null, sort: "recent", sources: ALL_SOURCES, showSub: false, selected: null };
+const DEFAULT_PREFS: Prefs = { project: null, sort: "recent", sources: ALL_SOURCES, showSub: false, errorsOnly: false, selected: null };
 
 export default function App() {
   const [sessions, setSessions] = useState<SessionRow[] | null>(null);
@@ -111,8 +112,11 @@ export default function App() {
   const p = prefs ?? DEFAULT_PREFS;
 
   const base = useMemo(
-    () => (sessions ?? []).filter((s) => p.sources.includes(s.source) && (p.showSub || !s.is_subagent)),
-    [sessions, p.sources, p.showSub],
+    () =>
+      (sessions ?? []).filter(
+        (s) => p.sources.includes(s.source) && (p.showSub || !s.is_subagent) && (!p.errorsOnly || s.error_count > 0),
+      ),
+    [sessions, p.sources, p.showSub, p.errorsOnly],
   );
 
   const projects = useMemo(() => {
@@ -442,6 +446,10 @@ export default function App() {
               <label className="toggle">
                 <input type="checkbox" checked={p.showSub} onChange={(e) => update({ showSub: e.target.checked })} />
                 Subagents
+              </label>
+              <label className="toggle err-toggle">
+                <input type="checkbox" checked={p.errorsOnly} onChange={(e) => update({ errorsOnly: e.target.checked })} />
+                With errors
               </label>
             </div>
           )}

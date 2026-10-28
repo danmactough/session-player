@@ -28,6 +28,9 @@ export default function App() {
   const [sessions, setSessions] = useState<SessionRow[] | null>(null);
   const [prefs, setPrefs] = useState<Prefs | null>(null);
   const [query, setQuery] = useState("");
+  // Like Slack: a search started inside a project is scoped to it until the
+  // user widens it to all projects.
+  const [searchAll, setSearchAll] = useState(false);
   const [hits, setHits] = useState<Map<string, SearchHit> | null>(null);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [stats, setStats] = useState<IndexStats | null>(null);
@@ -124,16 +127,40 @@ export default function App() {
     return f ? projects.filter((x) => x.project.toLowerCase().includes(f)) : projects;
   }, [projects, projectFilter]);
 
+  const searching = query.trim() !== "";
+  const scopeProject = searching && searchAll ? null : p.project;
+
+  useEffect(() => {
+    if (!searching) setSearchAll(false);
+  }, [searching]);
+  useEffect(() => setSearchAll(false), [p.project]);
+
+  const matchesQuery = useMemo(() => {
+    const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    return (s: SessionRow) => {
+      if (hits?.has(s.path)) return true;
+      const hay = `${s.title} ${s.first_prompt ?? ""} ${s.cwd ?? ""} ${s.git_branch ?? ""} ${s.native_id}`.toLowerCase();
+      return terms.every((t) => hay.includes(t));
+    };
+  }, [query, hits]);
+
+  const matchCounts = useMemo(() => {
+    if (!searching) return { project: 0, all: 0 };
+    const all = base.filter(matchesQuery);
+    return { all: all.length, project: p.project ? all.filter((s) => s.project === p.project).length : all.length };
+  }, [base, matchesQuery, searching, p.project]);
+
+  const clearSearch = useCallback(() => {
+    setQuery("");
+    searchRef.current?.focus();
+  }, []);
+
   const list = useMemo(() => {
-    let out = p.project ? base.filter((s) => s.project === p.project) : base;
+    let out = scopeProject ? base.filter((s) => s.project === scopeProject) : base;
     const q = query.trim().toLowerCase();
     if (q) {
       const terms = q.split(/\s+/);
-      out = out.filter((s) => {
-        if (hits?.has(s.path)) return true;
-        const hay = `${s.title} ${s.first_prompt ?? ""} ${s.cwd ?? ""} ${s.git_branch ?? ""} ${s.native_id}`.toLowerCase();
-        return terms.every((t) => hay.includes(t));
-      });
+      out = out.filter(matchesQuery);
       const rank = (s: SessionRow) => {
         const title = s.title.toLowerCase();
         const inTitle = terms.every((t) => title.includes(t)) ? -1000 : 0;
@@ -157,7 +184,7 @@ export default function App() {
         break;
     }
     return sorted;
-  }, [base, p.project, p.sort, query, hits]);
+  }, [base, scopeProject, p.sort, query, hits, matchesQuery]);
 
   const byPath = useMemo(() => new Map((sessions ?? []).map((s) => [s.path, s])), [sessions]);
   const selected = p.selected ? byPath.get(p.selected) : undefined;
@@ -208,7 +235,6 @@ export default function App() {
     return c;
   }, [sessions, p.showSub]);
 
-  const totalForProjectScope = p.project ? projects.find((x) => x.project === p.project)?.count ?? 0 : base.length;
   const empty = sessions !== null && sessions.length === 0;
 
   return (
@@ -219,20 +245,26 @@ export default function App() {
             session<span className="brand-dot">·</span>player
           </span>
         </div>
-        <div className="search">
+        <div className="search" onClick={() => searchRef.current?.focus()}>
           <input
             ref={searchRef}
-            placeholder="Search everything"
+            placeholder={p.project ? `Search ${basename(p.project)}` : "Search all projects"}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Escape") {
-                setQuery("");
-                (e.target as HTMLInputElement).blur();
+                if (query) setQuery("");
+                else (e.target as HTMLInputElement).blur();
               }
             }}
           />
-          <kbd>⌘K</kbd>
+          {query ? (
+            <button className="search-clear" aria-label="Clear search" title="Clear search (Esc)" onClick={clearSearch}>
+              ×
+            </button>
+          ) : (
+            <kbd>⌘K</kbd>
+          )}
         </div>
 
         <div className="sources">
@@ -306,28 +338,48 @@ export default function App() {
       <section className="middle">
         <div className="mid-head" data-tauri-drag-region>
           <div className="mid-title" data-tauri-drag-region>
-            <h2 data-tauri-drag-region>{p.project ? basename(p.project) : query ? "Results" : "All sessions"}</h2>
+            <h2 data-tauri-drag-region>
+              {searching ? "Results" : p.project ? basename(p.project) : "All sessions"}
+            </h2>
             <span className="mid-sub" data-tauri-drag-region>
-              {query
-                ? `${list.length} of ${totalForProjectScope} match`
+              {searching
+                ? `${list.length} ${list.length === 1 ? "session matches" : "sessions match"} “${query.trim()}”`
                 : p.project
                   ? tildify(p.project)
                   : `${list.length} sessions across ${projects.length} projects`}
             </span>
           </div>
-          <div className="mid-controls">
-            <select value={p.sort} onChange={(e) => update({ sort: e.target.value as SortKey })} disabled={!!query}>
-              {SORTS.map((s) => (
-                <option key={s.key} value={s.key}>
-                  {s.label}
-                </option>
-              ))}
-            </select>
-            <label className="toggle">
-              <input type="checkbox" checked={p.showSub} onChange={(e) => update({ showSub: e.target.checked })} />
-              Subagents
-            </label>
-          </div>
+          {searching ? (
+            <div className="mid-controls">
+              {p.project && (
+                <div className="segmented" role="radiogroup" aria-label="Search scope">
+                  <button role="radio" aria-checked={!searchAll} className={!searchAll ? "on" : ""} onClick={() => setSearchAll(false)}>
+                    {basename(p.project)} <span className="n">{matchCounts.project}</span>
+                  </button>
+                  <button role="radio" aria-checked={searchAll} className={searchAll ? "on" : ""} onClick={() => setSearchAll(true)}>
+                    All projects <span className="n">{matchCounts.all}</span>
+                  </button>
+                </div>
+              )}
+              <button className="clear-link" onClick={clearSearch}>
+                Clear search
+              </button>
+            </div>
+          ) : (
+            <div className="mid-controls">
+              <select value={p.sort} onChange={(e) => update({ sort: e.target.value as SortKey })}>
+                {SORTS.map((s) => (
+                  <option key={s.key} value={s.key}>
+                    {s.label}
+                  </option>
+                ))}
+              </select>
+              <label className="toggle">
+                <input type="checkbox" checked={p.showSub} onChange={(e) => update({ showSub: e.target.checked })} />
+                Subagents
+              </label>
+            </div>
+          )}
         </div>
         {sessions === null ? (
           <div className="empty pulse">Loading index…</div>
@@ -340,8 +392,21 @@ export default function App() {
                   Add a session folder
                 </button>
               </>
-            ) : query ? (
-              `Nothing matches “${query}”.`
+            ) : searching ? (
+              <>
+                <p>
+                  Nothing {scopeProject ? `in ${basename(scopeProject)} ` : ""}matches “{query.trim()}”.
+                </p>
+                {scopeProject && matchCounts.all > 0 ? (
+                  <button className="ghost" onClick={() => setSearchAll(true)}>
+                    Show {matchCounts.all} {matchCounts.all === 1 ? "match" : "matches"} in all projects
+                  </button>
+                ) : (
+                  <button className="ghost" onClick={clearSearch}>
+                    Clear search
+                  </button>
+                )}
+              </>
             ) : (
               "No sessions in this view."
             )}
@@ -352,7 +417,7 @@ export default function App() {
             selected={p.selected}
             onSelect={select}
             hits={hits}
-            showProject={!p.project}
+            showProject={!scopeProject}
             groupByDay={!query && (p.sort === "recent" || p.sort === "oldest")}
           />
         )}

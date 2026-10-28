@@ -16,7 +16,7 @@ On first launch the app adds whichever of these exist: `~/.claude/projects`, `~/
 ## Using it
 
 - **Rail**: toggle sources, pick a project. Project = the session's working directory; Claude Code worktrees (`<repo>/.claude/worktrees/*`) fold into their repo, and Codex worktrees (`~/.codex/worktrees/<hash>/<name>`) fold into the one project with the same folder name.
-- **Search** (`⌘K` or `/`): matches titles and paths instantly, plus full-text matches over prompts, replies and tool inputs (SQLite FTS5) with highlighted snippets. Opening a result carries the query into the transcript's find bar.
+- **Search** (`⌘K` or `/`): matches titles and paths instantly, plus full-text matches over prompts, replies and tool inputs (SQLite FTS5) with highlighted snippets. With a project selected, search starts scoped to it; switch between that project and **All projects** above the results. Clear with the × in the box, **Clear search**, or Esc. Opening a result carries the query into the transcript's find bar.
 - **List**: `j`/`k` or arrow keys move through sessions. Sort by recent, oldest, most prompts or most tokens. Subagent runs are hidden unless **Subagents** is on.
 - **Transcript**: prompts, replies (Markdown), collapsed reasoning, and tool calls grouped into compact rows; click a row for its input and output. Edits render as diffs, `apply_patch` as a colored patch. `⌘F` finds within the session, Enter/Shift-Enter steps through matches. At ≥1500px wide a prompt outline appears on the right.
 - **Actions**: copy a resume command (`claude --resume`, `codex resume`, `pi --session`), reveal the file in Finder, jump between a subagent and its parent.

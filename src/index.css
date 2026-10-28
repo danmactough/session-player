@@ -150,31 +150,54 @@ mark {
 }
 .search {
   margin: 10px 12px 10px;
-  position: relative;
-}
-.search input {
-  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   height: 32px;
-  padding: 0 40px 0 11px;
+  padding: 0 6px 0 8px;
   border-radius: 7px;
   border: 1px solid var(--line);
   background: var(--panel);
-  outline: none;
+  cursor: text;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
-.search input:focus {
+.search:focus-within {
   border-color: var(--ink-2);
   box-shadow: 0 0 0 3px var(--hover);
+}
+.search input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  outline: none;
 }
 .search input::placeholder {
   color: var(--faint);
 }
 .search kbd {
-  position: absolute;
-  right: 8px;
-  top: 7px;
   font: 10.5px var(--mono);
   color: var(--faint);
+  flex: none;
+}
+.search-clear {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  border-radius: 4px;
+  text-align: center;
+  line-height: 18px;
+  font-size: 14px;
+}
+.search-clear {
+  color: var(--muted);
+  background: var(--hover);
+}
+.search-clear:hover {
+  color: var(--ink);
+  background: var(--line-2);
 }
 .sources {
   display: flex;
@@ -432,6 +455,47 @@ mark {
 }
 .mid-controls select:disabled {
   opacity: 0.4;
+}
+.segmented {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 2px;
+  gap: 2px;
+  min-width: 0;
+}
+.segmented button {
+  padding: 2px 9px;
+  border-radius: 5px;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 150px;
+}
+.segmented button:hover {
+  color: var(--ink);
+}
+.segmented button.on {
+  background: var(--select);
+  color: var(--select-ink);
+}
+.segmented .n {
+  font: 10.5px var(--mono);
+  opacity: 0.6;
+  margin-left: 3px;
+}
+.clear-link {
+  font-size: 12px;
+  color: var(--muted);
+  text-decoration: underline;
+  text-decoration-color: var(--line);
+  text-underline-offset: 3px;
+  margin-left: auto;
+}
+.clear-link:hover {
+  color: var(--ink);
 }
 .list-scroll {
   flex: 1;

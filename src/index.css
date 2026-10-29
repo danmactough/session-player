@@ -1766,3 +1766,75 @@ mark {
 ::-webkit-scrollbar-track {
   background: transparent;
 }
+
+/* ---------- keyboard shortcuts ---------- */
+.help-button {
+  width: 26px;
+  padding: 5px 0;
+  text-align: center;
+  font: 12px var(--mono);
+}
+.sheet.shortcuts {
+  width: 520px;
+}
+.shortcut-groups {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px 28px;
+  margin-top: 18px;
+}
+.shortcut-groups h3 {
+  margin: 0 0 6px;
+  font: 10.5px var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+.shortcut-groups dl {
+  margin: 0;
+}
+.shortcut {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 5px 0;
+  border-top: 1px solid var(--line-2);
+  font-size: 12.5px;
+}
+.shortcut dt {
+  flex: none;
+  min-width: 92px;
+  display: flex;
+  gap: 6px;
+}
+.shortcut dd {
+  margin: 0;
+  color: var(--ink-2);
+}
+.shortcut .combo {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+}
+.shortcut .or {
+  margin-right: 3px;
+  font-size: 11px;
+  color: var(--faint);
+}
+.shortcut kbd {
+  display: inline-block;
+  min-width: 20px;
+  padding: 1px 5px;
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--raised);
+  font: 11px var(--mono);
+  text-align: center;
+  color: var(--ink);
+}
+@media (max-width: 560px) {
+  .shortcut-groups {
+    grid-template-columns: 1fr;
+  }
+}

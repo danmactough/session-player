@@ -6,6 +6,7 @@ import { basename, relTime, setHome, SOURCE_LABEL, tildify } from "./lib/format"
 import { SessionList } from "./components/SessionList";
 import { Transcript } from "./components/Transcript";
 import { SourcesSheet } from "./components/SourcesSheet";
+import { ShortcutsSheet } from "./components/ShortcutsSheet";
 import { Menu } from "./components/Menu";
 import { ProjectNav, type ProjectSummary } from "./components/ProjectNav";
 import { ancestors, branchChildren, branchRows, branchSourcePath, buildTree, type ListRow } from "./lib/tree";
@@ -64,6 +65,7 @@ export default function App() {
   const [stats, setStats] = useState<IndexStats | null>(null);
   const [indexError, setIndexError] = useState<string | null>(null);
   const [sheet, setSheet] = useState(false);
+  const [help, setHelp] = useState(false);
   const [version, setVersion] = useState(0);
   const [projectFilter, setProjectFilter] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
@@ -333,10 +335,18 @@ export default function App() {
     [update],
   );
 
-  // Keyboard: j/k or arrows move through the list, / or ⌘K focuses search.
+  // Keyboard: j/k or arrows move through the list, / or ⌘K focuses search,
+  // ? lists the shortcuts. Keep ShortcutsSheet in step with this.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // The open sheet handles its own keys; nothing behind it should react.
+      if (sheet || help) return;
       const typing = (e.target as HTMLElement)?.tagName === "INPUT";
+      if (e.key === "?" && !typing) {
+        e.preventDefault();
+        setHelp(true);
+        return;
+      }
       if ((e.key === "/" && !typing) || ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k")) {
         e.preventDefault();
         searchRef.current?.focus();
@@ -354,7 +364,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [rows, p.selected, select]);
+  }, [rows, p.selected, select, sheet, help]);
 
   const toggleSource = (s: Source) => {
     const has = p.sources.includes(s);
@@ -452,6 +462,9 @@ export default function App() {
         <footer className="rail-foot">
           <button className="ghost" onClick={() => setSheet(true)}>
             Sources
+          </button>
+          <button className="ghost help-button" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts" onClick={() => setHelp(true)}>
+            ?
           </button>
           <span className="status">
             {progress
@@ -569,13 +582,14 @@ export default function App() {
             <p>Pick a session to read it.</p>
             {sessions && sessions.length > 0 && (
               <p className="dim">
-                Last activity {relTime(Math.max(...sessions.map((s) => s.updated_at ?? 0)))} · j / k to move · / to search
+                Last activity {relTime(Math.max(...sessions.map((s) => s.updated_at ?? 0)))} · j / k to move · / to search · ? for shortcuts
               </p>
             )}
           </div>
         )}
       </main>
 
+      {help && <ShortcutsSheet onClose={() => setHelp(false)} />}
       {sheet && <SourcesSheet onClose={() => setSheet(false)} stats={stats} indexing={!!progress} version={version} />}
     </div>
   );

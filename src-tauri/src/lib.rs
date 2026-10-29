@@ -314,6 +314,22 @@ fn set_setting(state: State<Shared>, key: String, value: String) -> Result<(), S
     Ok(())
 }
 
+/// Sends any navigation away from the app's own pages (a link in a
+/// transcript, however it was clicked) to the default browser instead of
+/// replacing the app in its window.
+fn external_links<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    tauri::plugin::Builder::new("external-links")
+        .on_navigation(|_, url| {
+            let own = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "tauri.localhost"));
+            let external = matches!(url.scheme(), "http" | "https" | "mailto") && !own;
+            if external {
+                let _ = tauri_plugin_opener::open_url(url.as_str(), None::<&str>);
+            }
+            !external
+        })
+        .build()
+}
+
 /// The standard menu with "Settings…" (⌘,) added to the app menu, after
 /// "About", where macOS apps put it.
 fn install_menu(app: &AppHandle) -> tauri::Result<()> {
@@ -332,6 +348,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(external_links())
         .register_uri_scheme_protocol("spimg", |ctx, req| {
             let state = ctx.app_handle().state::<Shared>();
             serve_image(state.inner(), &req.uri().to_string())

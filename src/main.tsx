@@ -4,8 +4,10 @@ import "./index.css";
 import App from "./App.tsx";
 import { api } from "./api";
 import { applyTheme, storedTheme } from "./lib/theme";
+import { openLinksInBrowser } from "./lib/links";
 
 applyTheme(storedTheme());
+openLinksInBrowser();
 
 if (import.meta.env.DEV && !("__TAURI_INTERNALS__" in window)) {
   await import("./devBridge");

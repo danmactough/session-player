@@ -1,7 +1,6 @@
 import { memo, useMemo } from "react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
-import { openUrl } from "@tauri-apps/plugin-opener";
 
 marked.setOptions({ gfm: true, breaks: false });
 
@@ -12,15 +11,7 @@ function render(text: string): string {
   return DOMPurify.sanitize(html, { FORBID_TAGS: ["style", "form", "input"], FORBID_ATTR: ["style"] });
 }
 
-function onClick(e: React.MouseEvent) {
-  const a = (e.target as HTMLElement).closest("a");
-  if (!a) return;
-  e.preventDefault();
-  const href = a.getAttribute("href");
-  if (href && /^https?:\/\//.test(href)) void openUrl(href);
-}
-
 export const Markdown = memo(function Markdown({ text, className }: { text: string; className?: string }) {
   const html = useMemo(() => render(text), [text]);
-  return <div className={`md ${className ?? ""}`} onClick={onClick} dangerouslySetInnerHTML={{ __html: html }} />;
+  return <div className={`md ${className ?? ""}`} dangerouslySetInnerHTML={{ __html: html }} />;
 });

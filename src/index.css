@@ -300,21 +300,39 @@ mark {
   color: var(--faint);
 }
 .proj-filter {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   margin: 0 16px 8px;
   height: 26px;
-  padding: 0 8px;
+  padding: 0 4px 0 8px;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: var(--panel);
+  cursor: text;
+}
+.proj-filter:focus-within {
+  border-color: var(--muted);
+}
+.proj-filter input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
   outline: none;
   font: 12px var(--sans);
   color: var(--ink);
 }
-.proj-filter::placeholder {
+.proj-filter input::placeholder {
   color: var(--faint);
 }
-.proj-filter:focus {
-  border-color: var(--muted);
+.proj-filter .search-clear {
+  width: 16px;
+  height: 16px;
+  line-height: 16px;
+  font-size: 13px;
 }
 .projects {
   position: relative;

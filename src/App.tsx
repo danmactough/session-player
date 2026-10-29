@@ -74,6 +74,7 @@ export default function App() {
   const [help, setHelp] = useState(false);
   const [version, setVersion] = useState(0);
   const [projectFilter, setProjectFilter] = useState("");
+  const projectFilterRef = useRef<HTMLInputElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   // Sessions whose subagents, forks and branches are shown in the list.
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
@@ -226,10 +227,16 @@ export default function App() {
     [update, p.projectOrder],
   );
 
-  const visibleProjects = useMemo(() => {
-    const f = projectFilter.trim().toLowerCase();
-    return f ? projects.filter((x) => x.project.toLowerCase().includes(f)) : projects;
-  }, [projects, projectFilter]);
+  const filterText = projectFilter.trim().toLowerCase();
+  const visibleProjects = useMemo(
+    () => (filterText ? projects.filter((x) => x.project.toLowerCase().includes(filterText)) : projects),
+    [projects, filterText],
+  );
+  // "All projects" means the projects the filter box lets through.
+  const filtered = useMemo(
+    () => (filterText ? base.filter((s) => s.project.toLowerCase().includes(filterText)) : base),
+    [base, filterText],
+  );
 
   const searching = query.trim() !== "";
   const scopeProject = searching && searchAll ? null : p.project;
@@ -250,9 +257,10 @@ export default function App() {
 
   const matchCounts = useMemo(() => {
     if (!searching) return { project: 0, all: 0 };
-    const all = base.filter(matchesQuery);
-    return { all: all.length, project: p.project ? all.filter((s) => s.project === p.project).length : all.length };
-  }, [base, matchesQuery, searching, p.project]);
+    const all = filtered.filter(matchesQuery);
+    const inProject = p.project ? base.filter((s) => s.project === p.project && matchesQuery(s)).length : all.length;
+    return { all: all.length, project: inProject };
+  }, [base, filtered, matchesQuery, searching, p.project]);
 
   const clearSearch = useCallback(() => {
     setQuery("");
@@ -260,7 +268,7 @@ export default function App() {
   }, []);
 
   const list = useMemo(() => {
-    let out = scopeProject ? base.filter((s) => s.project === scopeProject) : base;
+    let out = scopeProject ? base.filter((s) => s.project === scopeProject) : filtered;
     const q = query.trim().toLowerCase();
     if (q) {
       const terms = q.split(/\s+/);
@@ -288,7 +296,7 @@ export default function App() {
         break;
     }
     return sorted;
-  }, [base, scopeProject, p.sort, query, hits, matchesQuery]);
+  }, [base, filtered, scopeProject, p.sort, query, hits, matchesQuery]);
 
   // Search results stay flat; browsing nests children under their session.
   const rows = useMemo<ListRow[]>(
@@ -486,19 +494,34 @@ export default function App() {
           />
         </div>
         {projects.length > 8 && (
-          <input
-            className="proj-filter"
-            placeholder="Filter projects"
-            value={projectFilter}
-            onChange={(e) => setProjectFilter(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Escape") setProjectFilter("");
-            }}
-          />
+          <div className="proj-filter" onClick={() => projectFilterRef.current?.focus()}>
+            <input
+              ref={projectFilterRef}
+              placeholder="Filter projects"
+              value={projectFilter}
+              onChange={(e) => setProjectFilter(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") setProjectFilter("");
+              }}
+            />
+            {projectFilter && (
+              <button
+                className="search-clear"
+                aria-label="Clear project filter"
+                title="Clear filter (Esc)"
+                onClick={() => {
+                  setProjectFilter("");
+                  projectFilterRef.current?.focus();
+                }}
+              >
+                ×
+              </button>
+            )}
+          </div>
         )}
         <ProjectNav
           projects={visibleProjects}
-          total={base.length}
+          total={filtered.length}
           active={p.project}
           onSelect={(project) => update({ project })}
           onHide={hideProject}
@@ -540,7 +563,7 @@ export default function App() {
                   ? `${list.length} ${list.length === 1 ? "session matches" : "sessions match"} “${query.trim()}”`
                   : p.project
                     ? tildify(p.project)
-                    : `${list.length} sessions across ${projects.length} projects`}
+                    : `${list.length} ${list.length === 1 ? "session" : "sessions"} across ${visibleProjects.length} ${visibleProjects.length === 1 ? "project" : "projects"}`}
               </span>
               {/* Search results are ranked by relevance, so sorting only applies while browsing. */}
               {!searching && (

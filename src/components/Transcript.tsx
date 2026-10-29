@@ -28,9 +28,11 @@ interface Props {
   onOpen: (path: string, focus?: string) => void;
   /** A child whose split point should be scrolled into view on open. */
   focus?: string | null;
+  /** False while a sheet covers the app, so its keys don't reach the transcript. */
+  keyboard: boolean;
 }
 
-export function Transcript({ session, parent, children, highlight, onOpen, focus }: Props) {
+export function Transcript({ session, parent, children, highlight, onOpen, focus, keyboard }: Props) {
   const [events, setEvents] = useState<SessionEvent[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showTools, setShowTools] = useState(true);
@@ -121,6 +123,10 @@ export function Transcript({ session, parent, children, highlight, onOpen, focus
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: 0 });
+    // Take keyboard focus so Space, Page Down and the arrows scroll the
+    // transcript, unless the user is typing (arrowing through search results).
+    const typing = document.activeElement?.matches("input, textarea, select, [contenteditable]");
+    if (!typing) scrollRef.current?.focus({ preventScroll: true });
   }, [session.path]);
 
   // Jump to the first in-session match once the transcript has loaded.
@@ -165,14 +171,71 @@ export function Transcript({ session, parent, children, highlight, onOpen, focus
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusIndex]);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "f") {
+  // Scrolls to the next or previous block of a kind, relative to the block at
+  // the top of the view, wrapping from the last to the first and back.
+  const jump = (isTarget: (b: Block) => boolean, dir: 1 | -1) => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const targets = blocks.flatMap((b, i) => (isTarget(b) ? [i] : []));
+    if (!targets.length) return;
+    // Tolerance for a block that was scrolled to but sits a few pixels off,
+    // e.g. when the view can't scroll any further.
+    const top = el.scrollTop;
+    const start = (i: number) => virt.measurementsCache[i]?.start ?? 0;
+    // At the bottom, blocks below the top can't be scrolled to the top any
+    // further, so going forward wraps instead.
+    const atBottom = top + el.clientHeight >= el.scrollHeight - 2;
+    const next =
+      dir === 1
+        ? ((atBottom ? undefined : targets.find((i) => start(i) > top + 8)) ?? targets[0])
+        : (targets.findLast((i) => start(i) < top - 8) ?? targets[targets.length - 1]);
+    virt.scrollToIndex(next, { align: "start" });
+  };
+
+  // Transcript keys. Space is handled here rather than left to the browser:
+  // the browser pages only the focused scroller, and focus drops to the page
+  // body when the row holding it scrolls out and is unmounted.
+  const keyRef = useRef<(e: KeyboardEvent) => void>(() => {});
+  keyRef.current = (e: KeyboardEvent) => {
+    if (!keyboard) return;
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "f") {
+      e.preventDefault();
+      setFindOpen(true);
+      requestAnimationFrame(() => findRef.current?.select());
+      return;
+    }
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const target = e.target as HTMLElement;
+    if (target.closest("input, textarea, select, [contenteditable], [role=listbox]")) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    // A clicked button keeps focus, and Space would press it again. Inside the
+    // transcript and its outline, paging matters more (Enter still presses).
+    if (target.closest("button") && !target.closest(".t-scroll, .t-outline, .err-nav")) return;
+    switch (e.key) {
+      case " ": {
         e.preventDefault();
-        setFindOpen(true);
-        requestAnimationFrame(() => findRef.current?.select());
+        // At either end, wrap around to the other.
+        const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 2;
+        if (!e.shiftKey && atBottom) el.scrollTo({ top: 0 });
+        else if (e.shiftKey && el.scrollTop <= 0) el.scrollTo({ top: el.scrollHeight });
+        else el.scrollBy({ top: (e.shiftKey ? -1 : 1) * el.clientHeight * 0.85, behavior: "smooth" });
+        break;
       }
-    };
+      case "[":
+      case "]":
+        e.preventDefault();
+        jump((b) => b.type === "user" && !b.ev.sidechain, e.key === "]" ? 1 : -1);
+        break;
+      case "{":
+      case "}":
+        e.preventDefault();
+        jump((b) => b.type === "assistant", e.key === "}" ? 1 : -1);
+        break;
+    }
+  };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => keyRef.current(e);
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
@@ -340,7 +403,7 @@ export function Transcript({ session, parent, children, highlight, onOpen, focus
       </div>
 
       <div className="t-body">
-        <div className="t-scroll" ref={scrollRef}>
+        <div className="t-scroll" ref={scrollRef} tabIndex={-1}>
           {error && <div className="empty">Could not read this session: {error}</div>}
           {!events && !error && <div className="empty pulse">Reading session…</div>}
           {events && blocks.length === 0 && <div className="empty">Nothing to show.</div>}

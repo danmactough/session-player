@@ -1036,6 +1036,7 @@ mark {
   min-width: 0;
   user-select: text;
   cursor: auto;
+  outline: none;
 }
 .t-stream {
   position: relative;

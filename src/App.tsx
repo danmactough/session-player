@@ -359,7 +359,8 @@ export default function App() {
       if (typing && (e.target as HTMLElement) !== searchRef.current) return;
       e.preventDefault();
       const i = rows.findIndex((r) => r.s.path === p.selected);
-      const next = rows[Math.max(0, Math.min(rows.length - 1, i < 0 ? 0 : i + dir))];
+      // Wraps from the last session to the first and back.
+      const next = rows[i < 0 ? 0 : (i + dir + rows.length) % rows.length];
       if (next) select(next.s.path);
     };
     window.addEventListener("keydown", onKey);
@@ -575,6 +576,7 @@ export default function App() {
             highlight={query.trim()}
             onOpen={open}
             focus={focus}
+            keyboard={!sheet && !help}
           />
         ) : (
           <div className="placeholder" data-tauri-drag-region>

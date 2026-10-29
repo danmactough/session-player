@@ -19,6 +19,10 @@ const GROUPS: { title: string; keys: { keys: string[][]; what: string }[] }[] = 
   {
     title: "Transcript",
     keys: [
+      { keys: [["Space"]], what: "Page down" },
+      { keys: [["⇧", "Space"]], what: "Page up" },
+      { keys: [["]"], ["["]], what: "Next / previous prompt" },
+      { keys: [["}"], ["{"]], what: "Next / previous response" },
       { keys: [["⌘", "F"]], what: "Find in session" },
       { keys: [["Enter"]], what: "Next match" },
       { keys: [["⇧", "Enter"]], what: "Previous match" },

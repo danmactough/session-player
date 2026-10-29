@@ -207,6 +207,16 @@ export function Transcript({ session, parent, children, highlight, onOpen, focus
       requestAnimationFrame(() => findRef.current?.select());
       return;
     }
+    // ⌘] / ⌘[ step through prompts and ⌘⇧] / ⌘⇧[ through responses, like
+    // Forward and Back on macOS. Matched by physical key, since Shift turns
+    // the bracket into a brace on some layouts but not others.
+    if ((e.metaKey || e.ctrlKey) && !e.altKey && (e.code === "BracketRight" || e.code === "BracketLeft")) {
+      e.preventDefault();
+      const dir = e.code === "BracketRight" ? 1 : -1;
+      if (e.shiftKey) jump((b) => b.type === "assistant", dir);
+      else jump((b) => b.type === "user" && !b.ev.sidechain, dir);
+      return;
+    }
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const target = e.target as HTMLElement;
     if (target.closest("input, textarea, select, [contenteditable], [role=listbox]")) return;
@@ -225,16 +235,6 @@ export function Transcript({ session, parent, children, highlight, onOpen, focus
         else el.scrollBy({ top: (e.shiftKey ? -1 : 1) * el.clientHeight * 0.85, behavior: "smooth" });
         break;
       }
-      case "[":
-      case "]":
-        e.preventDefault();
-        jump((b) => b.type === "user" && !b.ev.sidechain, e.key === "]" ? 1 : -1);
-        break;
-      case "{":
-      case "}":
-        e.preventDefault();
-        jump((b) => b.type === "assistant", e.key === "}" ? 1 : -1);
-        break;
     }
   };
   useEffect(() => {

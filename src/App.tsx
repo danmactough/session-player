@@ -391,6 +391,8 @@ export default function App() {
         return;
       }
       if (typing && e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+      // ⌘↑ / ⌘↓ and ⌥↑ / ⌥↓ scroll the transcript instead.
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
       const dir = e.key === "j" || e.key === "ArrowDown" ? 1 : e.key === "k" || e.key === "ArrowUp" ? -1 : 0;
       if (!dir || !rows.length) return;
       if (typing && (e.target as HTMLElement) !== searchRef.current) return;

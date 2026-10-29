@@ -217,24 +217,49 @@ export function Transcript({ session, parent, children, highlight, onOpen, focus
       else jump((b) => b.type === "user" && !b.ev.sidechain, dir);
       return;
     }
-    if (e.metaKey || e.ctrlKey || e.altKey) return;
     const target = e.target as HTMLElement;
+    // Text fields keep their own editing keys (⌘↑, Home, Space…).
     if (target.closest("input, textarea, select, [contenteditable], [role=listbox]")) return;
     const el = scrollRef.current;
     if (!el) return;
-    // A clicked button keeps focus, and Space would press it again. Inside the
-    // transcript and its outline, paging matters more (Enter still presses).
-    if (target.closest("button") && !target.closest(".t-scroll, .t-outline, .err-nav")) return;
+    // Pages by most of a screen, wrapping around at either end.
+    const page = (dir: 1 | -1) => {
+      const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 2;
+      if (dir === 1 && atBottom) el.scrollTo({ top: 0 });
+      else if (dir === -1 && el.scrollTop <= 0) el.scrollTo({ top: el.scrollHeight });
+      else el.scrollBy({ top: dir * el.clientHeight * 0.85, behavior: "smooth" });
+    };
+    const arrow = e.key === "ArrowUp" ? -1 : e.key === "ArrowDown" ? 1 : 0;
+    // macOS: ⌘↑ / ⌘↓ go to the top and bottom, ⌥↑ / ⌥↓ page.
+    if (arrow && e.metaKey && !e.altKey && !e.ctrlKey && !e.shiftKey) {
+      e.preventDefault();
+      el.scrollTo({ top: arrow === 1 ? el.scrollHeight : 0 });
+      return;
+    }
+    if (arrow && e.altKey && !e.metaKey && !e.ctrlKey && !e.shiftKey) {
+      e.preventDefault();
+      page(arrow);
+      return;
+    }
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
     switch (e.key) {
-      case " ": {
+      case " ":
+        // A clicked button keeps focus, and Space would press it again. Inside
+        // the transcript and its outline, paging matters more (Enter still presses).
+        if (target.closest("button") && !target.closest(".t-scroll, .t-outline, .err-nav")) return;
         e.preventDefault();
-        // At either end, wrap around to the other.
-        const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 2;
-        if (!e.shiftKey && atBottom) el.scrollTo({ top: 0 });
-        else if (e.shiftKey && el.scrollTop <= 0) el.scrollTo({ top: el.scrollHeight });
-        else el.scrollBy({ top: (e.shiftKey ? -1 : 1) * el.clientHeight * 0.85, behavior: "smooth" });
+        page(e.shiftKey ? -1 : 1);
         break;
-      }
+      case "PageDown":
+      case "PageUp":
+        e.preventDefault();
+        page(e.key === "PageDown" ? 1 : -1);
+        break;
+      case "Home":
+      case "End":
+        e.preventDefault();
+        el.scrollTo({ top: e.key === "End" ? el.scrollHeight : 0 });
+        break;
     }
   };
   useEffect(() => {

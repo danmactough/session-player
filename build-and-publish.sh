@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 # Builds a signed, notarized Session Player .dmg and publishes it as a GitHub
-# release tagged v<version>, using the version in src-tauri/tauri.conf.json.
+# release tagged v<version>, using the version in package.json (tauri.conf.json
+# reads it from there).
 #
-# Usage: ./build-and-publish.sh [--no-publish]
-#   --no-publish   build, notarize and verify only; skip the push and release
+# Usage: ./build-and-publish.sh [patch|minor|major|<x.y.z>] [--no-publish]
+#   patch|minor|major|<x.y.z>   bump the version with `npm version` and commit
+#                               the bump first; omit to release the current one
+#   --no-publish                build, notarize and verify only; skip the push
+#                               and release
 #
 # One-time setup:
 #   1. A "Developer ID Application" certificate in your login keychain
@@ -20,12 +24,14 @@ set -euo pipefail
 
 KEYCHAIN_SERVICE="session-player-notary"
 PUBLISH=1
+BUMP=""
 
 for arg in "$@"; do
   case "$arg" in
     --no-publish) PUBLISH=0 ;;
+    patch | minor | major | [0-9]*.[0-9]*.[0-9]*) BUMP="$arg" ;;
     -h | --help)
-      sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *)
@@ -47,18 +53,36 @@ for tool in jq gh xcrun security npx; do
   command -v "$tool" >/dev/null || die "$tool is not installed"
 done
 
-VERSION=$(jq -r .version src-tauri/tauri.conf.json)
+# Publishing must not ship code that isn't committed.
+[ -z "$(git status --porcelain)" ] || die "the working tree has uncommitted changes"
+if [ "$PUBLISH" = 1 ]; then
+  [ "$(git branch --show-current)" = "main" ] || die "publish from main"
+fi
+
+tag_exists() {
+  git rev-parse -q --verify "refs/tags/$1" >/dev/null || gh release view "$1" >/dev/null 2>&1
+}
+
+if [ -n "$BUMP" ]; then
+  step "Bumping version ($BUMP)"
+  # npm's own commit and tag are skipped: the release below creates the tag.
+  npm version "$BUMP" --no-git-tag-version >/dev/null
+  VERSION=$(jq -r .version package.json)
+  if tag_exists "v$VERSION"; then
+    git checkout -- package.json package-lock.json
+    die "v$VERSION already exists"
+  fi
+  git commit -q -m "Release $VERSION" -- package.json package-lock.json
+  echo "Committed version $VERSION"
+fi
+
+VERSION=$(jq -r .version package.json)
 TAG="v$VERSION"
 DMG="src-tauri/target/release/bundle/dmg/Session Player_${VERSION}_aarch64.dmg"
 
 step "Checking release $TAG"
-# Publishing must not ship code that isn't committed, or reuse a version.
-[ -z "$(git status --porcelain)" ] || die "the working tree has uncommitted changes"
-if [ "$PUBLISH" = 1 ]; then
-  [ "$(git branch --show-current)" = "main" ] || die "publish from main"
-  if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null || gh release view "$TAG" >/dev/null 2>&1; then
-    die "$TAG already exists; bump version in src-tauri/tauri.conf.json"
-  fi
+if [ "$PUBLISH" = 1 ] && tag_exists "$TAG"; then
+  die "$TAG already exists; pass patch, minor or major to bump the version"
 fi
 
 step "Reading signing credentials"

@@ -15,7 +15,7 @@ On first launch the app adds whichever of these exist: `~/.claude/projects`, `~/
 
 ## Releasing
 
-`./build-and-publish.sh` builds a signed, notarized `.dmg` and publishes it as GitHub release `v<version>`, using `version` from `src-tauri/tauri.conf.json` (bump it first). It refuses to run with uncommitted changes, off `main`, or when the tag already exists. `--no-publish` stops after building and verifying. One-time setup (Developer ID certificate, notarization password in the keychain) is described at the top of the script.
+`./build-and-publish.sh patch` (or `minor`, `major`, or an exact `x.y.z`) bumps the version with `npm version`, commits the bump, then builds a signed, notarized `.dmg` and publishes it as GitHub release `v<version>`. Without a bump argument it releases the current version. The version lives only in `package.json`; `src-tauri/tauri.conf.json` reads it from there. The script refuses to run with uncommitted changes, off `main`, or when the tag already exists. `--no-publish` stops after building and verifying. One-time setup (Developer ID certificate, notarization password in the keychain) is described at the top of the script.
 
 ## Using it
 

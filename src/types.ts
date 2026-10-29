@@ -27,8 +27,10 @@ export interface SessionRow {
   /** pi forks and branches: the last entry shared with the source, and how many prompts precede it. */
   fork_entry: string | null;
   fork_turn: number | null;
-  /** Failed tool calls plus model/API errors. */
+  /** Tool calls that couldn't run, plus harness and model/API errors. */
   error_count: number;
+  /** Shell commands that ran and exited with a failing status. */
+  exit_count: number;
   /** Set on rows the UI makes for pi branches: the real session file. */
   branch_of?: string;
   branch_leaf?: string;
@@ -65,6 +67,10 @@ export interface SessionEvent {
   tool_name?: string;
   call_id?: string;
   is_error?: boolean;
+  /** Non-zero exit status of a shell command that ran. */
+  exit_code?: number;
+  /** The exit status means failure (not grep's "no match"); an error only if the user counts them. */
+  failed_exit?: boolean;
   model?: string;
   images?: string[];
   sidechain?: boolean;

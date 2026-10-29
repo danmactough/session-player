@@ -20,8 +20,10 @@ fn claude_session() {
     // Usage repeated across content-block lines of one message counts once.
     assert_eq!(row.output_tokens, 5);
     assert_eq!(row.first_prompt.as_deref(), Some("Fix the flaky login test please"));
-    assert_eq!(row.error_count, 1);
-    assert_eq!(events, vec!["command:/model haiku", "user:Fix the flaky login test please", "thinking:hmm", "tool_call:{\n  \"command\": \"npm test\"\n}", "tool_result!:1 failing"]);
+    // A failing test run is a command that ran, not a tool error.
+    assert_eq!(row.error_count, 0);
+    assert_eq!(row.exit_count, 1);
+    assert_eq!(events, vec!["command:/model haiku", "user:Fix the flaky login test please", "thinking:hmm", "tool_call:{\n  \"command\": \"npm test\"\n}", "tool_result~:Exit code 1\n1 failing"]);
 }
 
 #[test]
@@ -33,7 +35,8 @@ fn codex_session() {
     assert_eq!(row.title, "add retry support to the uploader");
     assert_eq!(row.input_tokens, 200);
     assert_eq!(row.cache_read_tokens, 800);
-    assert!(events.iter().any(|e| e.starts_with("tool_result!:")), "non-zero exit marks an error: {events:?}");
+    assert!(events.iter().any(|e| e.starts_with("tool_result~:")), "non-zero exit marks a failing exit: {events:?}");
+    assert_eq!((row.error_count, row.exit_count), (0, 1));
     assert!(!events.iter().any(|e| e.contains("environment_context")));
     assert_eq!(row.imported_from, None);
 }

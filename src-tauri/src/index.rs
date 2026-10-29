@@ -11,7 +11,7 @@ use crate::model::{EventKind, Parsed, SessionRow, Source};
 use crate::parse;
 
 /// Bump when parsing changes so existing indexes are rebuilt on launch.
-const INDEX_VERSION: &str = "12";
+const INDEX_VERSION: &str = "15";
 const FTS_BODY_LIMIT: usize = 400_000;
 const SKIP_DIRS: &[&str] = &["memory", "tool-results", "subagent-artifacts", "node_modules", ".git"];
 
@@ -37,7 +37,7 @@ pub fn open(db_path: &Path) -> anyhow::Result<Connection> {
             models TEXT NOT NULL, git_branch TEXT, is_subagent INTEGER NOT NULL,
             parent_id TEXT, size INTEGER NOT NULL, imported_from TEXT,
             branches TEXT NOT NULL DEFAULT '[]', fork_entry TEXT, fork_turn INTEGER,
-            error_count INTEGER NOT NULL DEFAULT 0);
+            error_count INTEGER NOT NULL DEFAULT 0, exit_count INTEGER NOT NULL DEFAULT 0);
          CREATE INDEX IF NOT EXISTS sessions_updated ON sessions(updated_at);
          CREATE VIRTUAL TABLE IF NOT EXISTS session_fts USING fts5(
             path UNINDEXED, title, body, tokenize='porter unicode61');",
@@ -235,8 +235,8 @@ pub fn run(
             "INSERT INTO sessions(path, root, source, native_id, cwd, project, title, title_source,
                 first_prompt, started_at, updated_at, user_turns, assistant_msgs, tool_calls,
                 input_tokens, output_tokens, cache_read_tokens, models, git_branch, is_subagent,
-                parent_id, size, imported_from, branches, fork_entry, fork_turn, error_count)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27)",
+                parent_id, size, imported_from, branches, fork_entry, fork_turn, error_count, exit_count)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28)",
             params![
                 row.path,
                 r.file.root,
@@ -265,6 +265,7 @@ pub fn run(
                 row.fork_entry,
                 row.fork_turn,
                 row.error_count,
+                row.exit_count,
             ],
         )?;
         tx.execute(
@@ -327,6 +328,7 @@ fn build_row(file: &FileInfo, p: Parsed) -> Option<(SessionRow, String)> {
     let mut assistant_msgs = 0;
     let mut tool_calls = 0;
     let mut error_count = 0;
+    let mut exit_count = 0;
     let mut first_prompt: Option<String> = None;
     let mut label_prompt: Option<String> = None;
     let mut prompts_seen = 0;
@@ -341,6 +343,9 @@ fn build_row(file: &FileInfo, p: Parsed) -> Option<(SessionRow, String)> {
         }
         if e.is_error {
             error_count += 1;
+        }
+        if e.failed_exit {
+            exit_count += 1;
         }
         match e.kind {
             EventKind::User if !e.sidechain => {
@@ -424,6 +429,7 @@ fn build_row(file: &FileInfo, p: Parsed) -> Option<(SessionRow, String)> {
         fork_entry: p.fork_entry,
         fork_turn: p.fork_turn,
         error_count,
+        exit_count,
     };
     Some((row, body))
 }
@@ -570,7 +576,7 @@ pub fn list(conn: &Connection) -> anyhow::Result<Vec<SessionRow>> {
         "SELECT path, source, native_id, cwd, project, title, title_source, first_prompt,
                 started_at, updated_at, user_turns, assistant_msgs, tool_calls, input_tokens,
                 output_tokens, cache_read_tokens, models, git_branch, is_subagent, parent_id, size,
-                imported_from, branches, fork_entry, fork_turn, error_count
+                imported_from, branches, fork_entry, fork_turn, error_count, exit_count
          FROM sessions ORDER BY updated_at DESC",
     )?;
     let mut rows: Vec<SessionRow> = stmt
@@ -603,6 +609,7 @@ pub fn list(conn: &Connection) -> anyhow::Result<Vec<SessionRow>> {
                 fork_entry: r.get(23)?,
                 fork_turn: r.get(24)?,
                 error_count: r.get(25)?,
+                exit_count: r.get(26)?,
             })
         })?
         .collect::<Result<_, _>>()?;

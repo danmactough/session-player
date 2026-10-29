@@ -42,8 +42,18 @@ pub struct Event {
     pub tool_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub call_id: Option<String>,
+    /// The tool couldn't do what was asked, or the harness or model failed.
+    /// A shell command that ran and exited non-zero is not this; see `failed_exit`.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub is_error: bool,
+    /// Non-zero exit status of a shell command that ran.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i64>,
+    /// `exit_code` signals a failure rather than an answer such as grep's
+    /// "no match" (see `parse::benign_exit`). Counted as an error only when
+    /// the user turns that on.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub failed_exit: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -64,6 +74,8 @@ impl Event {
             tool_name: None,
             call_id: None,
             is_error: false,
+            exit_code: None,
+            failed_exit: false,
             model: None,
             images: Vec::new(),
             sidechain: false,
@@ -182,4 +194,6 @@ pub struct SessionRow {
     pub fork_turn: Option<i64>,
     /// Failed tool calls plus model/API errors.
     pub error_count: i64,
+    /// Shell commands that exited with a failing status.
+    pub exit_count: i64,
 }

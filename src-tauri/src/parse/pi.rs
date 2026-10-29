@@ -117,6 +117,7 @@ pub fn parse_branch(path: &Path, leaf: Option<&str>) -> anyhow::Result<Parsed> {
             p.tokens.cache_read += n("cacheRead");
         }
     }
+    super::mark_failed_exits(&mut p.events);
     Ok(p)
 }
 
@@ -381,6 +382,17 @@ fn handle_entry(p: &mut Parsed, v: &Value) {
                     e.call_id = str_of(m, "toolCallId").map(str::to_string);
                     e.tool_name = str_of(m, "toolName").map(str::to_string);
                     e.is_error = m.get("isError").and_then(Value::as_bool) == Some(true);
+                    // pi's bash tool returns a non-zero exit as an error result
+                    // ending "Command exited with code N"; timeouts and other
+                    // failures end differently and stay errors.
+                    if e.is_error && e.tool_name.as_deref() == Some("bash") {
+                        let last = e.text.trim_end().lines().last().unwrap_or("");
+                        let code = last.strip_prefix("Command exited with code ").and_then(super::leading_int);
+                        if code.is_some() {
+                            e.exit_code = code;
+                            e.is_error = false;
+                        }
+                    }
                     p.events.push(e);
                 }
                 "bashExecution" => {
@@ -392,7 +404,9 @@ fn handle_entry(p: &mut Parsed, v: &Value) {
                     let out = str_of(m, "output").unwrap_or("");
                     if !out.trim().is_empty() {
                         let mut e = Event::new(EventKind::System, ts, out);
-                        e.is_error = m.get("exitCode").and_then(Value::as_i64).is_some_and(|c| c != 0);
+                        let code = m.get("exitCode").and_then(Value::as_i64).filter(|&c| c != 0);
+                        e.exit_code = code;
+                        e.failed_exit = code.is_some_and(|c| !super::benign_exit(cmd, c));
                         p.events.push(e);
                     }
                 }

@@ -30,9 +30,11 @@ interface Props {
   focus?: string | null;
   /** False while a sheet covers the app, so its keys don't reach the transcript. */
   keyboard: boolean;
+  /** Treat shell commands that exited with a failing status as errors. */
+  countExits: boolean;
 }
 
-export function Transcript({ session, parent, children, highlight, onOpen, focus, keyboard }: Props) {
+export function Transcript({ session, parent, children, highlight, onOpen, focus, keyboard, countExits }: Props) {
   const [events, setEvents] = useState<SessionEvent[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showTools, setShowTools] = useState(true);
@@ -85,12 +87,13 @@ export function Transcript({ session, parent, children, highlight, onOpen, focus
 
   const blocks = useMemo(() => {
     if (!events) return [];
-    return buildBlocks(events, forks).filter((b) => {
+    const shown = countExits ? events.map((e) => (e.failed_exit ? { ...e, is_error: true } : e)) : events;
+    return buildBlocks(shown, forks).filter((b) => {
       if (!showTools && (b.type === "tools" || b.type === "orphan_result")) return false;
       if (!showThinking && b.type === "thinking") return false;
       return true;
     });
-  }, [events, forks, showTools, showThinking]);
+  }, [events, forks, showTools, showThinking, countExits]);
 
   const matches = useMemo(() => {
     const terms = find.toLowerCase().split(/\s+/).filter(Boolean);
@@ -600,6 +603,7 @@ function ToolRow({ step, forceOpen }: { step: ToolStep; forceOpen?: boolean }) {
         <span className="tool-name">{toolLabel(call.tool_name)}</span>
         <span className="tool-sum">{summary}</span>
         {result?.images?.length ? <span className="tool-flag">image</span> : null}
+        {result?.exit_code && !result.is_error ? <span className="tool-flag">exit {result.exit_code}</span> : null}
       </button>
       {open && (
         <div className="tool-body">

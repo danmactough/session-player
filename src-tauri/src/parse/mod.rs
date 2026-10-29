@@ -8,7 +8,7 @@ use std::path::Path;
 
 use serde_json::Value;
 
-use crate::model::{Parsed, Source};
+use crate::model::{Event, EventKind, Parsed, Source};
 
 /// Images larger than this (base64 length) are replaced with a placeholder so a
 /// single screenshot-heavy session cannot balloon the payload sent to the UI.
@@ -50,6 +50,91 @@ pub fn parse_file(path: &Path, source: Source) -> anyhow::Result<Parsed> {
         Source::Claude => claude::parse(path),
         Source::Codex => codex::parse(path),
         Source::Pi => pi::parse(path),
+    }
+}
+
+/// The exit code Codex reported in a shell tool's output: "Process exited
+/// with code 1", or "Exit code: 1" in older versions.
+pub fn exit_code(text: &str) -> Option<i64> {
+    let head: String = text.chars().take(400).collect();
+    ["Exit code: ", "Exit code ", "exited with code "]
+        .iter()
+        .find_map(|marker| leading_int(&head[head.find(marker)? + marker.len()..]))
+}
+
+/// Whether a non-zero exit status is an answer rather than a failure. By
+/// convention, search and compare tools exit 1 for "no match" or "differs"
+/// (2 or more is a real error), and a command killed by SIGPIPE (141) is one
+/// whose output was cut short by `| head` or similar.
+///
+/// Only the last command of the line is checked, since it usually decides the
+/// exit status: `cd repo && rg foo | grep -v test` is judged by `grep`.
+pub fn benign_exit(command: &str, code: i64) -> bool {
+    if code == 141 {
+        return true;
+    }
+    if code != 1 {
+        return false;
+    }
+    let last = command
+        .split(|c| c == '\n' || c == ';' || c == '|' || c == '&')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .last()
+        .unwrap_or("");
+    // Skip environment assignments and wrappers to reach the program.
+    let mut words = last
+        .split_whitespace()
+        .skip_while(|w| w.contains('=') || matches!(*w, "command" | "sudo" | "time" | "!"));
+    let program = words.next().unwrap_or("").rsplit('/').next().unwrap_or("");
+    match program {
+        "grep" | "egrep" | "fgrep" | "rg" | "ag" | "ack" | "diff" | "cmp" | "test" | "[" | "[[" => true,
+        "git" => {
+            // The subcommand follows global options; -C and -c take a value.
+            while let Some(w) = words.next() {
+                match w {
+                    "-C" | "-c" => {
+                        words.next();
+                    }
+                    w if w.starts_with('-') => {}
+                    w => return w == "diff" || w == "grep",
+                }
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
+/// Sets `failed_exit` on shell results with a non-zero `exit_code` (each
+/// parser sets that), unless the status is an answer (see `benign_exit`).
+/// Each result is matched to its call for the command line.
+pub fn mark_failed_exits(events: &mut [Event]) {
+    let commands: std::collections::HashMap<String, String> = events
+        .iter()
+        .filter(|e| e.kind == EventKind::ToolCall)
+        .filter_map(|e| Some((e.call_id.clone()?, shell_command(&e.text)?)))
+        .collect();
+    for e in events.iter_mut().filter(|e| e.kind == EventKind::ToolResult) {
+        let Some(code) = e.exit_code else { continue };
+        let command = e.call_id.as_ref().and_then(|id| commands.get(id));
+        e.failed_exit = command.is_none_or(|c| !benign_exit(c, code));
+    }
+}
+
+/// The integer at the start of `s`, as in "1\nerror: …".
+pub fn leading_int(s: &str) -> Option<i64> {
+    s.split(|c: char| !c.is_ascii_digit() && c != '-').next()?.parse().ok()
+}
+
+/// The command line from a shell tool call's arguments: `command` (Claude
+/// Code, pi), `cmd` (Codex exec_command), or Codex's `["bash", "-lc", "…"]`.
+fn shell_command(args: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(args).ok()?;
+    match v.get("command").or_else(|| v.get("cmd"))? {
+        Value::String(s) => Some(s.clone()),
+        Value::Array(parts) => parts.last()?.as_str().map(str::to_string),
+        _ => None,
     }
 }
 
@@ -330,6 +415,24 @@ fn codex_preamble(text: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::benign_exit;
+
+    #[test]
+    fn benign_exits() {
+        assert!(benign_exit("rg -n foo src", 1));
+        assert!(benign_exit("cd repo && rg foo | grep -v test", 1));
+        assert!(benign_exit("ls ~/.pi | grep auth", 1));
+        assert!(benign_exit("git diff --no-index a b", 1));
+        assert!(benign_exit("git -C repo diff --exit-code", 1));
+        assert!(benign_exit("LC_ALL=C /usr/bin/grep -q x f", 1));
+        assert!(benign_exit("git log | head -5", 141));
+        assert!(!benign_exit("rg '(' src", 2));
+        assert!(!benign_exit("grep foo f && npm test", 1));
+        assert!(!benign_exit("npm test", 1));
+        assert!(!benign_exit("git commit -m x", 1));
+        assert!(!benign_exit("cat missing.txt", 1));
+    }
+
     use super::normalize_prompt;
 
     #[test]

@@ -1839,3 +1839,52 @@ mark {
     grid-template-columns: 1fr;
   }
 }
+
+/* ---------- settings ---------- */
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 26px;
+  padding: 0;
+}
+.sheet.settings {
+  max-height: 80vh;
+  overflow-y: auto;
+}
+.settings-head {
+  margin: 26px 0 8px;
+  font: 10.5px var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+.sheet-head + .settings-head {
+  margin-top: 18px;
+}
+.settings-head + .sheet-note {
+  margin-top: 0;
+}
+.setting-toggle {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  font-size: 13px;
+  color: var(--ink);
+  cursor: pointer;
+}
+.setting-toggle input {
+  margin-top: 3px;
+  accent-color: var(--ink);
+}
+.setting-note {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.setting-note code {
+  font: 11px var(--mono);
+}

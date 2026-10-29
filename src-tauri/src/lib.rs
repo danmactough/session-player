@@ -17,7 +17,9 @@ pub mod test_support {
             .iter()
             .map(|e| {
                 let kind = serde_json::to_value(e.kind).unwrap();
-                format!("{}{}:{}", kind.as_str().unwrap(), if e.is_error { "!" } else { "" }, e.text)
+                // "!" marks an error, "~" a failing shell exit.
+                let mark = if e.is_error { "!" } else if e.failed_exit { "~" } else { "" };
+                format!("{}{}:{}", kind.as_str().unwrap(), mark, e.text)
             })
             .collect();
         let (row, _) = crate::index::index_parsed(path, source, parsed).expect("row");
@@ -312,6 +314,19 @@ fn set_setting(state: State<Shared>, key: String, value: String) -> Result<(), S
     Ok(())
 }
 
+/// The standard menu with "Settings…" (⌘,) added to the app menu, after
+/// "About", where macOS apps put it.
+fn install_menu(app: &AppHandle) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+    let menu = Menu::default(app)?;
+    let settings = MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?;
+    if let Some(app_menu) = menu.items()?.first().and_then(|m| m.as_submenu()) {
+        app_menu.insert_items(&[&settings, &PredefinedMenuItem::separator(app)?], 2)?;
+    }
+    app.set_menu(menu)?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -342,7 +357,13 @@ pub fn run() {
                 eprintln!("watcher failed: {e}");
             }
             request_index(&handle, &state, false);
+            install_menu(app.handle())?;
             Ok(())
+        })
+        .on_menu_event(|app, event| {
+            if event.id() == "settings" {
+                let _ = app.emit("open-settings", ());
+            }
         })
         .invoke_handler(tauri::generate_handler![
             get_roots,

@@ -76,6 +76,7 @@ const sessions: SessionRow[] = TITLES.map(([source, title_source, title], i) => 
     fork_turn: i === 9 ? 3 : null,
     // Every demo transcript has one failed Bash call per prompt.
     error_count: turns + 1,
+    exit_count: 2,
   };
 });
 

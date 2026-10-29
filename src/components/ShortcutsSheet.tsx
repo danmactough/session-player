@@ -7,6 +7,7 @@ const GROUPS: { title: string; keys: { keys: string[][]; what: string }[] }[] = 
       { keys: [["j"], ["↓"]], what: "Next session" },
       { keys: [["k"], ["↑"]], what: "Previous session" },
       { keys: [["?"]], what: "Show this list" },
+      { keys: [["⌘", ","]], what: "Settings" },
     ],
   },
   {

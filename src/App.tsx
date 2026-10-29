@@ -5,7 +5,7 @@ import type { IndexStats, SearchHit, SessionRow, SortKey, Source } from "./types
 import { basename, relTime, setHome, SOURCE_LABEL, tildify } from "./lib/format";
 import { SessionList } from "./components/SessionList";
 import { Transcript } from "./components/Transcript";
-import { SourcesSheet } from "./components/SourcesSheet";
+import { SettingsSheet } from "./components/SettingsSheet";
 import { ShortcutsSheet } from "./components/ShortcutsSheet";
 import { Menu } from "./components/Menu";
 import { ProjectNav, type ProjectSummary } from "./components/ProjectNav";
@@ -40,6 +40,8 @@ interface Prefs {
   projectSort: ProjectSort;
   projectOrder: string[];
   hiddenProjects: string[];
+  /** Count shell commands that exited with a failing status as errors. */
+  countExits: boolean;
 }
 const DEFAULT_PREFS: Prefs = {
   project: null,
@@ -51,10 +53,11 @@ const DEFAULT_PREFS: Prefs = {
   projectSort: "recent",
   projectOrder: [],
   hiddenProjects: [],
+  countExits: false,
 };
 
 export default function App() {
-  const [sessions, setSessions] = useState<SessionRow[] | null>(null);
+  const [rawSessions, setSessions] = useState<SessionRow[] | null>(null);
   const [prefs, setPrefs] = useState<Prefs | null>(null);
   const [query, setQuery] = useState("");
   // Like Slack: a search started inside a project is scoped to it until the
@@ -102,6 +105,11 @@ export default function App() {
         // scanned === 0 is the synthetic event sent after a folder is removed.
         if (s.updated || s.removed || s.scanned === 0) reload();
       }),
+      // Settings… in the app menu (⌘,).
+      listen("open-settings", () => {
+        setHelp(false);
+        setSheet(true);
+      }),
       listen<string>("index-error", (e) => {
         setProgress(null);
         setIndexError(e.payload);
@@ -136,6 +144,15 @@ export default function App() {
   }, [query, version]);
 
   const p = prefs ?? DEFAULT_PREFS;
+
+  // Folding the error setting in here keeps every count, badge and filter consistent.
+  const sessions = useMemo(
+    () =>
+      p.countExits && rawSessions
+        ? rawSessions.map((s) => (s.exit_count ? { ...s, error_count: s.error_count + s.exit_count } : s))
+        : rawSessions,
+    [rawSessions, p.countExits],
+  );
 
   const hiddenSet = useMemo(() => new Set(p.hiddenProjects), [p.hiddenProjects]);
 
@@ -339,6 +356,13 @@ export default function App() {
   // ? lists the shortcuts. Keep ShortcutsSheet in step with this.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // Also in the app menu; this covers the browser preview.
+      if ((e.metaKey || e.ctrlKey) && e.key === ",") {
+        e.preventDefault();
+        setHelp(false);
+        setSheet(true);
+        return;
+      }
       // The open sheet handles its own keys; nothing behind it should react.
       if (sheet || help) return;
       const typing = (e.target as HTMLElement)?.tagName === "INPUT";
@@ -456,13 +480,14 @@ export default function App() {
           onHide={hideProject}
           // Dragging a filtered subset would leave the other projects' places ambiguous.
           onReorder={projectFilter.trim() ? undefined : reorderProjects}
-          hidden={hiddenProjects}
-          onUnhide={unhideProject}
         />
 
         <footer className="rail-foot">
-          <button className="ghost" onClick={() => setSheet(true)}>
-            Sources
+          <button className="ghost icon-button" title="Settings (⌘,)" aria-label="Settings" onClick={() => setSheet(true)}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
+              <circle cx="12" cy="12" r="3" />
+            </svg>
           </button>
           <button className="ghost help-button" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts" onClick={() => setHelp(true)}>
             ?
@@ -577,6 +602,7 @@ export default function App() {
             onOpen={open}
             focus={focus}
             keyboard={!sheet && !help}
+            countExits={p.countExits}
           />
         ) : (
           <div className="placeholder" data-tauri-drag-region>
@@ -592,7 +618,18 @@ export default function App() {
       </main>
 
       {help && <ShortcutsSheet onClose={() => setHelp(false)} />}
-      {sheet && <SourcesSheet onClose={() => setSheet(false)} stats={stats} indexing={!!progress} version={version} />}
+      {sheet && (
+        <SettingsSheet
+          onClose={() => setSheet(false)}
+          stats={stats}
+          indexing={!!progress}
+          version={version}
+          hidden={hiddenProjects}
+          onUnhide={unhideProject}
+          countExits={p.countExits}
+          onCountExits={(countExits) => update({ countExits })}
+        />
+      )}
     </div>
   );
 }

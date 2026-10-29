@@ -18,28 +18,21 @@ interface Props {
   onHide: (project: string) => void;
   /** Called with the full new order after a drag; omit to disable dragging. */
   onReorder?: (order: string[]) => void;
-  hidden: { project: string; count: number }[];
-  onUnhide: (project: string) => void;
 }
 
 const SOURCES: Source[] = ["claude", "codex", "pi"];
 // Pointer travel before a press becomes a drag, so clicks still select.
 const DRAG_THRESHOLD = 4;
 
-export function ProjectNav({ projects, total, active, onSelect, onHide, onReorder, hidden, onUnhide }: Props) {
+export function ProjectNav({ projects, total, active, onSelect, onHide, onReorder }: Props) {
   const navRef = useRef<HTMLElement>(null);
-  const [showHidden, setShowHidden] = useState(false);
   const [drag, setDrag] = useState<{ project: string; index: number } | null>(null);
   const dragRef = useRef<{ project: string; index: number } | null>(null);
   const press = useRef<{ project: string; y: number; dragging: boolean } | null>(null);
   // The click that follows a drag's pointerup must not select the project.
   const suppressClick = useRef(false);
 
-  useScrollAnchor(navRef, [projects, showHidden]);
-
-  useEffect(() => {
-    if (!hidden.length) setShowHidden(false);
-  }, [hidden.length]);
+  useScrollAnchor(navRef, [projects]);
 
   const dropIndex = (clientY: number) => {
     const items = navRef.current?.querySelectorAll<HTMLElement>(".proj-item[data-draggable]") ?? [];
@@ -151,7 +144,7 @@ export function ProjectNav({ projects, total, active, onSelect, onHide, onReorde
           </button>
           <button
             className="proj-hide"
-            title="Hide this project and its sessions"
+            title="Hide this project and its sessions (unhide in Settings)"
             aria-label={`Hide ${basename(x.project)}`}
             onPointerDown={(e) => e.stopPropagation()}
             onClick={() => onHide(x.project)}
@@ -160,29 +153,6 @@ export function ProjectNav({ projects, total, active, onSelect, onHide, onReorde
           </button>
         </div>
       ))}
-      {hidden.length > 0 && (
-        <div className="hidden-projects">
-          <button className={`hidden-toggle ${showHidden ? "open" : ""}`} onClick={() => setShowHidden((v) => !v)}>
-            <span className="caret">▸</span>
-            {hidden.length} hidden
-          </button>
-          {showHidden &&
-            hidden.map((x) => (
-              <div key={x.project} className="proj-item hidden" data-anchor={`hidden:${x.project}`}>
-                <div className="proj" title={tildify(x.project)}>
-                  <span className="proj-name">
-                    {basename(x.project)}
-                    <span className="proj-dir">{dirname(x.project)}</span>
-                  </span>
-                  <span className="proj-n">{x.count}</span>
-                </div>
-                <button className="proj-hide" aria-label={`Unhide ${basename(x.project)}`} onClick={() => onUnhide(x.project)}>
-                  Unhide
-                </button>
-              </div>
-            ))}
-        </div>
-      )}
     </nav>
   );
 }

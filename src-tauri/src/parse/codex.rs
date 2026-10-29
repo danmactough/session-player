@@ -83,6 +83,7 @@ pub fn parse(path: &Path) -> anyhow::Result<Parsed> {
             _ => {}
         }
     })?;
+    super::mark_failed_exits(&mut p.events);
     Ok(p)
 }
 
@@ -167,10 +168,13 @@ fn handle_item(p: &mut Parsed, item: &Value, ts: Option<i64>, model: Option<&str
             if let Some(obj) = unwrapped.as_ref().filter(|o| o.get("output").is_some()) {
                 e.text = content_text(obj.get("output").unwrap(), &mut e.images);
                 let code = obj.get("metadata").and_then(|m| m.get("exit_code")).and_then(Value::as_i64);
-                e.is_error = code.is_some_and(|c| c != 0);
+                e.exit_code = code.filter(|&c| c != 0);
             } else {
                 e.text = content_text(output, &mut e.images);
-                e.is_error = output_failed(&e.text);
+                match super::exit_code(&e.text) {
+                    Some(c) => e.exit_code = Some(c).filter(|&c| c != 0),
+                    None => e.is_error = output_failed(&e.text),
+                }
             }
             e.call_id = str_of(item, "call_id").map(str::to_string);
             e
@@ -281,22 +285,11 @@ fn key_values_json(body: &str) -> String {
 }
 
 /// Codex tool output carries no error flag. A call failed when the output
-/// reports a non-zero exit code ("Process exited with code 2", "Exit code: 1")
-/// or opens with "<tool> failed…" ("exec_command failed for …",
-/// "apply_patch verification failed: …").
+/// opens with "<tool> failed…" ("exec_command failed for …: SandboxDenied",
+/// "apply_patch verification failed: …"). A command that ran and reported an
+/// exit code ("Process exited with code 2") is handled separately.
 fn output_failed(text: &str) -> bool {
     let head: String = text.chars().take(400).collect();
-    let code = ["exited with code ", "Exit code: "].iter().find_map(|marker| {
-        let idx = head.find(marker)?;
-        head[idx + marker.len()..]
-            .split(|c: char| !c.is_ascii_digit() && c != '-')
-            .next()?
-            .parse::<i64>()
-            .ok()
-    });
-    if let Some(c) = code {
-        return c != 0;
-    }
     let first = head.lines().next().unwrap_or("");
     // The prefix must look like a tool name (exec_command, write_stdin), so
     // ordinary prose that mentions a failure does not count.
@@ -326,9 +319,6 @@ mod tests {
 
     #[test]
     fn detects_failed_tool_output() {
-        assert!(output_failed("Command: ls\nProcess exited with code 2\nOutput:\nnope"));
-        assert!(!output_failed("Command: ls\nProcess exited with code 0\nOutput:\nok"));
-        assert!(output_failed("Exit code: 1\nWall time: 0.2s"));
         assert!(output_failed("exec_command failed for `ls`: SandboxDenied { message: \"no\" }"));
         assert!(output_failed("apply_patch verification failed: Failed to find expected lines"));
         assert!(!output_failed("Success. Updated the following files:\nM README.md"));

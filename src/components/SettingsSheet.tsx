@@ -9,9 +9,13 @@ interface Props {
   stats: IndexStats | null;
   indexing: boolean;
   version: number;
+  hidden: { project: string; count: number }[];
+  onUnhide: (project: string) => void;
+  countExits: boolean;
+  onCountExits: (on: boolean) => void;
 }
 
-export function SourcesSheet({ onClose, stats, indexing, version }: Props) {
+export function SettingsSheet({ onClose, stats, indexing, version, hidden, onUnhide, countExits, onCountExits }: Props) {
   const [roots, setRoots] = useState<RootInfo[]>([]);
   const [suggested, setSuggested] = useState<string[]>([]);
   const [err, setErr] = useState<string | null>(null);
@@ -43,13 +47,14 @@ export function SourcesSheet({ onClose, stats, indexing, version }: Props) {
 
   return (
     <div className="sheet-backdrop" onClick={onClose}>
-      <div className="sheet" onClick={(e) => e.stopPropagation()}>
+      <div className="sheet settings" role="dialog" aria-label="Settings" onClick={(e) => e.stopPropagation()}>
         <div className="sheet-head">
-          <h2>Session sources</h2>
+          <h2>Settings</h2>
           <button className="ghost" onClick={onClose}>
             Done
           </button>
         </div>
+        <h3 className="settings-head">Session sources</h3>
         <p className="sheet-note">
           Folders are scanned recursively for <code>.jsonl</code> transcripts. The format (Claude Code, Codex or pi) is
           detected per file, and changes are picked up automatically while the app is open.
@@ -92,6 +97,38 @@ export function SourcesSheet({ onClose, stats, indexing, version }: Props) {
             </span>
           )}
         </div>
+
+        <h3 className="settings-head">Errors</h3>
+        <label className="setting-toggle">
+          <input type="checkbox" checked={countExits} onChange={(e) => onCountExits(e.target.checked)} />
+          <span>
+            Count failed shell commands as errors
+            <span className="setting-note">
+              Errors are tool calls that couldn&rsquo;t run (an edit that didn&rsquo;t apply, a timeout, a denied
+              command) and harness or model errors. Turn this on to also count commands that ran and exited non-zero,
+              such as failing tests. Exit 1 from <code>grep</code>, <code>rg</code>, <code>diff</code> and similar
+              means &ldquo;no match&rdquo; or &ldquo;differs&rdquo; and never counts.
+            </span>
+          </span>
+        </label>
+
+        <h3 className="settings-head">Hidden projects</h3>
+        <ul className="roots">
+          {hidden.map((x) => (
+            <li key={x.project}>
+              <div>
+                <div className="root-path">{tildify(x.project)}</div>
+                <div className="root-meta">
+                  {x.count} {x.count === 1 ? "session" : "sessions"}
+                </div>
+              </div>
+              <button className="ghost" onClick={() => onUnhide(x.project)}>
+                Unhide
+              </button>
+            </li>
+          ))}
+          {hidden.length === 0 && <li className="none">None. Hover a project in the sidebar and click Hide.</li>}
+        </ul>
       </div>
     </div>
   );

@@ -82,6 +82,7 @@ pub fn parse(path: &Path) -> anyhow::Result<Parsed> {
         .or(agent_name.map(|t| (t, "name")))
         .or(summary.map(|t| (t, "summary")));
 
+    super::mark_failed_exits(&mut p.events);
     Ok(p)
 }
 
@@ -136,6 +137,15 @@ fn handle_message(
                             e.text = content_text(b.get("content").unwrap_or(&Value::Null), &mut e.images);
                             e.call_id = str_of(b, "tool_use_id").map(str::to_string);
                             e.is_error = b.get("is_error").and_then(Value::as_bool) == Some(true);
+                            // The Bash tool reports a non-zero exit as an error
+                            // result that opens with "Exit code N".
+                            if e.is_error {
+                                let code = e.text.strip_prefix("Exit code ").and_then(super::leading_int);
+                                if code.is_some() {
+                                    e.exit_code = code;
+                                    e.is_error = false;
+                                }
+                            }
                             e.sidechain = sidechain;
                             p.events.push(e);
                         }

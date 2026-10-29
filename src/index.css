@@ -39,8 +39,9 @@
   color-scheme: light;
 }
 
+/* Dark palette: follows the system unless Settings picks a theme (data-theme on <html>). */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #121315;
     --rail: #0d0e10;
     --panel: #16171a;
@@ -69,6 +70,35 @@
     --user-bg: #1f2124;
     color-scheme: dark;
   }
+}
+:root[data-theme="dark"] {
+  --bg: #121315;
+  --rail: #0d0e10;
+  --panel: #16171a;
+  --raised: #1d1f22;
+  --ink: #e8e6e1;
+  --ink-2: #c4c2bd;
+  --muted: #8a8d93;
+  --faint: #5c5f65;
+  --line: #2a2c30;
+  --line-2: #212327;
+  --hover: rgba(232, 230, 225, 0.05);
+  --select: #e8e6e1;
+  --select-ink: #121315;
+  --accent: #8fd1a8;
+  --mark: rgba(230, 196, 80, 0.32);
+  --warn: #e6c450;
+
+  --claude: #e58a5c;
+  --codex: #6fa9e8;
+  --pi: #a98cf0;
+  --ok: #6cc08e;
+  --err: #ef7a64;
+  --add-bg: rgba(108, 192, 142, 0.12);
+  --del-bg: rgba(239, 122, 100, 0.11);
+  --code-bg: #1b1d20;
+  --user-bg: #1f2124;
+  color-scheme: dark;
 }
 
 * {

@@ -11,7 +11,7 @@ npm run bundle     # release build → src-tauri/target/release/bundle/macos/Ses
 npm test           # Rust parser/indexer tests
 ```
 
-On first launch the app adds whichever of these exist: `~/.claude/projects`, `~/.codex/sessions`, `~/.codex/archived_sessions`, `~/.pi/agent/sessions`. Add or remove folders in **Settings** (the gear in the bottom-left corner, **Session Player → Settings…**, or `⌘,`). Any folder works: every `.jsonl` file below it is checked, and its format is detected from its first lines.
+On first launch the app adds whichever of these exist: `~/.claude/projects`, `~/.codex/sessions`, `~/.codex/archived_sessions`, `~/.pi/agent/sessions`. Settings also picks the appearance: System (follows macOS), Light or Dark. Add or remove folders in **Settings** (the gear in the bottom-left corner, **Session Player → Settings…**, or `⌘,`). Any folder works: every `.jsonl` file below it is checked, and its format is detected from its first lines.
 
 ## Releasing
 

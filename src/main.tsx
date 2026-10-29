@@ -3,6 +3,9 @@ import { createRoot } from "react-dom/client";
 import "./index.css";
 import App from "./App.tsx";
 import { api } from "./api";
+import { applyTheme, storedTheme } from "./lib/theme";
+
+applyTheme(storedTheme());
 
 if (import.meta.env.DEV && !("__TAURI_INTERNALS__" in window)) {
   await import("./devBridge");

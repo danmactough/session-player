@@ -3,6 +3,13 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { api } from "../api";
 import type { IndexStats, RootInfo } from "../types";
 import { tildify } from "../lib/format";
+import type { Theme } from "../lib/theme";
+
+const THEMES: { key: Theme; label: string }[] = [
+  { key: "system", label: "System" },
+  { key: "light", label: "Light" },
+  { key: "dark", label: "Dark" },
+];
 
 interface Props {
   onClose: () => void;
@@ -13,9 +20,22 @@ interface Props {
   onUnhide: (project: string) => void;
   countExits: boolean;
   onCountExits: (on: boolean) => void;
+  theme: Theme;
+  onTheme: (theme: Theme) => void;
 }
 
-export function SettingsSheet({ onClose, stats, indexing, version, hidden, onUnhide, countExits, onCountExits }: Props) {
+export function SettingsSheet({
+  onClose,
+  stats,
+  indexing,
+  version,
+  hidden,
+  onUnhide,
+  countExits,
+  onCountExits,
+  theme,
+  onTheme,
+}: Props) {
   const [roots, setRoots] = useState<RootInfo[]>([]);
   const [suggested, setSuggested] = useState<string[]>([]);
   const [err, setErr] = useState<string | null>(null);
@@ -54,6 +74,15 @@ export function SettingsSheet({ onClose, stats, indexing, version, hidden, onUnh
             Done
           </button>
         </div>
+        <h3 className="settings-head">Appearance</h3>
+        <div className="segmented" role="radiogroup" aria-label="Appearance">
+          {THEMES.map((t) => (
+            <button key={t.key} role="radio" aria-checked={theme === t.key} className={theme === t.key ? "on" : ""} onClick={() => onTheme(t.key)}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+
         <h3 className="settings-head">Session sources</h3>
         <p className="sheet-note">
           Folders are scanned recursively for <code>.jsonl</code> transcripts. The format (Claude Code, Codex or pi) is

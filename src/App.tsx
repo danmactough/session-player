@@ -8,6 +8,7 @@ import { Transcript } from "./components/Transcript";
 import { SettingsSheet } from "./components/SettingsSheet";
 import { ShortcutsSheet } from "./components/ShortcutsSheet";
 import { Menu } from "./components/Menu";
+import { applyTheme, storedTheme, type Theme } from "./lib/theme";
 import { ProjectNav, type ProjectSummary } from "./components/ProjectNav";
 import { ancestors, branchChildren, branchRows, branchSourcePath, buildTree, type ListRow } from "./lib/tree";
 
@@ -42,6 +43,7 @@ interface Prefs {
   hiddenProjects: string[];
   /** Count shell commands that exited with a failing status as errors. */
   countExits: boolean;
+  theme: Theme;
 }
 const DEFAULT_PREFS: Prefs = {
   project: null,
@@ -54,6 +56,7 @@ const DEFAULT_PREFS: Prefs = {
   projectOrder: [],
   hiddenProjects: [],
   countExits: false,
+  theme: storedTheme(),
 };
 
 export default function App() {
@@ -144,6 +147,8 @@ export default function App() {
   }, [query, version]);
 
   const p = prefs ?? DEFAULT_PREFS;
+
+  useEffect(() => applyTheme(p.theme), [p.theme]);
 
   // Folding the error setting in here keeps every count, badge and filter consistent.
   const sessions = useMemo(
@@ -628,6 +633,8 @@ export default function App() {
           onUnhide={unhideProject}
           countExits={p.countExits}
           onCountExits={(countExits) => update({ countExits })}
+          theme={p.theme}
+          onTheme={(theme) => update({ theme })}
         />
       )}
     </div>

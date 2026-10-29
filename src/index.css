@@ -264,15 +264,21 @@ mark {
   color: var(--faint);
 }
 .proj-filter {
-  width: 90px;
-  height: 20px;
-  border: 0;
-  border-bottom: 1px solid var(--line);
-  background: transparent;
+  margin: 0 16px 8px;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
   outline: none;
-  font: 11px var(--mono);
-  text-transform: none;
-  letter-spacing: 0;
+  font: 12px var(--sans);
+  color: var(--ink);
+}
+.proj-filter::placeholder {
+  color: var(--faint);
+}
+.proj-filter:focus {
+  border-color: var(--muted);
 }
 .projects {
   position: relative;
@@ -330,6 +336,172 @@ mark {
   color: var(--faint);
   min-width: 18px;
   text-align: right;
+}
+.proj-sort .menu-button {
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: var(--muted);
+}
+.proj-sort .menu-button:hover,
+.proj-sort.open .menu-button {
+  color: var(--ink);
+}
+.proj-sort .menu-list {
+  right: -6px;
+}
+
+/* ---------- dropdown menu ---------- */
+.menu {
+  position: relative;
+  display: inline-flex;
+}
+.menu-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.menu-button .caret {
+  font-size: 9px;
+  opacity: 0.8;
+}
+.list-sort .menu-button {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 3px 8px 3px 9px;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.list-sort .menu-button:hover,
+.list-sort.open .menu-button {
+  background: var(--hover);
+}
+.list-sort .menu-list {
+  left: 0;
+}
+.menu-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  z-index: 20;
+  min-width: 140px;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  font: 12px var(--sans);
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--ink-2);
+}
+.menu-list li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px 5px 6px;
+  border-radius: 5px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.menu-list li.active {
+  background: var(--hover);
+  color: var(--ink);
+}
+.menu-list li.chosen {
+  color: var(--ink);
+  font-weight: 500;
+}
+.menu-list .check {
+  width: 12px;
+  font-size: 11px;
+  color: var(--accent);
+}
+.proj-item {
+  position: relative;
+}
+.proj-hide {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font: 10.5px var(--mono);
+  color: var(--muted);
+  opacity: 0;
+}
+.proj-item:hover .proj-hide,
+.proj-hide:focus-visible {
+  opacity: 1;
+}
+/* The button takes the place of the source dots and count. */
+.proj-item:hover .proj-dots,
+.proj-item:hover .proj-n {
+  visibility: hidden;
+}
+.proj-hide:hover {
+  color: var(--ink);
+}
+.proj-item:has(.proj.active) .proj-hide {
+  color: var(--select-ink);
+}
+.projects.dragging .proj-hide {
+  display: none;
+}
+.projects.dragging,
+.projects.dragging .proj {
+  cursor: grabbing;
+}
+.proj-item.dragged {
+  opacity: 0.4;
+}
+.proj-item.drop-before::before,
+.proj-item.drop-after::after {
+  content: "";
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+  pointer-events: none;
+}
+.proj-item.drop-before::before {
+  top: -1px;
+}
+.proj-item.drop-after::after {
+  bottom: -1px;
+}
+.hidden-projects {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+.hidden-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  font: 10.5px var(--mono);
+  color: var(--faint);
+}
+.hidden-toggle:hover {
+  color: var(--ink-2);
+}
+.hidden-toggle .caret {
+  font-size: 9px;
+  transition: transform 0.12s;
+}
+.hidden-toggle.open .caret {
+  transform: rotate(90deg);
+}
+.proj-item.hidden .proj {
+  color: var(--muted);
+}
+.proj-item.hidden .proj:hover {
+  background: none;
 }
 .rail-foot {
   display: flex;
@@ -438,24 +610,6 @@ mark {
   align-items: center;
   gap: 14px;
   margin-top: 12px;
-}
-.mid-controls select {
-  appearance: none;
-  border: 1px solid var(--line);
-  background: transparent;
-  border-radius: 6px;
-  padding: 3px 24px 3px 9px;
-  font-size: 12px;
-  color: var(--ink-2);
-  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%),
-    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
-  background-position: calc(100% - 12px) 50%, calc(100% - 8px) 50%;
-  background-size: 4px 4px;
-  background-repeat: no-repeat;
-  outline: none;
-}
-.mid-controls select:disabled {
-  opacity: 0.4;
 }
 .segmented {
   display: inline-flex;

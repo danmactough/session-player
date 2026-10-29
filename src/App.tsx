@@ -2,12 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api } from "./api";
 import type { IndexStats, SearchHit, SessionRow, SortKey, Source } from "./types";
-import { basename, dirname, relTime, setHome, SOURCE_LABEL, tildify } from "./lib/format";
+import { basename, relTime, setHome, SOURCE_LABEL, tildify } from "./lib/format";
 import { SessionList } from "./components/SessionList";
 import { Transcript } from "./components/Transcript";
 import { SourcesSheet } from "./components/SourcesSheet";
+import { Menu } from "./components/Menu";
+import { ProjectNav, type ProjectSummary } from "./components/ProjectNav";
 import { ancestors, branchChildren, branchRows, branchSourcePath, buildTree, type ListRow } from "./lib/tree";
-import { useScrollAnchor } from "./lib/useScrollAnchor";
 
 const ALL_SOURCES: Source[] = ["claude", "codex", "pi"];
 const SORTS: { key: SortKey; label: string }[] = [
@@ -17,6 +18,17 @@ const SORTS: { key: SortKey; label: string }[] = [
   { key: "tokens", label: "Most tokens" },
 ];
 
+type ProjectSort = "recent" | "stale" | "az" | "za" | "manual";
+const PROJECT_SORTS: { key: ProjectSort; label: string }[] = [
+  { key: "recent", label: "Recent" },
+  { key: "stale", label: "Oldest" },
+  { key: "az", label: "A–Z" },
+  { key: "za", label: "Z–A" },
+  { key: "manual", label: "Manual" },
+];
+const byName = (a: string, b: string) =>
+  basename(a).localeCompare(basename(b), undefined, { sensitivity: "base", numeric: true }) || a.localeCompare(b);
+
 interface Prefs {
   project: string | null;
   sort: SortKey;
@@ -24,8 +36,21 @@ interface Prefs {
   showSub: boolean;
   errorsOnly: boolean;
   selected: string | null;
+  projectSort: ProjectSort;
+  projectOrder: string[];
+  hiddenProjects: string[];
 }
-const DEFAULT_PREFS: Prefs = { project: null, sort: "recent", sources: ALL_SOURCES, showSub: false, errorsOnly: false, selected: null };
+const DEFAULT_PREFS: Prefs = {
+  project: null,
+  sort: "recent",
+  sources: ALL_SOURCES,
+  showSub: false,
+  errorsOnly: false,
+  selected: null,
+  projectSort: "recent",
+  projectOrder: [],
+  hiddenProjects: [],
+};
 
 export default function App() {
   const [sessions, setSessions] = useState<SessionRow[] | null>(null);
@@ -42,7 +67,6 @@ export default function App() {
   const [version, setVersion] = useState(0);
   const [projectFilter, setProjectFilter] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
-  const projectsRef = useRef<HTMLElement>(null);
   // Sessions whose subagents, forks and branches are shown in the list.
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
 
@@ -111,16 +135,22 @@ export default function App() {
 
   const p = prefs ?? DEFAULT_PREFS;
 
+  const hiddenSet = useMemo(() => new Set(p.hiddenProjects), [p.hiddenProjects]);
+
   const base = useMemo(
     () =>
       (sessions ?? []).filter(
-        (s) => p.sources.includes(s.source) && (p.showSub || !s.is_subagent) && (!p.errorsOnly || s.error_count > 0),
+        (s) =>
+          !hiddenSet.has(s.project) &&
+          p.sources.includes(s.source) &&
+          (p.showSub || !s.is_subagent) &&
+          (!p.errorsOnly || s.error_count > 0),
       ),
-    [sessions, p.sources, p.showSub, p.errorsOnly],
+    [sessions, hiddenSet, p.sources, p.showSub, p.errorsOnly],
   );
 
   const projects = useMemo(() => {
-    const m = new Map<string, { project: string; count: number; latest: number; sources: Set<Source> }>();
+    const m = new Map<string, ProjectSummary>();
     for (const s of base) {
       const e = m.get(s.project) ?? { project: s.project, count: 0, latest: 0, sources: new Set<Source>() };
       e.count++;
@@ -128,8 +158,49 @@ export default function App() {
       e.sources.add(s.source);
       m.set(s.project, e);
     }
-    return [...m.values()].sort((a, b) => b.latest - a.latest);
-  }, [base]);
+    const out = [...m.values()].sort((a, b) => b.latest - a.latest);
+    switch (p.projectSort) {
+      case "stale":
+        return out.reverse();
+      case "az":
+        return out.sort((a, b) => byName(a.project, b.project));
+      case "za":
+        return out.sort((a, b) => byName(b.project, a.project));
+      case "manual": {
+        // Projects not yet placed by hand go first, newest first, so new work is easy to find.
+        const pos = new Map(p.projectOrder.map((x, i) => [x, i]));
+        return out.sort((a, b) => (pos.get(a.project) ?? -1) - (pos.get(b.project) ?? -1));
+      }
+    }
+    return out;
+  }, [base, p.projectSort, p.projectOrder]);
+
+  const hiddenProjects = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const s of sessions ?? []) if (hiddenSet.has(s.project)) counts.set(s.project, (counts.get(s.project) ?? 0) + 1);
+    return [...p.hiddenProjects].sort(byName).map((project) => ({ project, count: counts.get(project) ?? 0 }));
+  }, [sessions, hiddenSet, p.hiddenProjects]);
+
+  const hideProject = useCallback(
+    (project: string) =>
+      update({
+        hiddenProjects: [...p.hiddenProjects.filter((x) => x !== project), project],
+        ...(p.project === project ? { project: null } : {}),
+      }),
+    [update, p.hiddenProjects, p.project],
+  );
+  const unhideProject = useCallback(
+    (project: string) => update({ hiddenProjects: p.hiddenProjects.filter((x) => x !== project) }),
+    [update, p.hiddenProjects],
+  );
+  const reorderProjects = useCallback(
+    (order: string[]) => {
+      // Keep the saved positions of projects not shown right now (hidden or filtered out by source).
+      const shown = new Set(order);
+      update({ projectSort: "manual", projectOrder: [...order, ...p.projectOrder.filter((x) => !shown.has(x))] });
+    },
+    [update, p.projectOrder],
+  );
 
   const visibleProjects = useMemo(() => {
     const f = projectFilter.trim().toLowerCase();
@@ -285,8 +356,6 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [rows, p.selected, select]);
 
-  useScrollAnchor(projectsRef, [visibleProjects]);
-
   const toggleSource = (s: Source) => {
     const has = p.sources.includes(s);
     const next = has ? p.sources.filter((x) => x !== s) : [...p.sources, s];
@@ -348,45 +417,37 @@ export default function App() {
 
         <div className="rail-section">
           <span>Projects</span>
-          {projects.length > 8 && (
-            <input
-              className="proj-filter"
-              placeholder="filter"
-              value={projectFilter}
-              onChange={(e) => setProjectFilter(e.target.value)}
-            />
-          )}
+          <Menu
+            className="proj-sort"
+            label="Sort projects"
+            title="Sort projects (drag a project to arrange by hand)"
+            value={p.projectSort}
+            options={PROJECT_SORTS}
+            onChange={(projectSort) => update({ projectSort })}
+          />
         </div>
-        <nav className="projects" ref={projectsRef}>
-          <button
-            className={`proj ${p.project === null ? "active" : ""}`}
-            data-anchor="(all)"
-            onClick={() => update({ project: null })}
-          >
-            <span className="proj-name">All projects</span>
-            <span className="proj-n">{base.length}</span>
-          </button>
-          {visibleProjects.map((x) => (
-            <button
-              key={x.project}
-              className={`proj ${p.project === x.project ? "active" : ""}`}
-              data-anchor={x.project}
-              onClick={() => update({ project: x.project })}
-              title={tildify(x.project)}
-            >
-              <span className="proj-name">
-                {basename(x.project)}
-                <span className="proj-dir">{dirname(x.project)}</span>
-              </span>
-              <span className="proj-dots">
-                {ALL_SOURCES.filter((s) => x.sources.has(s)).map((s) => (
-                  <span key={s} className={`sdot src-${s}`} />
-                ))}
-              </span>
-              <span className="proj-n">{x.count}</span>
-            </button>
-          ))}
-        </nav>
+        {projects.length > 8 && (
+          <input
+            className="proj-filter"
+            placeholder="Filter projects"
+            value={projectFilter}
+            onChange={(e) => setProjectFilter(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") setProjectFilter("");
+            }}
+          />
+        )}
+        <ProjectNav
+          projects={visibleProjects}
+          total={base.length}
+          active={p.project}
+          onSelect={(project) => update({ project })}
+          onHide={hideProject}
+          // Dragging a filtered subset would leave the other projects' places ambiguous.
+          onReorder={projectFilter.trim() ? undefined : reorderProjects}
+          hidden={hiddenProjects}
+          onUnhide={unhideProject}
+        />
 
         <footer className="rail-foot">
           <button className="ghost" onClick={() => setSheet(true)}>
@@ -436,13 +497,7 @@ export default function App() {
             </div>
           ) : (
             <div className="mid-controls">
-              <select value={p.sort} onChange={(e) => update({ sort: e.target.value as SortKey })}>
-                {SORTS.map((s) => (
-                  <option key={s.key} value={s.key}>
-                    {s.label}
-                  </option>
-                ))}
-              </select>
+              <Menu className="list-sort" label="Sort sessions" value={p.sort} options={SORTS} onChange={(sort) => update({ sort })} />
               <label className="toggle">
                 <input type="checkbox" checked={p.showSub} onChange={(e) => update({ showSub: e.target.checked })} />
                 Subagents

@@ -166,3 +166,21 @@ fn claude_file_mentions_are_shown_inside_the_prompt() {
         vec!["user:@/tmp/handoff.md pick this up\n<file name=\"/tmp/handoff.md\"># Handoff\n- step one</file>\n", "assistant:On it."]
     );
 }
+
+#[test]
+fn scheduled_codex_runs_share_a_project() {
+    // Each scheduled run works in a folder named for its day.
+    let base = std::env::temp_dir().join(format!("sp-codex-scheduled-{}", std::process::id()));
+    let src = std::fs::read_to_string(fixture("codex.jsonl")).unwrap();
+    let mut projects = Vec::new();
+    for day in ["2026-10-28", "2026-10-29"] {
+        let cwd = base.join("Documents/Codex").join(day).join("refresh-the-shared-simulator");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let file = base.join(format!("rollout-{day}.jsonl"));
+        std::fs::write(&file, src.replace("/work/other", &cwd.to_string_lossy())).unwrap();
+        projects.push(index_one(&file.to_string_lossy()).0.project);
+    }
+    std::fs::remove_dir_all(&base).unwrap();
+    let expected = base.join("Documents/Codex/refresh-the-shared-simulator");
+    assert_eq!(projects, vec![expected.to_string_lossy().into_owned(); 2]);
+}

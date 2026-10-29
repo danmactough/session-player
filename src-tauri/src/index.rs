@@ -11,7 +11,7 @@ use crate::model::{EventKind, Parsed, SessionRow, Source};
 use crate::parse;
 
 /// Bump when parsing changes so existing indexes are rebuilt on launch.
-const INDEX_VERSION: &str = "15";
+const INDEX_VERSION: &str = "16";
 const FTS_BODY_LIMIT: usize = 400_000;
 const SKIP_DIRS: &[&str] = &["memory", "tool-results", "subagent-artifacts", "node_modules", ".git"];
 
@@ -467,7 +467,26 @@ fn project_of(cwd: Option<&str>) -> String {
             return cwd[..i].to_string();
         }
     }
-    cwd.trim_end_matches('/').to_string()
+    // Scheduled Codex runs get a fresh folder per day, such as
+    // ~/Documents/Codex/2026-10-28/refresh-the-shared-simulator. Dropping a
+    // date folder that has a folder below it makes every run one project:
+    // ~/Documents/Codex/refresh-the-shared-simulator.
+    let segments: Vec<&str> = cwd.trim_end_matches('/').split('/').collect();
+    let last = segments.len() - 1;
+    segments
+        .iter()
+        .enumerate()
+        .filter(|&(i, s)| i == last || !is_date(s))
+        .map(|(_, s)| *s)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// A YYYY-MM-DD folder name.
+fn is_date(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 10
+        && b.iter().enumerate().all(|(i, c)| if i == 4 || i == 7 { *c == b'-' } else { c.is_ascii_digit() })
 }
 
 type SidecarCache = std::sync::Mutex<HashMap<PathBuf, std::sync::Arc<HashMap<String, String>>>>;
@@ -678,6 +697,19 @@ pub fn root_counts(conn: &Connection) -> anyhow::Result<HashMap<String, i64>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dated_run_folders_share_a_project() {
+        let a = project_of(Some("/Users/me/Documents/Codex/2026-10-28/refresh-the-shared-simulator"));
+        let b = project_of(Some("/Users/me/Documents/Codex/2026-10-29/refresh-the-shared-simulator/"));
+        assert_eq!(a, "/Users/me/Documents/Codex/refresh-the-shared-simulator");
+        assert_eq!(a, b);
+        // A date folder with nothing below it is the project itself.
+        assert_eq!(project_of(Some("/Users/me/notes/2026-10-28")), "/Users/me/notes/2026-10-28");
+        // Only exact YYYY-MM-DD names fold.
+        assert_eq!(project_of(Some("/Users/me/code/2026-10-28-launch/app")), "/Users/me/code/2026-10-28-launch/app");
+        assert_eq!(project_of(Some("/repo/.claude/worktrees/x")), "/repo");
+    }
 
     /// Indexes the real agent directories on this machine into a throwaway
     /// database. Run with: SP_TEST_DB=/tmp/x.sqlite cargo test -- --ignored --nocapture

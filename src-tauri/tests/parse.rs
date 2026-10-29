@@ -168,19 +168,30 @@ fn claude_file_mentions_are_shown_inside_the_prompt() {
 }
 
 #[test]
-fn scheduled_codex_runs_share_a_project() {
-    // Each scheduled run works in a folder named for its day.
-    let base = std::env::temp_dir().join(format!("sp-codex-scheduled-{}", std::process::id()));
+fn codex_chats_outside_projects_share_a_project() {
+    // The Codex app gives each chat outside a project its own folder under
+    // ~/Documents/Codex and lists those threads in its global state.
+    let home = std::env::temp_dir().join(format!("sp-codex-projectless-{}", std::process::id()));
+    let day = home.join(".codex/sessions/2026/10/28");
+    std::fs::create_dir_all(&day).unwrap();
+    std::fs::write(home.join(".codex/.codex-global-state.json"), r#"{"projectless-thread-ids":["019d-listed"]}"#).unwrap();
     let src = std::fs::read_to_string(fixture("codex.jsonl")).unwrap();
+    let root = home.join("Documents/Codex");
     let mut projects = Vec::new();
-    for day in ["2026-10-28", "2026-10-29"] {
-        let cwd = base.join("Documents/Codex").join(day).join("refresh-the-shared-simulator");
+    for (id, cwd) in [
+        // Listed as projectless.
+        ("019d-listed", root.join("2026-10-28/refresh-the-shared-simulator")),
+        // Not listed, but working inside the projectless folder.
+        ("019d-inside", root.join("2026-10-29/fix-the-readme")),
+        // An ordinary project.
+        ("019d-repo", home.join("code/app")),
+    ] {
         std::fs::create_dir_all(&cwd).unwrap();
-        let file = base.join(format!("rollout-{day}.jsonl"));
-        std::fs::write(&file, src.replace("/work/other", &cwd.to_string_lossy())).unwrap();
+        let file = day.join(format!("rollout-{id}.jsonl"));
+        std::fs::write(&file, src.replace("019d-codex", id).replace("/work/other", &cwd.to_string_lossy())).unwrap();
         projects.push(index_one(&file.to_string_lossy()).0.project);
     }
-    std::fs::remove_dir_all(&base).unwrap();
-    let expected = base.join("Documents/Codex/refresh-the-shared-simulator");
-    assert_eq!(projects, vec![expected.to_string_lossy().into_owned(); 2]);
+    std::fs::remove_dir_all(&home).unwrap();
+    let root = root.to_string_lossy().into_owned();
+    assert_eq!(projects, vec![root.clone(), root, home.join("code/app").to_string_lossy().into_owned()]);
 }

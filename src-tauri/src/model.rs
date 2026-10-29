@@ -97,6 +97,8 @@ pub struct Parsed {
     pub source: Source,
     pub native_id: String,
     pub cwd: Option<String>,
+    /// Overrides the project derived from `cwd` (Codex chats outside a project).
+    pub project: Option<String>,
     pub git_branch: Option<String>,
     /// An explicit title and where it came from ("custom", "ai", "thread", "name", ...).
     pub title: Option<(String, &'static str)>,
@@ -140,6 +142,7 @@ impl Parsed {
             source,
             native_id,
             cwd: None,
+            project: None,
             git_branch: None,
             title: None,
             models: Vec::new(),

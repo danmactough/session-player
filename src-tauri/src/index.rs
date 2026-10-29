@@ -11,7 +11,7 @@ use crate::model::{EventKind, Parsed, SessionRow, Source};
 use crate::parse;
 
 /// Bump when parsing changes so existing indexes are rebuilt on launch.
-const INDEX_VERSION: &str = "16";
+const INDEX_VERSION: &str = "18";
 const FTS_BODY_LIMIT: usize = 400_000;
 const SKIP_DIRS: &[&str] = &["memory", "tool-results", "subagent-artifacts", "node_modules", ".git"];
 
@@ -298,6 +298,7 @@ fn enrich(path: &Path, source: Source, parsed: &mut Parsed, sidecars: &CodexSide
             parsed.title = Some((t, "thread"));
         }
         parsed.imported_from = sidecars.imported_from(path, &parsed.native_id);
+        parsed.project = sidecars.projectless_root(path, &parsed.native_id, parsed.cwd.as_deref());
     }
     parsed.title = parsed
         .title
@@ -401,7 +402,7 @@ fn build_row(file: &FileInfo, p: Parsed) -> Option<(SessionRow, String)> {
         (None, Some((t, s))) => (t, s),
         (None, None) => ("Untitled session".to_string(), "none"),
     };
-    let project = project_of(p.cwd.as_deref());
+    let project = p.project.unwrap_or_else(|| project_of(p.cwd.as_deref()));
     let row = SessionRow {
         path: file.path.clone(),
         source: p.source.as_str().into(),
@@ -467,26 +468,7 @@ fn project_of(cwd: Option<&str>) -> String {
             return cwd[..i].to_string();
         }
     }
-    // Scheduled Codex runs get a fresh folder per day, such as
-    // ~/Documents/Codex/2026-10-28/refresh-the-shared-simulator. Dropping a
-    // date folder that has a folder below it makes every run one project:
-    // ~/Documents/Codex/refresh-the-shared-simulator.
-    let segments: Vec<&str> = cwd.trim_end_matches('/').split('/').collect();
-    let last = segments.len() - 1;
-    segments
-        .iter()
-        .enumerate()
-        .filter(|&(i, s)| i == last || !is_date(s))
-        .map(|(_, s)| *s)
-        .collect::<Vec<_>>()
-        .join("/")
-}
-
-/// A YYYY-MM-DD folder name.
-fn is_date(s: &str) -> bool {
-    let b = s.as_bytes();
-    b.len() == 10
-        && b.iter().enumerate().all(|(i, c)| if i == 4 || i == 7 { *c == b'-' } else { c.is_ascii_digit() })
+    cwd.trim_end_matches('/').to_string()
 }
 
 type SidecarCache = std::sync::Mutex<HashMap<PathBuf, std::sync::Arc<HashMap<String, String>>>>;
@@ -496,6 +478,7 @@ type SidecarCache = std::sync::Mutex<HashMap<PathBuf, std::sync::Arc<HashMap<Str
 struct CodexSidecars {
     titles: SidecarCache,
     imports: SidecarCache,
+    projectless: SidecarCache,
 }
 
 impl CodexSidecars {
@@ -506,6 +489,47 @@ impl CodexSidecars {
     fn imported_from(&self, rollout: &Path, id: &str) -> Option<String> {
         lookup_sidecar(&self.imports, rollout, "external_agent_session_imports.json", read_codex_imports, id)
     }
+
+    /// The Codex app's folder for chats outside any project, when this thread
+    /// is one of them: Codex lists it as projectless, or it works inside that
+    /// folder. Each such chat gets its own folder below
+    /// (~/Documents/Codex/2026-10-28/refresh-the-shared-simulator), so using
+    /// the root as the project groups them the way the app does ("no project").
+    fn projectless_root(&self, rollout: &Path, id: &str, cwd: Option<&str>) -> Option<String> {
+        let file = ".codex-global-state.json";
+        let root = lookup_sidecar(&self.projectless, rollout, file, read_codex_projectless, ROOT_KEY)?;
+        let listed = lookup_sidecar(&self.projectless, rollout, file, read_codex_projectless, id).is_some();
+        let inside = cwd.is_some_and(|c| Path::new(c).starts_with(&root));
+        (listed || inside).then_some(root)
+    }
+}
+
+/// Key under which `read_codex_projectless` stores the folder itself.
+const ROOT_KEY: &str = "";
+
+/// Reads the Codex app's projectless chat folder and thread ids from its
+/// global state. The folder is the `projectless-workspace-root` setting, or
+/// the app's default, ~/Documents/Codex (the home folder is the one holding
+/// ~/.codex). Every id maps to the folder.
+fn read_codex_projectless(path: &Path) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    let state = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .unwrap_or_default();
+    let find = |key: &str| state.get(key).or_else(|| state.get("electron-persisted-atom-state").and_then(|s| s.get(key)));
+    let configured = find("projectless-workspace-root").and_then(|v| v.as_str()).filter(|s| s.starts_with('/'));
+    let default = path.parent().and_then(Path::parent).map(|home| home.join("Documents/Codex"));
+    let Some(root) = configured.map(str::to_string).or_else(|| default.map(|d| d.to_string_lossy().into_owned())) else {
+        return map;
+    };
+    for id in find("projectless-thread-ids").and_then(|v| v.as_array()).into_iter().flatten() {
+        if let Some(id) = id.as_str() {
+            map.insert(id.to_string(), root.clone());
+        }
+    }
+    map.insert(ROOT_KEY.to_string(), root);
+    map
 }
 
 fn lookup_sidecar(
@@ -697,19 +721,6 @@ pub fn root_counts(conn: &Connection) -> anyhow::Result<HashMap<String, i64>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn dated_run_folders_share_a_project() {
-        let a = project_of(Some("/Users/me/Documents/Codex/2026-10-28/refresh-the-shared-simulator"));
-        let b = project_of(Some("/Users/me/Documents/Codex/2026-10-29/refresh-the-shared-simulator/"));
-        assert_eq!(a, "/Users/me/Documents/Codex/refresh-the-shared-simulator");
-        assert_eq!(a, b);
-        // A date folder with nothing below it is the project itself.
-        assert_eq!(project_of(Some("/Users/me/notes/2026-10-28")), "/Users/me/notes/2026-10-28");
-        // Only exact YYYY-MM-DD names fold.
-        assert_eq!(project_of(Some("/Users/me/code/2026-10-28-launch/app")), "/Users/me/code/2026-10-28-launch/app");
-        assert_eq!(project_of(Some("/repo/.claude/worktrees/x")), "/repo");
-    }
 
     /// Indexes the real agent directories on this machine into a throwaway
     /// database. Run with: SP_TEST_DB=/tmp/x.sqlite cargo test -- --ignored --nocapture

@@ -425,6 +425,21 @@ export default function App() {
     [sessions, hiddenSet, p.sources, p.showSub],
   );
 
+  // Changing what a list shows starts it at the top; changes that happen
+  // under the user (expanding a row, new sessions arriving, hiding or dragging
+  // a project) keep the scroll position. A new object marks a reset.
+  const projectListKey = useMemo(
+    () => ({}),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [filterText, p.sources, p.errorsOnly, p.showSub, p.countExits, p.projectSort],
+  );
+  // Search results are ranked, so new full-text hits re-rank them from the top too.
+  const sessionListKey = useMemo(
+    () => ({}),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [p.project, filterText, p.sources, p.errorsOnly, p.showSub, p.countExits, p.sort, query, searchAll, hits],
+  );
+
   const empty = sessions !== null && sessions.length === 0;
 
   return (
@@ -527,6 +542,7 @@ export default function App() {
           onHide={hideProject}
           // Dragging a filtered subset would leave the other projects' places ambiguous.
           onReorder={projectFilter.trim() ? undefined : reorderProjects}
+          resetKey={projectListKey}
         />
 
         <footer className="rail-foot">
@@ -628,6 +644,7 @@ export default function App() {
             hits={hits}
             showProject={!scopeProject}
             groupByDay={!query && (p.sort === "recent" || p.sort === "oldest")}
+            resetKey={sessionListKey}
           />
         )}
       </section>

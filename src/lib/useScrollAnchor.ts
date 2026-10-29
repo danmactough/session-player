@@ -7,15 +7,26 @@ import { useLayoutEffect, useRef, type DependencyList, type RefObject } from "re
  * offset is read then, before React updates the DOM (afterwards the browser
  * may already have clamped it). The container must be positioned, since
  * offsetTop is measured against it.
+ *
+ * When `resetKey` changes (a new object identity), the user asked for a
+ * different list, so it scrolls to the top instead.
  */
-export function useScrollAnchor(ref: RefObject<HTMLElement | null>, deps: DependencyList) {
+export function useScrollAnchor(ref: RefObject<HTMLElement | null>, deps: DependencyList, resetKey?: unknown) {
   const scrollTopBeforeCommit = ref.current?.scrollTop ?? 0;
   const previous = useRef<{ key: string; top: number; bottom: number }[]>([]);
+  const lastReset = useRef(resetKey);
+  const resetting = lastReset.current !== resetKey;
+
+  useLayoutEffect(() => {
+    if (!resetting) return;
+    lastReset.current = resetKey;
+    if (ref.current) ref.current.scrollTop = 0;
+  });
 
   useLayoutEffect(() => {
     const el = ref.current;
     const prev = previous.current;
-    if (!el || !prev.length) return;
+    if (!el || !prev.length || resetting) return;
     const top = scrollTopBeforeCommit;
     const oldIndex = prev.findIndex((p) => p.bottom > top);
     if (oldIndex < 0) return;

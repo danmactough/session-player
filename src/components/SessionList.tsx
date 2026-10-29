@@ -15,11 +15,14 @@ interface Props {
   hits: Map<string, SearchHit> | null;
   showProject: boolean;
   groupByDay: boolean;
+  /** A new identity means the user asked for a different list (filters, sort,
+   * project, search), which starts at the top instead of keeping its place. */
+  resetKey: unknown;
 }
 
 const itemKey = (it: Item) => (it.kind === "head" ? `head:${it.label}` : it.row.s.path);
 
-export function SessionList({ rows, selected, onSelect, onToggle, hits, showProject, groupByDay }: Props) {
+export function SessionList({ rows, selected, onSelect, onToggle, hits, showProject, groupByDay, resetKey }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const items = useMemo<Item[]>(() => {
     if (!groupByDay) return rows.map((row) => ({ kind: "row", row }));
@@ -51,18 +54,26 @@ export function SessionList({ rows, selected, onSelect, onToggle, hits, showProj
     paddingEnd: 24,
   });
 
-  // Scroll anchoring: when the list changes (filters, expanding a session),
-  // keep the top-most visible item where it was on screen so everything else
-  // reflows around it. The scroll offset is read during render, before React
+  // Scroll anchoring: when the list changes under the user (expanding a
+  // session, sessions added while open), keep the top-most visible item where
+  // it was on screen so everything else reflows around it. The scroll offset is read during render, before React
   // touches the DOM (afterwards the browser may already have clamped it), and
   // compared with item positions from the previous commit.
   const scrollTopBeforeCommit = scrollRef.current?.scrollTop ?? 0;
   const previous = useRef<{ keys: string[]; positions: { start: number; end: number }[] } | null>(null);
+  const lastReset = useRef(resetKey);
+  const resetting = lastReset.current !== resetKey;
+
+  useLayoutEffect(() => {
+    if (!resetting) return;
+    lastReset.current = resetKey;
+    if (scrollRef.current) scrollRef.current.scrollTop = 0;
+  });
 
   useLayoutEffect(() => {
     const el = scrollRef.current;
     const prev = previous.current;
-    if (!el || !prev || prev.keys === keys) return;
+    if (!el || !prev || prev.keys === keys || resetting) return;
     const top = scrollTopBeforeCommit;
     const oldIndex = prev.positions.findIndex((m) => m.end > top);
     if (oldIndex < 0) return;

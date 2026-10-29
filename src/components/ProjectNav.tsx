@@ -16,6 +16,8 @@ interface Props {
   active: string | null;
   onSelect: (project: string | null) => void;
   onHide: (project: string) => void;
+  /** A new identity means the list was filtered or re-sorted: scroll to the top. */
+  resetKey: unknown;
   /** Called with the full new order after a drag; omit to disable dragging. */
   onReorder?: (order: string[]) => void;
 }
@@ -24,7 +26,7 @@ const SOURCES: Source[] = ["claude", "codex", "pi"];
 // Pointer travel before a press becomes a drag, so clicks still select.
 const DRAG_THRESHOLD = 4;
 
-export function ProjectNav({ projects, total, active, onSelect, onHide, onReorder }: Props) {
+export function ProjectNav({ projects, total, active, onSelect, onHide, onReorder, resetKey }: Props) {
   const navRef = useRef<HTMLElement>(null);
   const [drag, setDrag] = useState<{ project: string; index: number } | null>(null);
   const dragRef = useRef<{ project: string; index: number } | null>(null);
@@ -32,7 +34,7 @@ export function ProjectNav({ projects, total, active, onSelect, onHide, onReorde
   // The click that follows a drag's pointerup must not select the project.
   const suppressClick = useRef(false);
 
-  useScrollAnchor(navRef, [projects]);
+  useScrollAnchor(navRef, [projects], resetKey);
 
   const dropIndex = (clientY: number) => {
     const items = navRef.current?.querySelectorAll<HTMLElement>(".proj-item[data-draggable]") ?? [];

@@ -22,6 +22,8 @@ interface Props {
   onCountExits: (on: boolean) => void;
   theme: Theme;
   onTheme: (theme: Theme) => void;
+  hideSubagents: boolean;
+  onHideSubagents: (hide: boolean) => void;
 }
 
 export function SettingsSheet({
@@ -35,6 +37,8 @@ export function SettingsSheet({
   onCountExits,
   theme,
   onTheme,
+  hideSubagents,
+  onHideSubagents,
 }: Props) {
   const [roots, setRoots] = useState<RootInfo[]>([]);
   const [suggested, setSuggested] = useState<string[]>([]);
@@ -126,6 +130,18 @@ export function SettingsSheet({
             </span>
           )}
         </div>
+
+        <h3 className="settings-head">Session list</h3>
+        <label className="setting-toggle">
+          <input type="checkbox" checked={hideSubagents} onChange={(e) => onHideSubagents(e.target.checked)} />
+          <span>
+            Hide subagent sessions
+            <span className="setting-note">
+              Leaves subagent runs out of the session list, counts and search. They stay linked from the session that
+              started them.
+            </span>
+          </span>
+        </label>
 
         <h3 className="settings-head">Errors</h3>
         <label className="setting-toggle">

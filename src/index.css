@@ -257,6 +257,12 @@ mark {
 .srcpill.on .sdot {
   opacity: 1;
 }
+.filter-pill {
+  margin-top: 6px;
+}
+.sdot.err {
+  background: var(--err);
+}
 .srcpill .n {
   margin-left: auto;
   font: 11px var(--mono);
@@ -367,18 +373,37 @@ mark {
   min-width: 18px;
   text-align: right;
 }
-.proj-sort .menu-button {
-  font: inherit;
-  letter-spacing: inherit;
-  text-transform: inherit;
+/* Small-caps sort menus: Projects in the rail, Sessions in the list header. */
+.proj-sort .menu-button,
+.caps-sort .menu-button {
+  font: 10.5px var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
   color: var(--muted);
 }
 .proj-sort .menu-button:hover,
-.proj-sort.open .menu-button {
+.proj-sort.open .menu-button,
+.caps-sort .menu-button:hover,
+.caps-sort.open .menu-button {
   color: var(--ink);
 }
-.proj-sort .menu-list {
+.proj-sort .menu-list,
+.caps-sort .menu-list {
   right: -6px;
+}
+.mid-subrow {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-top: 4px;
+}
+.mid-subrow .mid-sub {
+  flex: 1;
+  min-width: 0;
+  margin-top: 0;
+}
+.caps-sort {
+  flex: none;
 }
 
 /* ---------- dropdown menu ---------- */

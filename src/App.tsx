@@ -408,6 +408,15 @@ export default function App() {
     return c;
   }, [sessions, p.showSub]);
 
+  // Sessions the errors filter would keep, under every other filter.
+  const errorSessions = useMemo(
+    () =>
+      (sessions ?? []).filter(
+        (s) => s.error_count > 0 && !hiddenSet.has(s.project) && p.sources.includes(s.source) && (p.showSub || !s.is_subagent),
+      ).length,
+    [sessions, hiddenSet, p.sources, p.showSub],
+  );
+
   const empty = sessions !== null && sessions.length === 0;
 
   return (
@@ -453,6 +462,16 @@ export default function App() {
               <span className="n">{counts[s]}</span>
             </button>
           ))}
+          <button
+            className={`srcpill filter-pill ${p.errorsOnly ? "on" : ""}`}
+            onClick={() => update({ errorsOnly: !p.errorsOnly })}
+            aria-pressed={p.errorsOnly}
+            title="Show only sessions with errors"
+          >
+            <span className="sdot err" />
+            Only with errors
+            <span className="n">{errorSessions}</span>
+          </button>
         </div>
 
         <div className="rail-section">
@@ -515,15 +534,21 @@ export default function App() {
             <h2 data-tauri-drag-region>
               {searching ? "Results" : p.project ? basename(p.project) : "All sessions"}
             </h2>
-            <span className="mid-sub" data-tauri-drag-region>
-              {searching
-                ? `${list.length} ${list.length === 1 ? "session matches" : "sessions match"} “${query.trim()}”`
-                : p.project
-                  ? tildify(p.project)
-                  : `${list.length} sessions across ${projects.length} projects`}
-            </span>
+            <div className="mid-subrow" data-tauri-drag-region>
+              <span className="mid-sub" data-tauri-drag-region>
+                {searching
+                  ? `${list.length} ${list.length === 1 ? "session matches" : "sessions match"} “${query.trim()}”`
+                  : p.project
+                    ? tildify(p.project)
+                    : `${list.length} sessions across ${projects.length} projects`}
+              </span>
+              {/* Search results are ranked by relevance, so sorting only applies while browsing. */}
+              {!searching && (
+                <Menu className="caps-sort" label="Sort sessions" value={p.sort} options={SORTS} onChange={(sort) => update({ sort })} />
+              )}
+            </div>
           </div>
-          {searching ? (
+          {searching && (
             <div className="mid-controls">
               {p.project && (
                 <div className="segmented" role="radiogroup" aria-label="Search scope">
@@ -538,18 +563,6 @@ export default function App() {
               <button className="clear-link" onClick={clearSearch}>
                 Clear search
               </button>
-            </div>
-          ) : (
-            <div className="mid-controls">
-              <Menu className="list-sort" label="Sort sessions" value={p.sort} options={SORTS} onChange={(sort) => update({ sort })} />
-              <label className="toggle">
-                <input type="checkbox" checked={p.showSub} onChange={(e) => update({ showSub: e.target.checked })} />
-                Subagents
-              </label>
-              <label className="toggle err-toggle">
-                <input type="checkbox" checked={p.errorsOnly} onChange={(e) => update({ errorsOnly: e.target.checked })} />
-                With errors
-              </label>
             </div>
           )}
         </div>
@@ -635,6 +648,8 @@ export default function App() {
           onCountExits={(countExits) => update({ countExits })}
           theme={p.theme}
           onTheme={(theme) => update({ theme })}
+          hideSubagents={!p.showSub}
+          onHideSubagents={(hide) => update({ showSub: !hide })}
         />
       )}
     </div>

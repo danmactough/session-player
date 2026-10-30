@@ -34,7 +34,7 @@ interface Props {
   /** Treat shell commands that exited with a failing status as errors. */
   countExits: boolean;
   /** The chosen resume/open action (see OpenButton). */
-  openWith: string;
+  openWith: string | undefined;
   onOpenWith: (id: string) => void;
 }
 

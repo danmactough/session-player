@@ -100,6 +100,11 @@ export interface IndexStats {
 export type SortKey = "recent" | "oldest" | "longest" | "tokens";
 
 /** A desktop app that can open a session, and the link that opens it there. */
+export interface TerminalApp {
+  id: string;
+  label: string;
+}
+
 export interface OpenTarget {
   id: string;
   label: string;

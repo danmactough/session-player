@@ -1,4 +1,5 @@
 mod apps;
+mod terminals;
 mod index;
 mod model;
 mod parse;
@@ -278,8 +279,8 @@ fn serve_image(state: &Shared, uri: &str) -> tauri::http::Response<Vec<u8>> {
 
 /// The desktop apps that can open this session, with the link for each.
 #[tauri::command]
-async fn open_targets(source: String, native_id: String) -> Vec<apps::OpenTarget> {
-    apps::targets(&source, &native_id)
+async fn open_targets(source: String, native_id: String, path: String) -> Vec<apps::OpenTarget> {
+    apps::targets(&source, &native_id, &path)
 }
 
 /// Opens one of the links from `open_targets` in its app.
@@ -290,6 +291,23 @@ fn open_in_app(url: String) -> Result<(), String> {
         return Err(format!("not an app link: {url}"));
     }
     tauri_plugin_opener::open_url(&url, None::<&str>).map_err(err)
+}
+
+/// The terminal apps installed, for "Open in Terminal".
+#[tauri::command]
+fn terminal_apps() -> Vec<terminals::TerminalApp> {
+    terminals::installed()
+}
+
+/// Runs the session's resume command in a new window of a terminal app.
+#[tauri::command]
+async fn open_in_terminal(app: String, source: String, native_id: String, path: String, cwd: Option<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let session = terminals::Session { source: &source, native_id: &native_id, path: &path, cwd: cwd.as_deref() };
+        terminals::open(&app, &session)
+    })
+    .await
+    .map_err(err)?
 }
 
 #[tauri::command]
@@ -411,6 +429,8 @@ pub fn run() {
             reveal,
             open_targets,
             open_in_app,
+            terminal_apps,
+            open_in_terminal,
             home_dir,
             log_frontend,
             get_setting,

@@ -687,7 +687,7 @@ export default function App() {
             focus={focus}
             keyboard={!sheet && !help}
             countExits={p.countExits}
-            openWith={p.openWith[selected.source] ?? "copy"}
+            openWith={p.openWith[selected.source]}
             onOpenWith={(choice) => update({ openWith: { ...p.openWith, [selected.source]: choice } })}
           />
         ) : (

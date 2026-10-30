@@ -18,16 +18,26 @@ pub struct OpenTarget {
 /// open arbitrary URLs.
 pub const SCHEMES: [&str; 3] = ["claude", "codex", "t3code"];
 
-pub fn targets(source: &str, native_id: &str) -> Vec<OpenTarget> {
+pub fn targets(source: &str, native_id: &str, path: &str) -> Vec<OpenTarget> {
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else { return Vec::new() };
+    let path = Path::new(path);
     let mut out = Vec::new();
-    if source == "claude" && installed(&home, &["Claude.app"]) {
-        if let Some(id) = claude_desktop_session(&home, native_id) {
-            out.push(OpenTarget { id: "claude", label: "Open in Claude", url: format!("claude://code/continue?session={id}") });
+    // Claude and Codex find a session by id in their own session folder, so
+    // any session from there opens in their app.
+    if source == "claude" && path.starts_with(home.join(".claude/projects")) && installed(&home, &["Claude.app"]) {
+        // A session the app already ran opens directly; any other is imported
+        // first. The resume link takes only a CLI session id (a UUID).
+        let url = match claude_desktop_session(&home, native_id) {
+            Some(id) => Some(format!("claude://code/continue?session={id}")),
+            None if is_uuid(native_id) => Some(format!("claude://resume?session={native_id}")),
+            None => None,
+        };
+        if let Some(url) = url {
+            out.push(OpenTarget { id: "claude", label: "Open in Claude", url });
         }
     }
     // The Codex desktop app ships inside ChatGPT.app.
-    if source == "codex" && installed(&home, &["ChatGPT.app"]) && codex_knows(&home, native_id) {
+    if source == "codex" && path.starts_with(home.join(".codex")) && installed(&home, &["ChatGPT.app"]) {
         out.push(OpenTarget { id: "chatgpt", label: "Open in ChatGPT", url: format!("codex://threads/{native_id}") });
     }
     if installed(&home, &["T3 Code (Beta).app", "T3 Code.app"]) {
@@ -36,6 +46,12 @@ pub fn targets(source: &str, native_id: &str) -> Vec<OpenTarget> {
         }
     }
     out
+}
+
+fn is_uuid(s: &str) -> bool {
+    let groups: Vec<&str> = s.split('-').collect();
+    groups.iter().map(|g| g.len()).eq([8, 4, 4, 4, 12])
+        && groups.iter().all(|g| g.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
 fn installed(home: &Path, names: &[&str]) -> bool {
@@ -75,16 +91,6 @@ fn claude_desktop_session(home: &Path, cli_session_id: &str) -> Option<String> {
         }
     }
     None
-}
-
-/// Whether the Codex app has this thread in its state database.
-fn codex_knows(home: &Path, thread_id: &str) -> bool {
-    let Some(conn) = read_only(&home.join(".codex/state_5.sqlite")) else { return false };
-    conn.query_row("SELECT 1 FROM threads WHERE id = ?1", [thread_id], |_| Ok(()))
-        .optional()
-        .ok()
-        .flatten()
-        .is_some()
 }
 
 /// T3 Code lists every agent session it runs or imported, keyed by the
@@ -127,5 +133,12 @@ mod tests {
     #[test]
     fn encodes_like_encode_uri_component() {
         assert_eq!(super::encode("import:claudeAgent:e420-ccf1"), "import%3AclaudeAgent%3Ae420-ccf1");
+    }
+
+    #[test]
+    fn recognizes_cli_session_ids() {
+        assert!(super::is_uuid("e420ccf1-2c30-4cad-ba98-05b1ae4dfb90"));
+        assert!(!super::is_uuid("agent-a1b2c3d4"));
+        assert!(!super::is_uuid("e420ccf1-2c30-4cad-ba98-05b1ae4dfb9z"));
     }
 }

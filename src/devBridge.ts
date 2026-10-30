@@ -172,6 +172,13 @@ const handlers: Record<string, Handler> = {
     { id: "t3", label: "Open in T3 Code", url: `t3code://threads/demo/${nativeId}` },
   ],
   open_in_app: ({ url }) => console.log("open", url),
+  terminal_apps: () => [
+    { id: "terminal", label: "Terminal" },
+    { id: "iterm", label: "iTerm" },
+    { id: "ghostty", label: "Ghostty" },
+    { id: "cmux", label: "cmux" },
+  ],
+  open_in_terminal: ({ app }) => console.log("open in", app),
   log_frontend: ({ level, message }) => console.log(`[${level}]`, message),
   "plugin:event|listen": () => 1,
   "plugin:event|unlisten": () => null,

@@ -2052,3 +2052,23 @@ mark {
 .menu-list.with-icons li.chosen {
   font-weight: 500;
 }
+.glyph-terminal {
+  color: var(--ink);
+}
+.menu-list li.has-sub {
+  position: relative;
+}
+.menu-more {
+  margin-left: auto;
+  padding-left: 18px;
+  font-size: 9px;
+  color: var(--faint);
+}
+/* The split button sits at the window's right edge, so its flyout opens left. */
+.menu-list .menu-sub {
+  top: -5px;
+  left: auto;
+  right: calc(100% + 2px);
+  min-width: 150px;
+  font-weight: 400;
+}

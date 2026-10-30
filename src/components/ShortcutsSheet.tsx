@@ -38,7 +38,9 @@ const GROUPS: { title: string; keys: { keys: string[][]; what: string }[] }[] = 
   {
     title: "Projects",
     keys: [
-      { keys: [["Esc"]], what: "Clear the project filter, or cancel a drag" },
+      { keys: [["⌘", "click"]], what: "Add or remove a project" },
+      { keys: [["⇧", "click"]], what: "Select a run of projects" },
+      { keys: [["Esc"]], what: "Back to All projects (in the list), clear the filter, or cancel a drag" },
     ],
   },
 ];

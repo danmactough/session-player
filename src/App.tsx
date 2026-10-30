@@ -33,7 +33,8 @@ const byName = (a: string, b: string) =>
   basename(a).localeCompare(basename(b), undefined, { sensitivity: "base", numeric: true }) || a.localeCompare(b);
 
 interface Prefs {
-  project: string | null;
+  /** Selected projects; empty means all of them. */
+  projects: string[];
   sort: SortKey;
   sources: Source[];
   showSub: boolean;
@@ -51,7 +52,7 @@ interface Prefs {
   openWith: Partial<Record<Source, string>>;
 }
 const DEFAULT_PREFS: Prefs = {
-  project: null,
+  projects: [],
   sort: "recent",
   sources: ALL_SOURCES,
   showSub: false,
@@ -106,6 +107,9 @@ export default function App() {
         const saved = raw ? JSON.parse(raw) : {};
         // openWith used to be one choice for every agent.
         if (typeof saved.openWith !== "object") delete saved.openWith;
+        // A single selected project used to be stored as `project`.
+        if (!Array.isArray(saved.projects)) saved.projects = saved.project ? [saved.project] : [];
+        delete saved.project;
         setPrefs({ ...DEFAULT_PREFS, ...saved });
       })
       .catch(() => setPrefs(DEFAULT_PREFS));
@@ -221,9 +225,9 @@ export default function App() {
     (project: string) =>
       update({
         hiddenProjects: [...p.hiddenProjects.filter((x) => x !== project), project],
-        ...(p.project === project ? { project: null } : {}),
+        projects: p.projects.filter((x) => x !== project),
       }),
-    [update, p.hiddenProjects, p.project],
+    [update, p.hiddenProjects, p.projects],
   );
   const unhideProject = useCallback(
     (project: string) => update({ hiddenProjects: p.hiddenProjects.filter((x) => x !== project) }),
@@ -250,12 +254,19 @@ export default function App() {
   );
 
   const searching = query.trim() !== "";
-  const scopeProject = searching && searchAll ? null : p.project;
+  const selectedSet = useMemo(() => new Set(p.projects), [p.projects]);
+  const inSelection = useCallback((s: SessionRow) => selectedSet.has(s.project), [selectedSet]);
+  // The sessions the list draws from: the selected projects, or everything the
+  // project filter lets through (also while searching all projects).
+  const scoped = p.projects.length > 0 && !(searching && searchAll);
+  // Names the selection in headers and labels: one project's name, or a count.
+  const selectionName =
+    p.projects.length === 1 ? basename(p.projects[0]) : `${p.projects.length} projects`;
 
   useEffect(() => {
     if (!searching) setSearchAll(false);
   }, [searching]);
-  useEffect(() => setSearchAll(false), [p.project]);
+  useEffect(() => setSearchAll(false), [p.projects]);
 
   const matchesQuery = useMemo(() => {
     const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
@@ -269,9 +280,9 @@ export default function App() {
   const matchCounts = useMemo(() => {
     if (!searching) return { project: 0, all: 0 };
     const all = filtered.filter(matchesQuery);
-    const inProject = p.project ? base.filter((s) => s.project === p.project && matchesQuery(s)).length : all.length;
+    const inProject = p.projects.length ? base.filter((s) => inSelection(s) && matchesQuery(s)).length : all.length;
     return { all: all.length, project: inProject };
-  }, [base, filtered, matchesQuery, searching, p.project]);
+  }, [base, filtered, matchesQuery, searching, p.projects, inSelection]);
 
   const clearSearch = useCallback(() => {
     setQuery("");
@@ -279,7 +290,7 @@ export default function App() {
   }, []);
 
   const list = useMemo(() => {
-    let out = scopeProject ? base.filter((s) => s.project === scopeProject) : filtered;
+    let out = scoped ? base.filter(inSelection) : filtered;
     const q = query.trim().toLowerCase();
     if (q) {
       const terms = q.split(/\s+/);
@@ -307,7 +318,7 @@ export default function App() {
         break;
     }
     return sorted;
-  }, [base, filtered, scopeProject, p.sort, query, hits, matchesQuery]);
+  }, [base, filtered, scoped, inSelection, p.sort, query, hits, matchesQuery]);
 
   // Search results stay flat; browsing nests children under their session.
   const rows = useMemo<ListRow[]>(
@@ -450,7 +461,7 @@ export default function App() {
   const sessionListKey = useMemo(
     () => ({}),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [p.project, filterText, p.sources, p.errorsOnly, p.showSub, p.countExits, p.sort, query, searchAll, hits],
+    [p.projects, filterText, p.sources, p.errorsOnly, p.showSub, p.countExits, p.sort, query, searchAll, hits],
   );
 
   const empty = sessions !== null && sessions.length === 0;
@@ -466,7 +477,7 @@ export default function App() {
         <div className="search" onClick={() => searchRef.current?.focus()}>
           <input
             ref={searchRef}
-            placeholder={p.project ? `Search ${basename(p.project)}` : "Search all projects"}
+            placeholder={p.projects.length ? `Search ${selectionName}` : "Search all projects"}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
@@ -550,8 +561,8 @@ export default function App() {
         <ProjectNav
           projects={visibleProjects}
           total={filtered.length}
-          active={p.project}
-          onSelect={(project) => update({ project })}
+          selected={p.projects}
+          onSelect={(projects) => update({ projects })}
           onHide={hideProject}
           // Dragging a filtered subset would leave the other projects' places ambiguous.
           onReorder={projectFilter.trim() ? undefined : reorderProjects}
@@ -584,15 +595,17 @@ export default function App() {
         <div className="mid-head" data-tauri-drag-region>
           <div className="mid-title" data-tauri-drag-region>
             <h2 data-tauri-drag-region>
-              {searching ? "Results" : p.project ? basename(p.project) : "All sessions"}
+              {searching ? "Results" : p.projects.length ? selectionName : "All sessions"}
             </h2>
             <div className="mid-subrow" data-tauri-drag-region>
               <span className="mid-sub" data-tauri-drag-region>
                 {searching
                   ? `${list.length} ${list.length === 1 ? "session matches" : "sessions match"} “${query.trim()}”`
-                  : p.project
-                    ? tildify(p.project)
-                    : `${list.length} ${list.length === 1 ? "session" : "sessions"} across ${visibleProjects.length} ${visibleProjects.length === 1 ? "project" : "projects"}`}
+                  : p.projects.length === 1
+                    ? tildify(p.projects[0])
+                    : p.projects.length > 1
+                      ? p.projects.map(basename).join(", ")
+                      : `${list.length} ${list.length === 1 ? "session" : "sessions"} across ${visibleProjects.length} ${visibleProjects.length === 1 ? "project" : "projects"}`}
               </span>
               {/* Search results are ranked by relevance, so sorting only applies while browsing. */}
               {!searching && (
@@ -602,10 +615,10 @@ export default function App() {
           </div>
           {searching && (
             <div className="mid-controls">
-              {p.project && (
+              {p.projects.length > 0 && (
                 <div className="segmented" role="radiogroup" aria-label="Search scope">
                   <button role="radio" aria-checked={!searchAll} className={!searchAll ? "on" : ""} onClick={() => setSearchAll(false)}>
-                    {basename(p.project)} <span className="n">{matchCounts.project}</span>
+                    {selectionName} <span className="n">{matchCounts.project}</span>
                   </button>
                   <button role="radio" aria-checked={searchAll} className={searchAll ? "on" : ""} onClick={() => setSearchAll(true)}>
                     All projects <span className="n">{matchCounts.all}</span>
@@ -632,9 +645,9 @@ export default function App() {
             ) : searching ? (
               <>
                 <p>
-                  Nothing {scopeProject ? `in ${basename(scopeProject)} ` : ""}matches “{query.trim()}”.
+                  Nothing {scoped ? `in ${selectionName} ` : ""}matches “{query.trim()}”.
                 </p>
-                {scopeProject && matchCounts.all > 0 ? (
+                {scoped && matchCounts.all > 0 ? (
                   <button className="ghost" onClick={() => setSearchAll(true)}>
                     Show {matchCounts.all} {matchCounts.all === 1 ? "match" : "matches"} in all projects
                   </button>
@@ -655,7 +668,7 @@ export default function App() {
             onSelect={select}
             onToggle={toggleExpanded}
             hits={hits}
-            showProject={!scopeProject}
+            showProject={!(scoped && p.projects.length === 1)}
             groupByDay={!query && (p.sort === "recent" || p.sort === "oldest")}
             resetKey={sessionListKey}
           />

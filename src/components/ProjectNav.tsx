@@ -13,8 +13,9 @@ export interface ProjectSummary {
 interface Props {
   projects: ProjectSummary[];
   total: number;
-  active: string | null;
-  onSelect: (project: string | null) => void;
+  /** Selected projects; empty means "All projects". */
+  selected: string[];
+  onSelect: (projects: string[]) => void;
   onHide: (project: string) => void;
   /** A new identity means the list was filtered or re-sorted: scroll to the top. */
   resetKey: unknown;
@@ -26,13 +27,40 @@ const SOURCES: Source[] = ["claude", "codex", "pi"];
 // Pointer travel before a press becomes a drag, so clicks still select.
 const DRAG_THRESHOLD = 4;
 
-export function ProjectNav({ projects, total, active, onSelect, onHide, onReorder, resetKey }: Props) {
+export function ProjectNav({ projects, total, selected, onSelect, onHide, onReorder, resetKey }: Props) {
   const navRef = useRef<HTMLElement>(null);
   const [drag, setDrag] = useState<{ project: string; index: number } | null>(null);
   const dragRef = useRef<{ project: string; index: number } | null>(null);
   const press = useRef<{ project: string; y: number; dragging: boolean } | null>(null);
   // The click that follows a drag's pointerup must not select the project.
   const suppressClick = useRef(false);
+  // Where a ⇧-click range starts: the last project clicked without ⇧.
+  const rangeStart = useRef<string | null>(null);
+
+  // Selection follows Finder: a click selects one project (clicking the only
+  // selected one again goes back to All projects), ⌘-click adds or removes
+  // one, ⇧-click selects the run from the last clicked project, and ⌘⇧-click
+  // adds that run to the selection.
+  const clickProject = (project: string, e: React.MouseEvent) => {
+    // WebKit doesn't focus a clicked button, so focus the list itself; that
+    // is what lets Esc (below) reach it.
+    navRef.current?.focus({ preventScroll: true });
+    const order = projects.map((x) => x.project);
+    const toggle = e.metaKey || e.ctrlKey;
+    const start = rangeStart.current && order.includes(rangeStart.current) ? rangeStart.current : null;
+    if (e.shiftKey && start) {
+      const [a, b] = [order.indexOf(start), order.indexOf(project)].sort((x, y) => x - y);
+      const range = order.slice(a, b + 1);
+      onSelect(toggle ? [...new Set([...selected, ...range])] : range);
+      return;
+    }
+    rangeStart.current = project;
+    if (toggle) {
+      onSelect(selected.includes(project) ? selected.filter((x) => x !== project) : [...selected, project]);
+    } else {
+      onSelect(selected.length === 1 && selected[0] === project ? [] : [project]);
+    }
+  };
 
   useScrollAnchor(navRef, [projects], resetKey);
 
@@ -101,8 +129,21 @@ export function ProjectNav({ projects, total, active, onSelect, onHide, onReorde
   }, [drag !== null]);
 
   return (
-    <nav className={`projects ${drag ? "dragging" : ""}`} ref={navRef}>
-      <button className={`proj ${active === null ? "active" : ""}`} data-anchor="(all)" onClick={() => onSelect(null)}>
+    <nav
+      className={`projects ${drag ? "dragging" : ""}`}
+      ref={navRef}
+      tabIndex={-1}
+      onKeyDown={(e) => {
+        // Esc here (after clicking a project) goes back to All projects. It
+        // only applies inside this list, so Esc keeps its meaning elsewhere;
+        // during a drag it cancels the drag instead.
+        if (e.key === "Escape" && !drag && selected.length) {
+          e.preventDefault();
+          onSelect([]);
+        }
+      }}
+    >
+      <button className={`proj ${selected.length === 0 ? "active" : ""}`} data-anchor="(all)" onClick={() => onSelect([])}>
         <span className="proj-name">All projects</span>
         <span className="proj-n">{total}</span>
       </button>
@@ -123,13 +164,16 @@ export function ProjectNav({ projects, total, active, onSelect, onHide, onReorde
           onPointerCancel={() => endDrag(false)}
         >
           <button
-            className={`proj ${active === x.project ? "active" : ""}`}
-            onClick={() => {
+            className={`proj ${selected.includes(x.project) ? "active" : ""}`}
+            aria-pressed={selected.includes(x.project)}
+            // Keeps ⇧-click from selecting text across the list.
+            onMouseDown={(e) => e.shiftKey && e.preventDefault()}
+            onClick={(e) => {
               if (suppressClick.current) {
                 suppressClick.current = false;
                 return;
               }
-              onSelect(x.project);
+              clickProject(x.project, e);
             }}
             title={tildify(x.project)}
           >

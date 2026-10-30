@@ -340,6 +340,7 @@ mark {
   font-size: 13px;
 }
 .projects {
+  outline: none;
   position: relative;
   flex: 1;
   overflow-y: auto;

@@ -1,3 +1,4 @@
+mod apps;
 mod index;
 mod model;
 mod parse;
@@ -275,6 +276,22 @@ fn serve_image(state: &Shared, uri: &str) -> tauri::http::Response<Vec<u8>> {
     }
 }
 
+/// The desktop apps that can open this session, with the link for each.
+#[tauri::command]
+async fn open_targets(source: String, native_id: String) -> Vec<apps::OpenTarget> {
+    apps::targets(&source, &native_id)
+}
+
+/// Opens one of the links from `open_targets` in its app.
+#[tauri::command]
+fn open_in_app(url: String) -> Result<(), String> {
+    let scheme = url.split(':').next().unwrap_or("");
+    if !apps::SCHEMES.contains(&scheme) {
+        return Err(format!("not an app link: {url}"));
+    }
+    tauri_plugin_opener::open_url(&url, None::<&str>).map_err(err)
+}
+
 #[tauri::command]
 fn reveal(path: String) -> Result<(), String> {
     std::process::Command::new("open").arg("-R").arg(&path).spawn().map_err(err)?;
@@ -392,6 +409,8 @@ pub fn run() {
             search,
             load_session,
             reveal,
+            open_targets,
+            open_in_app,
             home_dir,
             log_frontend,
             get_setting,

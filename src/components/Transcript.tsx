@@ -11,13 +11,14 @@ import {
   compact,
   duration,
   fullDate,
-  resumeCommand,
   tildify,
   toolLabel,
   toolSummary,
 } from "../lib/format";
 import { Markdown } from "./Markdown";
 import { BranchIcon } from "./BranchIcon";
+import { OpenButton } from "./OpenButton";
+import { SourceIcon } from "./AppIcon";
 
 interface Props {
   session: SessionRow;
@@ -32,9 +33,23 @@ interface Props {
   keyboard: boolean;
   /** Treat shell commands that exited with a failing status as errors. */
   countExits: boolean;
+  /** The chosen resume/open action (see OpenButton). */
+  openWith: string;
+  onOpenWith: (id: string) => void;
 }
 
-export function Transcript({ session, parent, children, highlight, onOpen, focus, keyboard, countExits }: Props) {
+export function Transcript({
+  session,
+  parent,
+  children,
+  highlight,
+  onOpen,
+  focus,
+  keyboard,
+  countExits,
+  openWith,
+  onOpenWith,
+}: Props) {
   const [events, setEvents] = useState<SessionEvent[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showTools, setShowTools] = useState(true);
@@ -281,7 +296,10 @@ export function Transcript({ session, parent, children, highlight, onOpen, focus
     <div className="transcript">
       <header className="t-head" data-tauri-drag-region>
         <div className="t-eyebrow">
-          <span className={`src src-${session.source}`}>{SOURCE_LABEL[session.source]}</span>
+          <span className={`src src-${session.source}`}>
+            <SourceIcon source={session.source} />
+            {SOURCE_LABEL[session.source]}
+          </span>
           <span className="sep">/</span>
           <span title={session.project}>{basename(session.project)}</span>
           {session.git_branch && (
@@ -345,9 +363,7 @@ export function Transcript({ session, parent, children, highlight, onOpen, focus
           )}
         </dl>
         <div className="t-actions">
-          <button onClick={() => copy("resume", resumeCommand(session))}>
-            {copied === "resume" ? "Copied" : "Copy resume command"}
-          </button>
+          <OpenButton session={session} choice={openWith} onChoice={onOpenWith} keyboard={keyboard} />
           <button onClick={() => api.reveal(session.path)}>Reveal file</button>
           <button onClick={() => copy("path", session.path)}>{copied === "path" ? "Copied" : "Copy path"}</button>
           <span className="t-file" title={session.path}>

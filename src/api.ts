@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { RootInfo, SearchHit, SessionEvent, SessionRow } from "./types";
+import type { OpenTarget, RootInfo, SearchHit, SessionEvent, SessionRow } from "./types";
 
 export const api = {
   listSessions: () => invoke<SessionRow[]>("list_sessions"),
@@ -11,6 +11,8 @@ export const api = {
   removeRoot: (path: string) => invoke<void>("remove_root", { path }),
   reindex: (full: boolean) => invoke<void>("reindex", { full }),
   reveal: (path: string) => invoke<void>("reveal", { path }),
+  openTargets: (source: string, nativeId: string) => invoke<OpenTarget[]>("open_targets", { source, nativeId }),
+  openInApp: (url: string) => invoke<void>("open_in_app", { url }),
   log: (level: "info" | "error", message: string) => invoke<void>("log_frontend", { level, message }).catch(() => {}),
   homeDir: () => invoke<string>("home_dir"),
   getSetting: (key: string) => invoke<string | null>("get_setting", { key }),

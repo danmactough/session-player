@@ -1,16 +1,20 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 interface Props<K extends string> {
   value: K;
-  options: { key: K; label: string }[];
+  /** An option with an icon shows it where the checkmark would go; `hint`
+   * sits at the right edge (a keyboard shortcut, say). */
+  options: { key: K; label: string; icon?: ReactNode; hint?: ReactNode }[];
   onChange: (key: K) => void;
   label: string;
   className?: string;
   title?: string;
+  /** Replaces the button's "current choice ▾" content, e.g. with just a chevron. */
+  trigger?: ReactNode;
 }
 
 /** A small dropdown that matches the app instead of the native select menu. */
-export function Menu<K extends string>({ value, options, onChange, label, className = "", title }: Props<K>) {
+export function Menu<K extends string>({ value, options, onChange, label, className = "", title, trigger }: Props<K>) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -70,11 +74,15 @@ export function Menu<K extends string>({ value, options, onChange, label, classN
         title={title}
         onClick={() => setOpen((o) => !o)}
       >
-        {current?.label}
-        <span className="caret">▾</span>
+        {trigger ?? (
+          <>
+            {current?.label}
+            <span className="caret">▾</span>
+          </>
+        )}
       </button>
       {open && (
-        <ul className="menu-list" role="listbox" aria-label={label}>
+        <ul className={`menu-list ${options.some((o) => o.icon) ? "with-icons" : ""}`} role="listbox" aria-label={label}>
           {options.map((o, i) => (
             <li
               key={o.key}
@@ -84,8 +92,9 @@ export function Menu<K extends string>({ value, options, onChange, label, classN
               onPointerEnter={() => setActive(i)}
               onClick={() => choose(o.key)}
             >
-              <span className="check">{o.key === value ? "✓" : ""}</span>
+              {o.icon ? <span className="menu-icon">{o.icon}</span> : <span className="check">{o.key === value ? "✓" : ""}</span>}
               {o.label}
+              {o.hint && <span className="menu-hint">{o.hint}</span>}
             </li>
           ))}
         </ul>

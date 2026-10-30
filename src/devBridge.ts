@@ -166,6 +166,12 @@ const handlers: Record<string, Handler> = {
   remove_root: () => null,
   reindex: () => null,
   reveal: () => null,
+  open_targets: ({ source, nativeId }) => [
+    ...(source === "claude" ? [{ id: "claude", label: "Open in Claude", url: "claude://code/continue?session=local_demo" }] : []),
+    ...(source === "codex" ? [{ id: "chatgpt", label: "Open in ChatGPT", url: `codex://threads/${nativeId}` }] : []),
+    { id: "t3", label: "Open in T3 Code", url: `t3code://threads/demo/${nativeId}` },
+  ],
+  open_in_app: ({ url }) => console.log("open", url),
   log_frontend: ({ level, message }) => console.log(`[${level}]`, message),
   "plugin:event|listen": () => 1,
   "plugin:event|unlisten": () => null,

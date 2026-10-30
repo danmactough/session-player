@@ -8,6 +8,7 @@ import { Transcript } from "./components/Transcript";
 import { SettingsSheet } from "./components/SettingsSheet";
 import { ShortcutsSheet } from "./components/ShortcutsSheet";
 import { Menu } from "./components/Menu";
+import { SourceIcon } from "./components/AppIcon";
 import { applyTheme, storedTheme, type Theme } from "./lib/theme";
 import { ProjectNav, type ProjectSummary } from "./components/ProjectNav";
 import { ancestors, branchChildren, branchRows, branchSourcePath, buildTree, type ListRow } from "./lib/tree";
@@ -44,6 +45,10 @@ interface Prefs {
   /** Count shell commands that exited with a failing status as errors. */
   countExits: boolean;
   theme: Theme;
+  /** What the transcript's resume button does for each agent's sessions:
+   * "copy" (the default), or an app such as "claude". Kept per agent, so
+   * choosing ChatGPT for a Codex session doesn't change Claude Code sessions. */
+  openWith: Partial<Record<Source, string>>;
 }
 const DEFAULT_PREFS: Prefs = {
   project: null,
@@ -57,6 +62,7 @@ const DEFAULT_PREFS: Prefs = {
   hiddenProjects: [],
   countExits: false,
   theme: storedTheme(),
+  openWith: {},
 };
 
 export default function App() {
@@ -96,7 +102,12 @@ export default function App() {
     api.homeDir().then(setHome);
     api
       .getSetting("prefs")
-      .then((raw) => setPrefs(raw ? { ...DEFAULT_PREFS, ...JSON.parse(raw) } : DEFAULT_PREFS))
+      .then((raw) => {
+        const saved = raw ? JSON.parse(raw) : {};
+        // openWith used to be one choice for every agent.
+        if (typeof saved.openWith !== "object") delete saved.openWith;
+        setPrefs({ ...DEFAULT_PREFS, ...saved });
+      })
       .catch(() => setPrefs(DEFAULT_PREFS));
     reload();
     const un = [
@@ -482,7 +493,7 @@ export default function App() {
               onClick={() => toggleSource(s)}
               title={`Show ${SOURCE_LABEL[s]} sessions`}
             >
-              <span className="sdot" />
+              <SourceIcon source={s} />
               {SOURCE_LABEL[s]}
               <span className="n">{counts[s]}</span>
             </button>
@@ -663,6 +674,8 @@ export default function App() {
             focus={focus}
             keyboard={!sheet && !help}
             countExits={p.countExits}
+            openWith={p.openWith[selected.source] ?? "copy"}
+            onOpenWith={(choice) => update({ openWith: { ...p.openWith, [selected.source]: choice } })}
           />
         ) : (
           <div className="placeholder" data-tauri-drag-region>

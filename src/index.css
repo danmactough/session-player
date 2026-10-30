@@ -263,6 +263,11 @@ mark {
 .sdot.err {
   background: var(--err);
 }
+/* Centers the 7px dot in the 14px column the agent glyphs use, so all the
+   labels line up. */
+.filter-pill .sdot {
+  margin: 0 3.5px;
+}
 .srcpill .n {
   margin-left: auto;
   font: 11px var(--mono);
@@ -924,13 +929,6 @@ mark {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-}
-.t-eyebrow .src::before {
-  content: "";
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: currentColor;
 }
 .src.src-claude {
   color: var(--claude);
@@ -1960,4 +1958,96 @@ mark {
 }
 .setting-note code {
   font: 11px var(--mono);
+}
+
+/* ---------- resume / open split button ---------- */
+.split {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+}
+.t-actions .split button {
+  border: 0;
+  border-radius: 0;
+}
+.t-actions .split .split-main {
+  border-radius: 4px 0 0 4px;
+}
+.split-menu .menu-button {
+  height: 100%;
+  padding: 0 7px;
+  border-left: 1px solid var(--line) !important;
+  border-radius: 0 4px 4px 0 !important;
+  color: var(--muted);
+}
+.split-menu .menu-list {
+  left: auto;
+  right: 0;
+  min-width: 200px;
+}
+
+/* ---------- app icons ---------- */
+/* Agent glyphs: Claude keeps its orange, the rest use the text color. */
+.app-icon {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  display: inline-block;
+}
+.glyph-claude {
+  color: #d97757;
+}
+.glyph-openai {
+  color: var(--muted);
+}
+.glyph-pi,
+.glyph-t3 {
+  color: var(--ink);
+}
+.glyph-pi {
+  width: 12px;
+  height: 12px;
+  margin: 0 1px;
+}
+.srcpill .app-icon {
+  opacity: 0.35;
+  filter: grayscale(1);
+  transition: opacity 0.12s, filter 0.12s;
+}
+.srcpill.on .app-icon {
+  opacity: 1;
+  filter: none;
+}
+.t-eyebrow .app-icon {
+  width: 12px;
+  height: 12px;
+}
+.split-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.copy-icon {
+  color: var(--muted);
+}
+.menu-list.with-icons li {
+  gap: 8px;
+  padding-left: 8px;
+}
+.menu-icon {
+  display: inline-flex;
+  width: 16px;
+  justify-content: center;
+}
+.menu-hint {
+  margin-left: auto;
+  padding-left: 18px;
+}
+.menu-hint kbd {
+  font: 11px var(--mono);
+  color: var(--faint);
+}
+.menu-list.with-icons li.chosen {
+  font-weight: 500;
 }

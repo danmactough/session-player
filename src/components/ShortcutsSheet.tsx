@@ -28,6 +28,7 @@ const GROUPS: { title: string; keys: { keys: string[][]; what: string }[] }[] = 
       { keys: [["⌘", "["]], what: "Previous prompt" },
       { keys: [["⌘", "⇧", "]"]], what: "Next response" },
       { keys: [["⌘", "⇧", "["]], what: "Previous response" },
+      { keys: [["⌘", "O"]], what: "Copy resume command, or open in the chosen app" },
       { keys: [["⌘", "F"]], what: "Find in session" },
       { keys: [["Enter"]], what: "Next match" },
       { keys: [["⇧", "Enter"]], what: "Previous match" },

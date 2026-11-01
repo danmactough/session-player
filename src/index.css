@@ -2072,3 +2072,27 @@ mark {
   min-width: 150px;
   font-weight: 400;
 }
+
+/* ---------- link status bar ---------- */
+/* Where the hovered link goes, at the bottom left of its pane. */
+.link-status {
+  position: fixed;
+  z-index: 50;
+  padding: 3px 9px;
+  border: 1px solid var(--line);
+  border-left: 0;
+  border-bottom: 0;
+  border-radius: 0 6px 0 0;
+  background: var(--raised);
+  color: var(--ink-2);
+  font: 11.5px var(--mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+.link-status.on {
+  opacity: 1;
+}

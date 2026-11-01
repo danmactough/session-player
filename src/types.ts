@@ -150,6 +150,13 @@ export interface ImportReport {
   unchanged: string[];
   kept: string[];
   conflicts: { id: string; existing_title: string; incoming_title: string }[];
+  /** Sessions with no conversation, which were not imported. */
+  empty: string[];
+}
+
+export interface LibraryError {
+  path: string;
+  error: string;
 }
 
 export interface OpenTarget {

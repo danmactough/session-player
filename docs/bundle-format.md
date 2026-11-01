@@ -62,7 +62,8 @@ An image in `images` is a reference, `attachment:<attachment id>`, not the image
 | `reason` | Why an omitted attachment is not in the bundle |
 | `data` | Base64 image data. Present only for an included image. |
 
-- **Images** (screenshots pasted into a prompt, images returned by tools) are stored in `data`. An image the app doesn't load (over 4 MB of base64) or one linked rather than embedded is listed as `omitted`, with a reason.
+- **Images** (screenshots pasted into a prompt, images returned by tools) are stored in `data`. An image the app doesn't load (over 4 MB of base64) is listed as `omitted`, with a reason.
+- **Remote images**, meaning images that a reply, reasoning block or compaction summary links from the web (Markdown `![alt](https://…)` or HTML `<img src="https://…">`) and image links an agent recorded instead of the image itself, are downloaded during export (PNG, JPEG, GIF or WebP, up to 3 MB each). `name` holds the original address. In the event text, the address is replaced with `attachment:<id>`, so the bundle never points at the web. A download that fails is listed as `omitted` with the reason. Session Player never loads remote images in an imported transcript; one that wasn't downloaded shows as "remote image not included".
 - **Files** attached to a prompt (pi `@file`, Claude Code `@file` and IDE notices, Codex "files mentioned") keep their contents inline in the prompt's `<file name="…">…</file>` card, where the transcript shows them. Their manifest entry records whether the contents came along: `included` with a size, or `omitted` when the agent recorded only the path.
 
 ## Validation
@@ -82,10 +83,14 @@ Import rejects a file, and writes nothing, when:
 
 Import splits a bundle into one single-session bundle per session and stores it in the app's library, `~/Library/Application Support/com.danmactough.sessionplayer/library/`. The library file name is the session ID encoded as URL-safe base64, so no ID can name a path outside the library. The indexer reads the library alongside the session folders. Imported sessions are marked "imported" and keep the title and project the sender saw. They can be read, searched and exported again, but not resumed or opened in an agent app.
 
+Import skips a session with no prompt, reply or tool call, which the session list wouldn't show, and reports it as empty.
+
 When a session ID is already in the library:
 
 - **Same contents:** the session is skipped and reported as already in the library. The comparison covers the session and its attachments, not `exported_at` or `exporter`.
 - **Different contents:** import stops before writing anything and lists the conflicts. The user then chooses **Replace library copies**, which writes the bundle's version of every conflicting session, or **Keep library copies**, which imports only the sessions that don't conflict.
+
+**Removing.** **Remove…** in an imported session's header deletes its library file, and those of the subagents imported with it. A library file that can't be read doesn't appear in the session list. Settings lists such files under **Imported sessions**, each with a **Remove** button. Importing a session whose library copy is damaged stops with a message pointing there.
 
 An imported session and a local session with the same ID are different copies. Both are listed, and each nests only under a parent of its own kind.
 

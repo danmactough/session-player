@@ -659,7 +659,9 @@ pub fn import(library: &Path, path: &Path, on_conflict: Option<OnConflict>) -> a
         };
         let dest = library_file(library, &s.id);
         if dest.exists() {
-            let existing = read(&dest)?;
+            let existing = read(&dest).map_err(|e| {
+                anyhow!("Your library's copy of {} is damaged ({e:#}). Remove it in Settings, under Imported sessions, then import again.", s.id)
+            })?;
             if existing.sessions == single.sessions && existing.attachments == single.attachments {
                 report.unchanged.push(s.id.clone());
                 continue;
@@ -691,6 +693,30 @@ pub fn import(library: &Path, path: &Path, on_conflict: Option<OnConflict>) -> a
         report.imported.push(single.sessions[0].id.clone());
     }
     Ok(report)
+}
+
+/// Deletes an imported session from the library, along with the subagents
+/// imported with it, and returns the files removed. `path` must be a bundle
+/// directly inside `library`; a damaged one (not indexed) is removed alone.
+pub fn remove(conn: &Connection, library: &Path, path: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    let library = library.canonicalize().ok();
+    let in_library = |p: &Path| {
+        is_bundle_path(p) && library.is_some() && p.parent().and_then(|d| d.canonicalize().ok()) == library
+    };
+    if !in_library(path) || !path.is_file() {
+        bail!("{} isn't an imported session", path.display());
+    }
+    let mut files = vec![path.to_path_buf()];
+    for (sub, _) in subagents_of(conn, &path.to_string_lossy())? {
+        let sub = PathBuf::from(sub);
+        if in_library(&sub) {
+            files.push(sub);
+        }
+    }
+    for f in &files {
+        std::fs::remove_file(f).with_context(|| format!("Couldn't remove {}", f.display()))?;
+    }
+    Ok(files)
 }
 
 /// The same test the indexer applies (`index::build_row`) before listing a session.

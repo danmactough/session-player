@@ -726,6 +726,22 @@ pub fn list(conn: &Connection) -> anyhow::Result<Vec<SessionRow>> {
 }
 
 #[derive(Debug, Serialize)]
+pub struct LibraryError {
+    pub path: String,
+    pub error: String,
+}
+
+/// Library bundles the last index pass couldn't read. They don't appear in
+/// the session list, so Settings lists them for removal.
+pub fn library_errors(conn: &Connection, library: &Path) -> anyhow::Result<Vec<LibraryError>> {
+    let mut stmt = conn.prepare("SELECT path, error FROM files WHERE root=?1 AND error IS NOT NULL ORDER BY path")?;
+    let rows = stmt
+        .query_map([library.to_string_lossy()], |r| Ok(LibraryError { path: r.get(0)?, error: r.get(1)? }))?
+        .collect::<Result<_, _>>()?;
+    Ok(rows)
+}
+
+#[derive(Debug, Serialize)]
 pub struct SearchHit {
     pub path: String,
     pub snippet: String,

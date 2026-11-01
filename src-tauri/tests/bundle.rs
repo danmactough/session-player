@@ -464,3 +464,49 @@ fn remote_images_in_the_transcript_are_downloaded_into_the_bundle() {
     let events = bundle::load_events(Path::new(&rows[0].path)).unwrap();
     assert!(events[1].text.contains("![login](data:image/png;base64,aGVsbG8=)"), "{}", events[1].text);
 }
+
+#[test]
+fn removing_an_imported_session_removes_the_subagents_imported_with_it() {
+    let sender = Sender::new("remove");
+    let file = sender.save(&sender.export("claude/-work-repo/abc.jsonl", None, None), "abc.spsession");
+    let mut recipient = Recipient::new("remove");
+    bundle::import(&recipient.library, &file, None).unwrap();
+    let rows = recipient.reindex();
+    let primary = rows.iter().find(|r| !r.is_subagent).unwrap();
+    let removed = bundle::remove(&recipient.conn, &recipient.library, Path::new(&primary.path)).unwrap();
+    assert_eq!(removed.len(), 2);
+    assert!(recipient.reindex().is_empty());
+    assert_eq!(std::fs::read_dir(&recipient.library).unwrap().count(), 0);
+}
+
+#[test]
+fn only_files_in_the_library_can_be_removed() {
+    let sender = Sender::new("remove-outside");
+    let recipient = Recipient::new("remove-outside");
+    let local = sender.root.join("claude/-work-repo/abc.jsonl");
+    let err = bundle::remove(&recipient.conn, &recipient.library, &local).unwrap_err().to_string();
+    assert!(err.contains("isn't an imported session"), "{err}");
+    assert!(local.exists());
+}
+
+#[test]
+fn a_damaged_library_file_is_reported_and_can_be_removed() {
+    let sender = Sender::new("damaged");
+    let file = sender.save(&sender.export("claude/-work-repo/abc.jsonl", None, Some(vec![])), "abc.spsession");
+    let mut recipient = Recipient::new("damaged");
+    bundle::import(&recipient.library, &file, None).unwrap();
+    let copy = std::fs::read_dir(&recipient.library).unwrap().next().unwrap().unwrap().path();
+    std::fs::write(&copy, "{ damaged").unwrap();
+    assert!(recipient.reindex().is_empty());
+
+    let problems = index::library_errors(&recipient.conn, &recipient.library).unwrap();
+    assert_eq!(problems.len(), 1);
+    assert_eq!(problems[0].path, copy.to_string_lossy());
+    let err = format!("{:#}", bundle::import(&recipient.library, &file, None).unwrap_err());
+    assert!(err.contains("Your library's copy of claude:abc is damaged"), "{err}");
+
+    bundle::remove(&recipient.conn, &recipient.library, &copy).unwrap();
+    assert!(bundle::import(&recipient.library, &file, None).unwrap().imported == vec!["claude:abc".to_string()]);
+    assert_eq!(recipient.reindex().len(), 1);
+    assert!(index::library_errors(&recipient.conn, &recipient.library).unwrap().is_empty());
+}

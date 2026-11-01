@@ -1,6 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { SessionEvent, SessionRow } from "../types";
+import { ask } from "@tauri-apps/plugin-dialog";
 import { api } from "../api";
 import { buildBlocks, blockText, type Block, type ToolStep } from "../lib/blocks";
 import {
@@ -375,6 +376,9 @@ export function Transcript({
               <OpenButton session={session} choice={openWith} onChoice={onOpenWith} keyboard={keyboard} />
             )}
             <button onClick={onExport}>Export…</button>
+          {session.from_bundle && (
+            <button onClick={() => void removeImported(session, children)}>Remove…</button>
+          )}
             <button onClick={() => api.reveal(session.path)}>Reveal file</button>
             <button onClick={() => copy("path", session.path)}>{copied === "path" ? "Copied" : "Copy path"}</button>
             <span className="t-file" title={session.path}>
@@ -896,6 +900,16 @@ function Clamp({ lines, max, render }: { lines: number; max: number; render: (n:
       )}
     </>
   );
+}
+
+async function removeImported(session: SessionRow, children: SessionRow[]) {
+  const subagents = children.filter((c) => c.from_bundle && c.is_subagent).length;
+  const ok = await ask(
+    `“${session.title}”${subagents ? ` and its ${subagents === 1 ? "subagent" : `${subagents} subagents`}` : ""} will be deleted from your library. The original sender's copy isn't affected.`,
+    { title: "Remove imported session?", kind: "warning", okLabel: "Remove", cancelLabel: "Cancel" },
+  );
+  if (!ok) return;
+  await api.removeImported(session.path).catch((e) => api.log("error", `remove ${session.path}: ${e}`));
 }
 
 function Images({ images }: { images?: string[] }) {

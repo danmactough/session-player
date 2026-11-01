@@ -381,6 +381,23 @@ async fn import_bundle(
     Ok(report)
 }
 
+/// Deletes an imported session (and the subagents imported with it) from
+/// the library, then re-indexes.
+#[tauri::command]
+fn remove_imported(app: AppHandle, state: State<Shared>, path: String) -> Result<(), String> {
+    let conn = index::open(&state.db_path).map_err(err)?;
+    bundle::remove(&conn, &library_dir(&state), Path::new(&path)).map_err(|e| format!("{e:#}"))?;
+    request_index(&app, &state, false);
+    Ok(())
+}
+
+/// Library files the indexer couldn't read.
+#[tauri::command]
+fn library_errors(state: State<Shared>) -> Result<Vec<index::LibraryError>, String> {
+    let conn = index::open(&state.db_path).map_err(err)?;
+    index::library_errors(&conn, &library_dir(&state)).map_err(err)
+}
+
 fn serve_image(state: &Shared, uri: &str) -> tauri::http::Response<Vec<u8>> {
     use base64::Engine;
     let not_found = || tauri::http::Response::builder().status(404).body(Vec::new()).unwrap();
@@ -582,7 +599,9 @@ pub fn run() {
             export_preview,
             export_save,
             export_cancel,
-            import_bundle
+            import_bundle,
+            remove_imported,
+            library_errors
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

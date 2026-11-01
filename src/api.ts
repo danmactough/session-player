@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   ExportPreview,
   ImportReport,
+  LibraryError,
   OnConflict,
   OpenTarget,
   RootInfo,
@@ -39,4 +40,6 @@ export const api = {
   exportCancel: () => invoke<void>("export_cancel"),
   importBundle: (path: string, onConflict?: OnConflict) =>
     invoke<ImportReport>("import_bundle", { path, onConflict: onConflict ?? null }),
+  removeImported: (path: string) => invoke<void>("remove_imported", { path }),
+  libraryErrors: () => invoke<LibraryError[]>("library_errors"),
 };

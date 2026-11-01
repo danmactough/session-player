@@ -192,7 +192,9 @@ const handlers: Record<string, Handler> = {
   },
   export_save: ({ dest }) => dest,
   export_cancel: () => null,
-  import_bundle: () => ({ imported: ["claude:demo"], unchanged: [], kept: [], conflicts: [] }),
+  remove_imported: () => null,
+  library_errors: () => [{ path: `${HOME}/Library/Application Support/com.danmactough.sessionplayer/library/Y2xhdWRlOmRlbW8.spsession`, error: "Y2xhdWRlOmRlbW8.spsession is damaged: bundle is malformed" }],
+  import_bundle: () => ({ imported: ["claude:demo"], unchanged: [], kept: [], conflicts: [], empty: [] }),
   terminal_apps: () => [
     { id: "terminal", label: "Terminal" },
     { id: "iterm", label: "iTerm" },

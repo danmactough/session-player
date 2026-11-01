@@ -403,7 +403,7 @@ fn serve_image(state: &Shared, uri: &str) -> tauri::http::Response<Vec<u8>> {
             .header("Content-Type", mime)
             .header("Cache-Control", "max-age=3600")
             .body(bytes)
-            .unwrap(),
+            .unwrap_or_else(|_| not_found()),
         Err(_) => not_found(),
     }
 }

@@ -214,8 +214,10 @@ fn bundled_session(
     let meta = indexed_meta(conn, path)?;
     let file = Path::new(path);
     let source = parse::detect(file).ok_or_else(|| anyhow!("Unrecognized session format: {path}"))?;
-    let parsed = match (branch, source) {
-        (Some(leaf), Source::Pi) => parse::pi::parse_chain(file, Some(leaf))?,
+    // pi forks and branches start at their split point in the app; a bundle
+    // keeps the history before it so the transcript reads on its own.
+    let parsed = match source {
+        Source::Pi => parse::pi::parse_chain(file, branch)?,
         _ => parse::parse_file(file, source)?,
     };
     let session_id = format!("{}:{}", source.as_str(), parsed.native_id);
@@ -237,17 +239,24 @@ fn bundled_session(
             omitted.push(Related { relation: Relation::Branch, id: format!("{session_id}@{}", b.leaf), title: b.label.clone() });
         }
     }
+    // Attachments are numbered per session, so a session's attachments keep
+    // their ids whichever other sessions share its bundle.
+    let mut next_attachment = 0;
+    let mut next_id = || {
+        next_attachment += 1;
+        format!("a{}", next_attachment - 1)
+    };
     let mut events = parsed.events;
     for (i, e) in events.iter_mut().enumerate() {
         let anchor = format!("e{i}");
         for image in e.images.iter_mut() {
-            let attachment = image_attachment(format!("a{}", attachments.len()), &id, &anchor, image);
+            let attachment = image_attachment(next_id(), &id, &anchor, image);
             *image = format!("attachment:{}", attachment.id);
             attachments.push(attachment);
         }
         if e.kind == EventKind::User {
             for (name, contents) in file_cards(&e.text) {
-                attachments.push(file_attachment(format!("a{}", attachments.len()), &id, &anchor, name, contents));
+                attachments.push(file_attachment(next_id(), &id, &anchor, name, contents));
             }
         }
         e.anchor = Some(anchor);
@@ -274,23 +283,11 @@ fn bundled_session(
     })
 }
 
-/// A session imported earlier, exported again as it was imported. Its
-/// attachments are renumbered to follow the ones already collected.
+/// A session imported earlier, exported again as it was imported.
 fn library_session(path: &str, attachments: &mut Vec<Attachment>) -> anyhow::Result<BundledSession> {
     let mut bundle = read(Path::new(path))?;
-    let mut session = bundle.sessions.swap_remove(0);
-    let mut renamed = std::collections::HashMap::new();
-    for mut a in bundle.attachments {
-        let id = format!("a{}", attachments.len());
-        renamed.insert(std::mem::replace(&mut a.id, id.clone()), id);
-        attachments.push(a);
-    }
-    for image in session.events.iter_mut().flat_map(|e| e.images.iter_mut()) {
-        if let Some(new) = image.strip_prefix("attachment:").and_then(|old| renamed.get(old)) {
-            *image = format!("attachment:{new}");
-        }
-    }
-    Ok(session)
+    attachments.append(&mut bundle.attachments);
+    Ok(bundle.sessions.swap_remove(0))
 }
 
 /// The `<file name="…" note="…">contents</file>` cards in a prompt (see
@@ -357,7 +354,9 @@ fn image_attachment(id: String, session: &str, anchor: &str, image: &str) -> Att
 /// Writes the bundle to `dest` through a temporary file, so a failed write
 /// never leaves a partial bundle under the real name.
 pub fn write(bundle: &Bundle, dest: &Path) -> anyhow::Result<()> {
-    let tmp = dest.with_extension("partial");
+    let mut tmp = dest.as_os_str().to_owned();
+    tmp.push(".partial");
+    let tmp = PathBuf::from(tmp);
     std::fs::write(&tmp, serde_json::to_vec(bundle)?).with_context(|| format!("Couldn't write {}", tmp.display()))?;
     std::fs::rename(&tmp, dest).with_context(|| format!("Couldn't write {}", dest.display()))?;
     Ok(())
@@ -392,6 +391,12 @@ pub fn read(path: &Path) -> anyhow::Result<Bundle> {
     Ok(bundle)
 }
 
+const IMAGE_TYPES: &[&str] = &["image/png", "image/jpeg", "image/gif", "image/webp"];
+
+/// Long enough for any agent's ids; keeps the library file name within
+/// the file system's 255-byte limit once base64-encoded.
+const MAX_ID_LEN: usize = 180;
+
 /// Bundles carry screenshots inline; this keeps a mistaken pick (a disk
 /// image renamed .spsession) from being read into memory.
 const MAX_BUNDLE_BYTES: u64 = 512 << 20;
@@ -403,6 +408,18 @@ fn validate(bundle: &Bundle) -> anyhow::Result<()> {
     let Some(primary) = bundle.sessions.first() else { bail!("it has no sessions") };
     let mut ids = HashSet::new();
     for s in &bundle.sessions {
+        // The id names the library file and decides duplicates, so it must be
+        // the one this session's own fields produce.
+        let expected = match &s.branch_leaf {
+            Some(leaf) => format!("{}:{}@{leaf}", s.source.as_str(), s.native_id),
+            None => format!("{}:{}", s.source.as_str(), s.native_id),
+        };
+        if s.id != expected {
+            bail!("session id {:?} doesn't match {expected}", s.id);
+        }
+        if s.native_id.is_empty() || s.id.len() > MAX_ID_LEN {
+            bail!("session id {:?} is empty or too long", s.id);
+        }
         if !ids.insert(s.id.as_str()) {
             bail!("session {} appears more than once", s.id);
         }
@@ -420,7 +437,7 @@ fn validate(bundle: &Bundle) -> anyhow::Result<()> {
     }
     let mut attachment_ids = HashSet::new();
     for a in &bundle.attachments {
-        if !attachment_ids.insert(a.id.as_str()) {
+        if !attachment_ids.insert((a.session.as_str(), a.id.as_str())) {
             bail!("attachment {} appears more than once", a.id);
         }
         if !ids.contains(a.session.as_str()) {
@@ -429,6 +446,12 @@ fn validate(bundle: &Bundle) -> anyhow::Result<()> {
         match (a.status, &a.data) {
             (AttachmentStatus::Included, None) if a.kind == AttachmentKind::Image => {
                 bail!("attachment {} is marked included but has no data", a.id)
+            }
+            (AttachmentStatus::Included, Some(_))
+                if a.kind == AttachmentKind::Image && !a.mime.as_deref().is_some_and(|m| IMAGE_TYPES.contains(&m)) =>
+            {
+                // The type ends up in an HTTP header when the image is shown.
+                bail!("attachment {} has unsupported image type {:?}", a.id, a.mime.as_deref().unwrap_or(""))
             }
             (AttachmentStatus::Included, Some(data)) => {
                 base64::engine::general_purpose::STANDARD
@@ -492,9 +515,12 @@ pub fn import(library: &Path, path: &Path, on_conflict: Option<OnConflict>) -> a
     let mut writes: Vec<(PathBuf, Bundle)> = Vec::new();
     for s in &bundle.sessions {
         let single = Bundle {
+            format: bundle.format.clone(),
+            version: bundle.version,
+            exported_at: bundle.exported_at,
+            exporter: bundle.exporter.clone(),
             sessions: vec![s.clone()],
             attachments: bundle.attachments.iter().filter(|a| a.session == s.id).cloned().collect(),
-            ..bundle.clone()
         };
         let dest = library_file(library, &s.id);
         if dest.exists() {

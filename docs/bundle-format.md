@@ -45,7 +45,7 @@ An image in `images` is a reference, `attachment:<attachment id>`, not the image
 
 ## What is included
 
-- **The selected session.** For a pi session with branches, the bundle holds the selected branch from the session root to its last entry, including the history it shares with the branch it split from. Every other branch, including the active branch when another is selected, is listed in `omitted` with `relation: "branch"`.
+- **The selected session.** A pi fork file is exported with the history it copied from its parent, so the transcript starts at the session root. For a pi session with branches, the bundle holds the selected branch from the session root to its last entry, including the history it shares with the branch it split from. Every other branch, including the active branch when another is selected, is listed in `omitted` with `relation: "branch"`.
 - **Subagents.** Subagents of the selected session are included unless the sender unticks them in the export sheet. A subagent left out is listed in `omitted` with `relation: "subagent"`. A pi branch has no subagents of its own.
 - **Never included.** The parent of a subagent or fork (listed in `omitted` with `relation: "parent"`), forks of the session, and any other session. Every session in `sessions` after the first must be a subagent of the first; import rejects a bundle that holds anything else.
 
@@ -53,11 +53,11 @@ An image in `images` is a reference, `attachment:<attachment id>`, not the image
 
 | Field | Meaning |
 |---|---|
-| `id` | `a<n>`, unique in the bundle |
+| `id` | `a<n>`, numbered per session, so a session's attachment IDs are the same in every bundle it appears in. Unique together with `session`. |
 | `session`, `anchor` | The session and event it is attached to |
 | `kind` | `image` or `file` |
 | `name` | The file's path as the agent recorded it (files only) |
-| `mime`, `bytes` | Media type (images) and decoded size |
+| `mime`, `bytes` | Media type (images: `image/png`, `image/jpeg`, `image/gif` or `image/webp`) and decoded size |
 | `status` | `included` or `omitted` |
 | `reason` | Why an omitted attachment is not in the bundle |
 | `data` | Base64 image data. Present only for an included image. |
@@ -73,9 +73,10 @@ Import rejects a file, and writes nothing, when:
 - `version` is missing, or is newer than the app supports (the message asks the user to update Session Player)
 - it is larger than 512 MB, or a required field is missing or has the wrong type
 - it has no sessions, a session ID appears twice, or an anchor repeats within a session
+- a session's `id` isn't the one its `source`, `native_id` and `branch_leaf` produce, or is longer than 180 characters
 - a session after the first isn't a subagent of the first
 - an image reference points to a missing attachment, or to an attachment of another session
-- an attachment belongs to a session that isn't in the bundle, an included image has no data, its data isn't valid base64, or an omitted attachment carries data
+- an attachment belongs to a session that isn't in the bundle, an included image has no data or an unsupported media type, its data isn't valid base64, or an omitted attachment carries data
 
 ## Library and duplicates
 

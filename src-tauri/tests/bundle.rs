@@ -244,13 +244,18 @@ fn invalid_bundles_are_rejected_with_a_reason_and_nothing_is_imported() {
         ("unversioned", Box::new(|v| v.as_object_mut().unwrap().remove("version").map(|_| ()).unwrap()), "no version"),
         ("empty", Box::new(|v| v["sessions"] = serde_json::json!([])), "no sessions"),
         ("missing-field", Box::new(|v| v["sessions"][0].as_object_mut().unwrap().remove("events").map(|_| ()).unwrap()), "missing field `events`"),
-        ("duplicate", Box::new(|v| v["sessions"][1]["id"] = "claude:abc".into()), "claude:abc appears more than once"),
+        ("duplicate", Box::new(|v| {
+            v["sessions"][1]["id"] = "claude:abc".into();
+            v["sessions"][1]["native_id"] = "abc".into();
+        }), "claude:abc appears more than once"),
         ("stranger", Box::new(|v| v["sessions"][1]["parent_id"] = "zzz".into()), "isn't a subagent of"),
         ("dangling", Box::new(|v| v["attachments"] = serde_json::json!([])), "missing attachment a0"),
         ("orphan", Box::new(|v| v["attachments"][0]["session"] = "claude:nope".into()), "attachment a0 belongs to session claude:nope"),
         ("no-data", Box::new(|v| v["attachments"][0]["data"] = serde_json::Value::Null), "attachment a0 is marked included but has no data"),
         ("bad-data", Box::new(|v| v["attachments"][0]["data"] = "not base64!".into()), "attachment a0 isn't valid base64"),
         ("anchors", Box::new(|v| v["sessions"][0]["events"][1]["anchor"] = "e0".into()), "anchor e0 appears more than once"),
+        ("mime", Box::new(|v| v["attachments"][0]["mime"] = "image/png\nX-Evil: 1".into()), "attachment a0 has unsupported image type"),
+        ("id", Box::new(|v| v["sessions"][0]["id"] = "".into()), "session id \"\" doesn't match claude:abc"),
     ];
     for (name, edit, expected) in cases {
         let err = import_edited(&recipient, name, edit).expect_err(name);
@@ -268,11 +273,12 @@ fn session_ids_cannot_place_files_outside_the_library() {
     let recipient = Recipient::new("paths");
     let report = import_edited(&recipient, "escape", |v| {
         v["sessions"] = serde_json::json!([v["sessions"][0].clone()]);
-        v["sessions"][0]["id"] = "../../escaped".into();
+        v["sessions"][0]["id"] = "claude:../../escaped".into();
+        v["sessions"][0]["native_id"] = "../../escaped".into();
         v["attachments"] = serde_json::json!([]);
     })
     .unwrap();
-    assert_eq!(report.imported, vec!["../../escaped".to_string()]);
+    assert_eq!(report.imported, vec!["claude:../../escaped".to_string()]);
     let files: Vec<_> = std::fs::read_dir(&recipient.library).unwrap().map(|e| e.unwrap().path()).collect();
     assert_eq!(files.len(), 1);
     assert_eq!(files[0].parent().unwrap(), recipient.library);
@@ -341,4 +347,49 @@ fn the_preview_describes_exactly_what_gets_saved() {
     assert_eq!(preview.attachments.len(), 1);
     assert_eq!(preview.attachments[0].data, None, "the preview lists attachments without their contents");
     assert_eq!(preview.file_name, "Flaky login test.spsession");
+}
+
+#[test]
+fn a_subagent_imported_alone_matches_the_same_subagent_in_its_parents_bundle() {
+    let mut sender = Sender::new("renumber");
+    // Give the parent a screenshot of its own, ahead of the subagent's.
+    let parent = sender.root.join("claude/-work-repo/abc.jsonl");
+    let mut log = std::fs::read_to_string(&parent).unwrap();
+    log.push_str(r#"{"type":"user","sessionId":"abc","timestamp":"2026-01-01T10:00:05Z","message":{"role":"user","content":[{"type":"text","text":"and this one"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"d29ybGQ="}}]}}"#);
+    log.push('\n');
+    std::fs::write(&parent, log).unwrap();
+    index::run(&mut sender.conn, false, None, &|_, _| {}).unwrap();
+    let alone = sender.save(&sender.export("claude/-work-repo/abc/subagents/agent-a1.jsonl", None, None), "alone.spsession");
+    let family = sender.save(&sender.export("claude/-work-repo/abc.jsonl", None, None), "family.spsession");
+    let recipient = Recipient::new("renumber");
+    bundle::import(&recipient.library, &alone, None).unwrap();
+    let report = bundle::import(&recipient.library, &family, None).unwrap();
+    assert!(report.conflicts.is_empty(), "{:?}", report.conflicts);
+    assert_eq!(report.unchanged, vec!["claude:agent-a1".to_string()]);
+}
+
+#[test]
+fn a_pi_fork_file_exports_with_the_history_it_copied() {
+    let mut sender = Sender::new("pifork");
+    let dir = sender.root.join("pi/--work-tree--");
+    std::fs::create_dir_all(&dir).unwrap();
+    let parent = dir.join("2026-02-01T10-00-00-000Z_01b-tree.jsonl");
+    std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pi-tree.jsonl"), &parent).unwrap();
+    let lines: Vec<String> = std::fs::read_to_string(&parent).unwrap().lines().map(str::to_string).collect();
+    std::fs::write(
+        dir.join("2026-02-02T10-00-00-000Z_01c-fork.jsonl"),
+        [
+            format!(r#"{{"type":"session","version":3,"id":"01c-fork","timestamp":"2026-02-02T10:00:00.000Z","cwd":"/work/tree","parentSession":"{}"}}"#, parent.display()),
+            lines[1].clone(),
+            lines[2].clone(),
+            r#"{"type":"message","id":"f1","parentId":"m2","timestamp":"2026-02-02T10:00:01.000Z","message":{"role":"user","content":"forked question about caching"}}"#.into(),
+        ]
+        .join("\n"),
+    )
+    .unwrap();
+    index::run(&mut sender.conn, false, None, &|_, _| {}).unwrap();
+    let exported = sender.export("pi/--work-tree--/2026-02-02T10-00-00-000Z_01c-fork.jsonl", None, None);
+    let texts: Vec<_> = exported.sessions[0].events.iter().map(|e| e.text.as_str()).collect();
+    assert_eq!(texts, ["first question here please", "answer one", "forked question about caching"]);
+    assert_eq!(exported.sessions[0].omitted[0].relation, bundle::Relation::Parent);
 }

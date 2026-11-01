@@ -159,30 +159,30 @@ export function Transcript({
   // Arriving from a child's "split from" link: show the split point.
   const focusIndex = focus ? blocks.findIndex((b) => b.type === "fork_to" && b.child.path === focus) : -1;
 
-  // Error navigator: blocks holding a failed tool call or an error notice.
-  const errorBlocks = useMemo(() => {
-    const out: number[] = [];
+  // Error navigator: one stop per error, so its count matches the session's.
+  // A group of tool calls can hold several failed calls; each is a stop
+  // (`step` is its place in the group).
+  const errorStops = useMemo(() => {
+    const out: { block: number; step?: number }[] = [];
     blocks.forEach((b, i) => {
-      const failed =
-        b.type === "tools"
-          ? b.steps.some((s) => s.result?.is_error)
-          : b.type === "command"
-            ? !!b.output?.is_error
-            : b.type === "system" || b.type === "orphan_result"
-              ? !!b.ev.is_error
-              : false;
-      if (failed) out.push(i);
+      if (b.type === "tools") {
+        b.steps.forEach((s, step) => {
+          if (s.result?.is_error) out.push({ block: i, step });
+        });
+      } else if (b.type === "command" ? b.output?.is_error : (b.type === "system" || b.type === "orphan_result") && b.ev.is_error) {
+        out.push({ block: i });
+      }
     });
     return out;
   }, [blocks]);
   const [errIdx, setErrIdx] = useState<number | null>(null);
-  const errorTarget = errIdx === null ? -1 : (errorBlocks[errIdx] ?? -1);
+  const errorTarget = errIdx === null ? undefined : errorStops[errIdx];
   const stepError = (dir: 1 | -1) => {
-    if (!errorBlocks.length) return;
-    const n = errorBlocks.length;
+    if (!errorStops.length) return;
+    const n = errorStops.length;
     const next = errIdx === null ? (dir === 1 ? 0 : n - 1) : (errIdx + dir + n) % n;
     setErrIdx(next);
-    virt.scrollToIndex(errorBlocks[next], { align: "center" });
+    virt.scrollToIndex(errorStops[next].block, { align: "center" });
   };
   useEffect(() => {
     if (focusIndex >= 0) virt.scrollToIndex(focusIndex, { align: "center" });
@@ -402,12 +402,12 @@ export function Transcript({
           <input type="checkbox" checked={showThinking} onChange={(e) => setShowThinking(e.target.checked)} />
           Reasoning
         </label>
-        {errorBlocks.length > 0 && (
+        {errorStops.length > 0 && (
           <div className="err-nav" title="Jump between failed tool calls and errors">
             <span className="err-dot" />
             <span className="err-label">
-              {errIdx === null ? errorBlocks.length : `${errIdx + 1}/${errorBlocks.length}`}{" "}
-              {errorBlocks.length === 1 ? "error" : "errors"}
+              {errIdx === null ? errorStops.length : `${errIdx + 1}/${errorStops.length}`}{" "}
+              {errorStops.length === 1 ? "error" : "errors"}
             </span>
             <button aria-label="Previous error" onClick={() => stepError(-1)}>
               ↑
@@ -460,10 +460,15 @@ export function Transcript({
                   key={item.key}
                   data-index={item.index}
                   ref={virt.measureElement}
-                  className={`row ${matchSet.has(item.index) ? "hit" : ""} ${isCurrent ? "hit-current" : ""} ${item.index === focusIndex || (item.index === errorTarget && b.type !== "tools") ? "focused" : ""}`}
+                  className={`row ${matchSet.has(item.index) ? "hit" : ""} ${isCurrent ? "hit-current" : ""} ${item.index === focusIndex || (item.index === errorTarget?.block && b.type !== "tools") ? "focused" : ""}`}
                   style={{ transform: `translateY(${item.start}px)` }}
                 >
-                  <BlockView block={b} onOpen={onOpen} openErrors={item.index === errorTarget} />
+                  <BlockView
+                    block={b}
+                    onOpen={onOpen}
+                    openErrors={item.index === errorTarget?.block}
+                    errorStep={item.index === errorTarget?.block ? errorTarget.step : undefined}
+                  />
                 </div>
               );
             })}
@@ -502,11 +507,14 @@ const BlockView = memo(function BlockView({
   block: b,
   onOpen,
   openErrors,
+  errorStep,
 }: {
   block: Block;
   onOpen: (path: string, focus?: string) => void;
   /** Expand failed tool calls (set while the error navigator points here). */
   openErrors?: boolean;
+  /** The failed tool call in this group the error navigator points at. */
+  errorStep?: number;
 }) {
   switch (b.type) {
     case "fork_from":
@@ -554,7 +562,7 @@ const BlockView = memo(function BlockView({
     case "thinking":
       return <Thinking ev={b.ev} />;
     case "tools":
-      return <Tools steps={b.steps} openErrors={openErrors} />;
+      return <Tools steps={b.steps} openErrors={openErrors} errorStep={errorStep} />;
     case "command":
       return (
         <section className="b-command">
@@ -612,7 +620,7 @@ function Compaction({ ev }: { ev: SessionEvent }) {
   );
 }
 
-function Tools({ steps, openErrors }: { steps: ToolStep[]; openErrors?: boolean }) {
+function Tools({ steps, openErrors, errorStep }: { steps: ToolStep[]; openErrors?: boolean; errorStep?: number }) {
   const errors = steps.filter((s) => s.result?.is_error).length;
   return (
     <section className="b-tools">
@@ -622,23 +630,31 @@ function Tools({ steps, openErrors }: { steps: ToolStep[]; openErrors?: boolean 
         </div>
       )}
       {steps.map((s, i) => (
-        <ToolRow key={s.call.call_id ?? i} step={s} forceOpen={openErrors && s.result?.is_error} />
+        <ToolRow key={s.call.call_id ?? i} step={s} forceOpen={openErrors && s.result?.is_error} current={i === errorStep} />
       ))}
     </section>
   );
 }
 
-function ToolRow({ step, forceOpen }: { step: ToolStep; forceOpen?: boolean }) {
+function ToolRow({ step, forceOpen, current }: { step: ToolStep; forceOpen?: boolean; current?: boolean }) {
   const [open, setOpen] = useState(false);
+  const rowRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (forceOpen) setOpen(true);
   }, [forceOpen]);
+  // The navigator scrolls to the group; in a long group, bring this call into
+  // view too, once the virtualizer has placed the group.
+  useEffect(() => {
+    if (!current) return;
+    const id = requestAnimationFrame(() => rowRef.current?.scrollIntoView({ block: "nearest" }));
+    return () => cancelAnimationFrame(id);
+  }, [current]);
   const { call, result } = step;
   const summary = useMemo(() => toolSummary(call.tool_name, call.text), [call]);
   const status = !result ? "pending" : result.is_error ? "error" : "ok";
   return (
-    // In a group of tool calls, the error navigator marks only the failed call.
-    <div className={`tool ${open ? "open" : ""} ${status} ${forceOpen ? "focused-step" : ""}`}>
+    // In a group of tool calls, the error navigator marks only the call it points at.
+    <div ref={rowRef} className={`tool ${open ? "open" : ""} ${status} ${current ? "focused-step" : ""}`}>
       <button className="tool-head" onClick={() => setOpen((o) => !o)}>
         <span className="dot" />
         <span className="tool-name">{toolLabel(call.tool_name)}</span>

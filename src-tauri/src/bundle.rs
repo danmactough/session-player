@@ -394,7 +394,8 @@ fn is_remote(url: &str) -> bool {
 }
 
 /// Byte ranges of the image addresses in Markdown images (`![alt](url)`)
-/// and HTML `<img src="url">` tags.
+/// and HTML `<img src="url">` tags, outside code. Matches never overlap, so
+/// callers can replace them from last to first.
 pub(crate) fn image_link_spans(text: &str) -> Vec<std::ops::Range<usize>> {
     let mut spans = Vec::new();
     let mut from = 0;
@@ -412,14 +413,73 @@ pub(crate) fn image_link_spans(text: &str) -> Vec<std::ops::Range<usize>> {
         let tag_start = from + i;
         let tag_end = lower[tag_start..].find('>').map_or(text.len(), |n| tag_start + n);
         from = tag_end;
-        let Some(src) = lower[tag_start..tag_end].find("src=") else { continue };
+        let tag = &lower[tag_start..tag_end];
+        // `src=` as its own attribute, not the end of `data-src=`.
+        let Some(src) = tag.match_indices("src=").map(|(n, _)| n).find(|&n| tag[..n].ends_with([' ', '\t', '\n', '/'])) else {
+            continue;
+        };
         let value = tag_start + src + "src=".len();
         let Some(quote) = text[value..].chars().next().filter(|c| *c == '"' || *c == '\'') else { continue };
         let Some(len) = text[value + 1..tag_end].find(quote) else { continue };
         spans.push(value + 1..value + 1 + len);
     }
+    let code = code_ranges(text);
+    spans.retain(|r| !code.iter().any(|c| c.contains(&r.start)));
     spans.sort_by_key(|r| r.start);
+    let mut last_end = 0;
+    spans.retain(|r| {
+        let keep = r.start >= last_end;
+        if keep {
+            last_end = r.end;
+        }
+        keep
+    });
     spans
+}
+
+/// Fenced code blocks and inline code spans, where an image link is text to
+/// show rather than an image.
+fn code_ranges(text: &str) -> Vec<std::ops::Range<usize>> {
+    let mut ranges = Vec::new();
+    let mut fence: Option<(usize, &str)> = None;
+    let mut line_start = 0;
+    for line in text.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        let marker = ["```", "~~~"].into_iter().find(|m| trimmed.starts_with(m));
+        match (fence, marker) {
+            (None, Some(m)) => fence = Some((line_start, m)),
+            (Some((start, open)), Some(m)) if m == open => {
+                ranges.push(start..line_start + line.len());
+                fence = None;
+            }
+            (Some(_), _) => {}
+            (None, None) => {
+                // Inline code: a run of backticks up to the next run of the same length.
+                let mut i = 0;
+                while let Some(n) = line[i..].find('`') {
+                    let open = i + n;
+                    let ticks = line[open..].len() - line[open..].trim_start_matches('`').len();
+                    let after = open + ticks;
+                    let closing = line[after..]
+                        .match_indices(&"`".repeat(ticks))
+                        .map(|(n, _)| after + n)
+                        .find(|&c| !line[c + ticks..].starts_with('`') && !line[..c].ends_with('`'));
+                    match closing {
+                        Some(c) => {
+                            ranges.push(line_start + open..line_start + c + ticks);
+                            i = c + ticks;
+                        }
+                        None => i = after,
+                    }
+                }
+            }
+        }
+        line_start += line.len();
+    }
+    if let Some((start, _)) = fence {
+        ranges.push(start..text.len());
+    }
+    ranges
 }
 
 /// The largest remote image downloaded, matching what the parsers keep of an
@@ -457,6 +517,8 @@ fn remote_image(id: String, session: &str, anchor: &str, url: &str) -> Attachmen
 /// app's dependencies.
 fn download_image(url: &str) -> Result<(String, Vec<u8>), String> {
     let out = std::process::Command::new("/usr/bin/curl")
+        // -q must come first: it stops curl reading the user's ~/.curlrc.
+        .arg("-q")
         .args(["--silent", "--show-error", "--fail", "--location", "--max-time", "20"])
         .args(["--proto", "=http,https", "--proto-redir", "=http,https"])
         .args(["--max-filesize", &MAX_REMOTE_IMAGE.to_string()])
@@ -466,7 +528,8 @@ fn download_image(url: &str) -> Result<(String, Vec<u8>), String> {
         .map_err(|e| e.to_string())?;
     let stderr = String::from_utf8_lossy(&out.stderr);
     if !out.status.success() {
-        let message = stderr.trim().trim_start_matches("curl: ");
+        // The content type is written after the error; keep the error line.
+        let message = stderr.lines().next().unwrap_or("").trim().trim_start_matches("curl: ");
         return Err(message.split(')').next_back().unwrap_or(message).trim().to_string());
     }
     let mime = stderr.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
@@ -830,5 +893,37 @@ pub fn summarize(bundle: &Bundle) -> Summary {
             .collect(),
         omitted: bundle.sessions.iter().flat_map(|s| s.omitted.iter().cloned()).collect(),
         attachments: bundle.attachments.iter().map(|a| Attachment { data: None, ..a.clone() }).collect(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::image_link_spans;
+
+    fn urls(text: &str) -> Vec<&str> {
+        image_link_spans(text).into_iter().map(|r| &text[r]).collect()
+    }
+
+    #[test]
+    fn finds_markdown_and_html_image_addresses() {
+        assert_eq!(urls("a ![x](https://a/1.png) b <IMG alt=\"y\" src='https://a/2.png'>"), ["https://a/1.png", "https://a/2.png"]);
+        assert_eq!(urls("<img/src=\"https://a/3.png\">"), ["https://a/3.png"]);
+    }
+
+    #[test]
+    fn nested_matches_keep_only_the_outer_one() {
+        let text = "<img src=\"https://a/x ![y](https://b.example/ééééééé)\">";
+        assert_eq!(urls(text), ["https://a/x ![y](https://b.example/ééééééé)"]);
+    }
+
+    #[test]
+    fn data_src_is_not_src() {
+        assert_eq!(urls("<img data-src=\"https://a/lazy.png\" src=\"https://a/real.png\">"), ["https://a/real.png"]);
+    }
+
+    #[test]
+    fn images_inside_code_are_left_alone() {
+        let text = "use `![logo](https://a/l.png)` here\n```html\n<img src=\"https://a/f.png\">\n```\n![real](https://a/r.png)";
+        assert_eq!(urls(text), ["https://a/r.png"]);
     }
 }

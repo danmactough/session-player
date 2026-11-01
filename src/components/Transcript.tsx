@@ -1,7 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { SessionEvent, SessionRow } from "../types";
-import { ask } from "@tauri-apps/plugin-dialog";
+import { ask, message } from "@tauri-apps/plugin-dialog";
 import { api } from "../api";
 import { buildBlocks, blockText, type Block, type ToolStep } from "../lib/blocks";
 import {
@@ -909,7 +909,9 @@ async function removeImported(session: SessionRow, children: SessionRow[]) {
     { title: "Remove imported session?", kind: "warning", okLabel: "Remove", cancelLabel: "Cancel" },
   );
   if (!ok) return;
-  await api.removeImported(session.path).catch((e) => api.log("error", `remove ${session.path}: ${e}`));
+  await api
+    .removeImported(session.path)
+    .catch((e) => message(String(e), { title: "Couldn't remove the session", kind: "error" }));
 }
 
 function Images({ images }: { images?: string[] }) {

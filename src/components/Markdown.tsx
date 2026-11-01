@@ -5,6 +5,12 @@ import DOMPurify from "dompurify";
 marked.setOptions({ gfm: true, breaks: false });
 
 const OPTIONS = { FORBID_TAGS: ["style", "form", "input"], FORBID_ATTR: ["style"] };
+// Elements besides <img> that can fetch from an address: SVG images, filters
+// and references, and media (which the CSP blocks today).
+const IMPORTED_OPTIONS = {
+  ...OPTIONS,
+  FORBID_TAGS: [...OPTIONS.FORBID_TAGS, "image", "feimage", "use", "video", "audio", "source", "track"],
+};
 
 // An imported transcript comes from someone else, and an image it loads from
 // the web would tell them when it was read. Export downloads linked images
@@ -24,7 +30,7 @@ function render(text: string, remoteImages: boolean): string {
   if (remoteImages) return DOMPurify.sanitize(html, OPTIONS);
   DOMPurify.addHook("afterSanitizeAttributes", dropRemoteImages);
   try {
-    return DOMPurify.sanitize(html, OPTIONS);
+    return DOMPurify.sanitize(html, IMPORTED_OPTIONS);
   } finally {
     DOMPurify.removeHook("afterSanitizeAttributes");
   }

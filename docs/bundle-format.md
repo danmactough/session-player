@@ -57,13 +57,13 @@ An image in `images` is a reference, `attachment:<attachment id>`, not the image
 | `session`, `anchor` | The session and event it is attached to |
 | `kind` | `image` or `file` |
 | `name` | The file's path as the agent recorded it (files only) |
-| `mime`, `bytes` | Media type (images: `image/png`, `image/jpeg`, `image/gif` or `image/webp`) and decoded size |
+| `mime`, `bytes` | Media type (images: `image/png`, `image/jpeg`, `image/gif`, `image/webp` or `image/svg+xml`) and decoded size |
 | `status` | `included` or `omitted` |
 | `reason` | Why an omitted attachment is not in the bundle |
 | `data` | Base64 image data. Present only for an included image. |
 
 - **Images** (screenshots pasted into a prompt, images returned by tools) are stored in `data`. An image the app doesn't load (over 4 MB of base64) is listed as `omitted`, with a reason.
-- **Remote images**, meaning images that a reply, reasoning block or compaction summary links from the web (Markdown `![alt](https://…)` or HTML `<img src="https://…">`) and image links an agent recorded instead of the image itself, are downloaded during export (PNG, JPEG, GIF or WebP, up to 3 MB each). `name` holds the original address. In the event text, the address is replaced with `attachment:<id>`, so the bundle never points at the web. A download that fails is listed as `omitted` with the reason. Session Player never loads remote images in an imported transcript; one that wasn't downloaded shows as "remote image not included".
+- **Remote images**, meaning images that a reply, reasoning block or compaction summary links from the web (Markdown `![alt](https://…)` or HTML `<img src="https://…">`) and image links an agent recorded instead of the image itself, are downloaded during export (PNG, JPEG, GIF, WebP or SVG, up to 3 MB each). `name` holds the original address. In the event text, the address is replaced with `attachment:<id>`, so the bundle never points at the web. A download that fails is listed as `omitted` with the reason. Session Player never loads anything from the web in an imported transcript. An image that wasn't downloaded shows as "remote image not included". Inline SVG in replies still renders, but its references to outside addresses (`<image href>`, `<feImage>`, `url(https://…)` and similar) are removed. References to elements in the same document (`#id`) and `data:` URLs stay.
 - **Files** attached to a prompt (pi `@file`, Claude Code `@file` and IDE notices, Codex "files mentioned") keep their contents inline in the prompt's `<file name="…">…</file>` card, where the transcript shows them. Their manifest entry records whether the contents came along: `included` with a size, or `omitted` when the agent recorded only the path.
 
 ## Validation
@@ -83,7 +83,7 @@ Import rejects a file, and writes nothing, when:
 
 Import splits a bundle into one single-session bundle per session and stores it in the app's library, `~/Library/Application Support/com.danmactough.sessionplayer/library/`. The library file name is the session ID encoded as URL-safe base64, so no ID can name a path outside the library. The indexer reads the library alongside the session folders. Imported sessions are marked "imported" and keep the title and project the sender saw. They can be read, searched and exported again, but not resumed or opened in an agent app.
 
-Import skips a session with no prompt, reply or tool call, which the session list wouldn't show, and reports it as empty.
+Import skips a session with no prompt, reply or tool call, which the session list wouldn't show, and reports it as empty. When the exported session itself is empty, nothing in the bundle is imported, so its subagents are never imported without it.
 
 When a session ID is already in the library:
 

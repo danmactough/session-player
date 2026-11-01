@@ -582,7 +582,7 @@ pub fn read(path: &Path) -> anyhow::Result<Bundle> {
     Ok(bundle)
 }
 
-const IMAGE_TYPES: &[&str] = &["image/png", "image/jpeg", "image/gif", "image/webp"];
+const IMAGE_TYPES: &[&str] = &["image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml"];
 
 /// Long enough for any agent's ids; keeps the library file name within
 /// the file system's 255-byte limit once base64-encoded.
@@ -706,6 +706,11 @@ pub struct Conflict {
 pub fn import(library: &Path, path: &Path, on_conflict: Option<OnConflict>) -> anyhow::Result<ImportReport> {
     let bundle = read(path)?;
     let mut report = ImportReport::default();
+    // Subagents are imported only with the session they belong to.
+    if !has_conversation(&bundle.sessions[0].events) {
+        report.empty.push(bundle.sessions[0].id.clone());
+        return Ok(report);
+    }
     let mut writes: Vec<(PathBuf, Bundle)> = Vec::new();
     for s in &bundle.sessions {
         if !has_conversation(&s.events) {

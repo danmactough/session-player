@@ -409,7 +409,7 @@ fn sessions_with_no_conversation_are_not_imported() {
     assert_eq!(std::fs::read_dir(&recipient.library).unwrap().count(), 1);
 }
 
-/// Serves `/shot.png` as a PNG and everything else as 404, on a local port.
+/// Serves `/shot.png` as a PNG, `/logo.svg` as SVG and everything else as 404, on a local port.
 fn image_server() -> String {
     use std::io::{Read, Write};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -422,6 +422,8 @@ fn image_server() -> String {
             let request = String::from_utf8_lossy(&buf[..n]);
             let response: Vec<u8> = if request.starts_with("GET /shot.png ") {
                 [b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello".as_slice()].concat()
+            } else if request.starts_with("GET /logo.svg ") {
+                b"HTTP/1.1 200 OK\r\nContent-Type: image/svg+xml\r\nContent-Length: 11\r\nConnection: close\r\n\r\n<svg></svg>".to_vec()
             } else {
                 b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec()
             };
@@ -435,7 +437,7 @@ fn image_server() -> String {
 fn remote_images_in_the_transcript_are_downloaded_into_the_bundle() {
     let host = image_server();
     let mut sender = Sender::new("remote");
-    let text = format!("Here it is: ![login]({host}/shot.png) and <img alt=\\\"x\\\" src=\\\"{host}/missing.png\\\">");
+    let text = format!("Here it is: ![login]({host}/shot.png) and <img alt=\\\"x\\\" src=\\\"{host}/missing.png\\\"> ![logo]({host}/logo.svg)");
     std::fs::write(
         sender.root.join("claude/-work-repo/remote.jsonl"),
         format!(
@@ -450,6 +452,8 @@ fn remote_images_in_the_transcript_are_downloaded_into_the_bundle() {
 
     let shot = exported.attachments.iter().find(|a| a.name.as_deref() == Some(&format!("{host}/shot.png"))).unwrap();
     assert_eq!((shot.kind, shot.status, shot.mime.as_deref(), shot.bytes), (bundle::AttachmentKind::Image, bundle::AttachmentStatus::Included, Some("image/png"), Some(5)));
+    let logo = exported.attachments.iter().find(|a| a.name.as_deref() == Some(&format!("{host}/logo.svg"))).unwrap();
+    assert_eq!((logo.status, logo.mime.as_deref()), (bundle::AttachmentStatus::Included, Some("image/svg+xml")));
     let missing = exported.attachments.iter().find(|a| a.name.as_deref() == Some(&format!("{host}/missing.png"))).unwrap();
     assert_eq!(missing.status, bundle::AttachmentStatus::Omitted);
     assert!(missing.reason.as_deref().unwrap().contains("couldn't download"), "{:?}", missing.reason);
@@ -509,4 +513,16 @@ fn a_damaged_library_file_is_reported_and_can_be_removed() {
     assert!(bundle::import(&recipient.library, &file, None).unwrap().imported == vec!["claude:abc".to_string()]);
     assert_eq!(recipient.reindex().len(), 1);
     assert!(index::library_errors(&recipient.conn, &recipient.library).unwrap().is_empty());
+}
+
+#[test]
+fn nothing_is_imported_when_the_exported_session_is_empty() {
+    let recipient = Recipient::new("empty-primary");
+    let report = import_edited(&recipient, "empty-primary", |v| {
+        v["sessions"][0]["events"].as_array_mut().unwrap().retain(|e| e["kind"] == "system");
+    })
+    .unwrap();
+    assert!(report.imported.is_empty());
+    assert_eq!(report.empty, vec!["claude:abc".to_string()]);
+    assert!(!recipient.library.exists() || std::fs::read_dir(&recipient.library).unwrap().count() == 0);
 }

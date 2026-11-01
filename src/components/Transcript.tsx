@@ -16,7 +16,8 @@ import {
   toolLabel,
   toolSummary,
 } from "../lib/format";
-import { Markdown, RemoteImages } from "./Markdown";
+import { Markdown } from "./Markdown";
+import { RemoteImages } from "../lib/remoteImages";
 import { BranchIcon } from "./BranchIcon";
 import { OpenButton } from "./OpenButton";
 import { SourceIcon } from "./AppIcon";

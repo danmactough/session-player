@@ -1,6 +1,6 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Source {
     Claude,
@@ -18,7 +18,7 @@ impl Source {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EventKind {
     User,
@@ -36,7 +36,7 @@ pub enum EventKind {
     Reference,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Event {
     pub kind: EventKind,
     pub ts: Option<i64>,
@@ -47,7 +47,7 @@ pub struct Event {
     pub call_id: Option<String>,
     /// The tool couldn't do what was asked, or the harness or model failed.
     /// A shell command that ran and exited non-zero is not this; see `failed_exit`.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_error: bool,
     /// Non-zero exit status of a shell command that ran.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -55,19 +55,23 @@ pub struct Event {
     /// `exit_code` signals a failure rather than an answer such as grep's
     /// "no match" (see `parse::benign_exit`). Counted as an error only when
     /// the user turns that on.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub failed_exit: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<String>,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub sidechain: bool,
     /// The pi entry this event came from, used to place fork markers.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub entry: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// Identifies the event within an exported bundle ("e<n>"); unchanged by
+    /// import, so references to it survive a round trip.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<String>,
 }
 
 impl Event {
@@ -86,11 +90,12 @@ impl Event {
             sidechain: false,
             entry: None,
             title: None,
+            anchor: None,
         }
     }
 }
 
-#[derive(Debug, Default, Clone, Serialize)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Tokens {
     pub input: i64,
     pub output: i64,
@@ -205,4 +210,6 @@ pub struct SessionRow {
     pub error_count: i64,
     /// Shell commands that exited with a failing status.
     pub exit_count: i64,
+    /// Imported from a bundle into the app's library; there is no agent file to resume or open.
+    pub from_bundle: bool,
 }

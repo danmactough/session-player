@@ -13,6 +13,16 @@ pub fn parse(path: &Path) -> anyhow::Result<Parsed> {
 /// Parses the session, rendering the branch that ends at `leaf`, or the
 /// active branch (the one ending at the last entry) when `leaf` is None.
 pub fn parse_branch(path: &Path, leaf: Option<&str>) -> anyhow::Result<Parsed> {
+    parse_tree(path, leaf, true)
+}
+
+/// Like `parse_branch`, but always renders the whole root-to-leaf chain,
+/// including the history a branch or fork shares with its source.
+pub fn parse_chain(path: &Path, leaf: Option<&str>) -> anyhow::Result<Parsed> {
+    parse_tree(path, leaf, false)
+}
+
+fn parse_tree(path: &Path, leaf: Option<&str>, from_split: bool) -> anyhow::Result<Parsed> {
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
     let fallback_id = stem.rsplit('_').next().unwrap_or(stem);
     let mut p = Parsed::new(Source::Pi, fallback_id.to_string());
@@ -83,6 +93,7 @@ pub fn parse_branch(path: &Path, leaf: Option<&str>) -> anyhow::Result<Parsed> {
     // A branch or fork is shown from the point where it split off; the UI
     // links back to the split point in its source.
     let start = match leaf {
+        _ if !from_split => 0,
         Some(id) => p
             .branches
             .iter()

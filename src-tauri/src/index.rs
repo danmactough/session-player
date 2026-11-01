@@ -11,7 +11,7 @@ use crate::model::{EventKind, Parsed, SessionRow, Source};
 use crate::parse;
 
 /// Bump when parsing changes so existing indexes are rebuilt on launch.
-const INDEX_VERSION: &str = "19";
+const INDEX_VERSION: &str = "20";
 const FTS_BODY_LIMIT: usize = 400_000;
 const SKIP_DIRS: &[&str] = &["memory", "tool-results", "subagent-artifacts", "node_modules", ".git"];
 
@@ -37,7 +37,8 @@ pub fn open(db_path: &Path) -> anyhow::Result<Connection> {
             models TEXT NOT NULL, git_branch TEXT, is_subagent INTEGER NOT NULL,
             parent_id TEXT, size INTEGER NOT NULL, imported_from TEXT,
             branches TEXT NOT NULL DEFAULT '[]', fork_entry TEXT, fork_turn INTEGER,
-            error_count INTEGER NOT NULL DEFAULT 0, exit_count INTEGER NOT NULL DEFAULT 0);
+            error_count INTEGER NOT NULL DEFAULT 0, exit_count INTEGER NOT NULL DEFAULT 0,
+            from_bundle INTEGER NOT NULL DEFAULT 0);
          CREATE INDEX IF NOT EXISTS sessions_updated ON sessions(updated_at);
          CREATE VIRTUAL TABLE IF NOT EXISTS session_fts USING fts5(
             path UNINDEXED, title, body, tokenize='porter unicode61');",
@@ -138,9 +139,12 @@ struct Indexed {
     error: Option<String>,
 }
 
+/// Indexes every session file under the roots, plus the bundles imported
+/// into `library` (the app's own folder, not a root the user manages).
 pub fn run(
     conn: &mut Connection,
     full: bool,
+    library: Option<&Path>,
     progress: &(dyn Fn(usize, usize) + Sync),
 ) -> anyhow::Result<IndexStats> {
     let started = std::time::Instant::now();
@@ -173,6 +177,24 @@ pub fn run(
                 mtime,
                 size: meta.len() as i64,
             });
+        }
+    }
+
+    if let Some(library) = library.filter(|l| l.is_dir()) {
+        let root = library.to_string_lossy().into_owned();
+        for entry in std::fs::read_dir(library)?.filter_map(Result::ok) {
+            let path = entry.path();
+            if !crate::bundle::is_bundle_path(&path) {
+                continue;
+            }
+            let Ok(meta) = entry.metadata() else { continue };
+            let mtime = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            files.push(FileInfo { path: path.to_string_lossy().into_owned(), root: root.clone(), mtime, size: meta.len() as i64 });
         }
     }
 
@@ -235,8 +257,8 @@ pub fn run(
             "INSERT INTO sessions(path, root, source, native_id, cwd, project, title, title_source,
                 first_prompt, started_at, updated_at, user_turns, assistant_msgs, tool_calls,
                 input_tokens, output_tokens, cache_read_tokens, models, git_branch, is_subagent,
-                parent_id, size, imported_from, branches, fork_entry, fork_turn, error_count, exit_count)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28)",
+                parent_id, size, imported_from, branches, fork_entry, fork_turn, error_count, exit_count, from_bundle)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29)",
             params![
                 row.path,
                 r.file.root,
@@ -266,6 +288,7 @@ pub fn run(
                 row.fork_turn,
                 row.error_count,
                 row.exit_count,
+                row.from_bundle,
             ],
         )?;
         tx.execute(
@@ -308,6 +331,9 @@ fn enrich(path: &Path, source: Source, parsed: &mut Parsed, sidecars: &CodexSide
 
 fn index_file(file: FileInfo, sidecars: &CodexSidecars) -> Indexed {
     let path = PathBuf::from(&file.path);
+    if crate::bundle::is_bundle_path(&path) {
+        return index_bundle(file, &path);
+    }
     let Some(source) = parse::detect(&path) else {
         return Indexed { file, source: None, row: None, error: None };
     };
@@ -319,6 +345,24 @@ fn index_file(file: FileInfo, sidecars: &CodexSidecars) -> Indexed {
         }
         Err(e) => Indexed { file, source: Some(source), row: None, error: Some(e.to_string()) },
     }
+}
+
+/// A library bundle keeps the title and project its sender saw, so they are
+/// used as-is rather than derived again.
+fn index_bundle(file: FileInfo, path: &Path) -> Indexed {
+    let session = match crate::bundle::read(path) {
+        Ok(mut b) => b.sessions.swap_remove(0),
+        Err(e) => return Indexed { file, source: None, row: None, error: Some(e.to_string()) },
+    };
+    let source = session.source;
+    let (title, title_source) = (session.title.clone(), session.title_source.clone());
+    let row = build_row(&file, crate::bundle::to_parsed(session)).map(|(mut row, body)| {
+        row.title = title;
+        row.title_source = title_source;
+        row.from_bundle = true;
+        (row, body)
+    });
+    Indexed { file, source: Some(source), row, error: None }
 }
 
 /// Collapses a parsed session into its index row plus the text used for search.
@@ -431,6 +475,7 @@ fn build_row(file: &FileInfo, p: Parsed) -> Option<(SessionRow, String)> {
         fork_turn: p.fork_turn,
         error_count,
         exit_count,
+        from_bundle: false,
     };
     Some((row, body))
 }
@@ -619,7 +664,7 @@ pub fn list(conn: &Connection) -> anyhow::Result<Vec<SessionRow>> {
         "SELECT path, source, native_id, cwd, project, title, title_source, first_prompt,
                 started_at, updated_at, user_turns, assistant_msgs, tool_calls, input_tokens,
                 output_tokens, cache_read_tokens, models, git_branch, is_subagent, parent_id, size,
-                imported_from, branches, fork_entry, fork_turn, error_count, exit_count
+                imported_from, branches, fork_entry, fork_turn, error_count, exit_count, from_bundle
          FROM sessions ORDER BY updated_at DESC",
     )?;
     let mut rows: Vec<SessionRow> = stmt
@@ -653,6 +698,7 @@ pub fn list(conn: &Connection) -> anyhow::Result<Vec<SessionRow>> {
                 fork_turn: r.get(24)?,
                 error_count: r.get(25)?,
                 exit_count: r.get(26)?,
+                from_bundle: r.get(27)?,
             })
         })?
         .collect::<Result<_, _>>()?;
@@ -731,9 +777,9 @@ mod tests {
         let _ = std::fs::remove_file(&db);
         let mut conn = open(Path::new(&db)).unwrap();
         seed_roots(&conn).unwrap();
-        let stats = run(&mut conn, false, &|_, _| {}).unwrap();
+        let stats = run(&mut conn, false, None, &|_, _| {}).unwrap();
         println!("{stats:?}");
-        let again = run(&mut conn, false, &|_, _| {}).unwrap();
+        let again = run(&mut conn, false, None, &|_, _| {}).unwrap();
         println!("second pass: {again:?}");
         for r in list(&conn).unwrap() {
             println!(

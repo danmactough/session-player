@@ -1,11 +1,17 @@
 mod apps;
+#[doc(hidden)]
+pub mod bundle;
 mod terminals;
-mod index;
-mod model;
+#[doc(hidden)]
+pub mod index;
+#[doc(hidden)]
+pub mod model;
 mod parse;
 
 #[doc(hidden)]
 pub mod test_support {
+    pub use crate::bundle;
+    pub use crate::index;
     pub use crate::model::SessionRow as Row;
 
     /// Parses and indexes one file, returning its index row and a compact
@@ -69,9 +75,17 @@ struct AppState {
     pending: AtomicBool,
     pending_full: AtomicBool,
     watcher: Mutex<Option<Debouncer<notify::RecommendedWatcher>>>,
+    /// The bundle shown in the export sheet. Saving writes this exact bundle,
+    /// so what the user reviewed is what leaves the machine.
+    export: Mutex<Option<(u64, bundle::Bundle)>>,
 }
 
 type Shared = Arc<AppState>;
+
+/// Where imported bundles live: next to the index, inside the app's own data.
+fn library_dir(state: &AppState) -> PathBuf {
+    state.db_path.with_file_name("library")
+}
 
 fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
@@ -100,9 +114,10 @@ fn request_index(app: &AppHandle, state: &Shared, full: bool) {
             state.pending.store(false, Ordering::SeqCst);
             let full = state.pending_full.swap(false, Ordering::SeqCst);
             let _ = app.emit("index-started", ());
+            let library = library_dir(&state);
             let result = index::open(&state.db_path).and_then(|mut conn| {
                 let app2 = app.clone();
-                index::run(&mut conn, full, &move |done, total| {
+                index::run(&mut conn, full, Some(&library), &move |done, total| {
                     let _ = app2.emit("index-progress", Progress { done, total });
                 })
             });
@@ -231,12 +246,16 @@ async fn load_session(state: State<'_, Shared>, path: String, branch: Option<Str
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let p = PathBuf::from(&path);
-        let source = parse::detect(&p).ok_or_else(|| "Unrecognized session format".to_string())?;
-        let parsed = match (&branch, source) {
-            (Some(leaf), model::Source::Pi) => parse::pi::parse_branch(&p, Some(leaf)),
-            _ => parse::parse_file(&p, source),
+        let mut events = if bundle::is_bundle_path(&p) {
+            bundle::load_events(&p).map_err(err)?
+        } else {
+            let source = parse::detect(&p).ok_or_else(|| "Unrecognized session format".to_string())?;
+            let parsed = match (&branch, source) {
+                (Some(leaf), model::Source::Pi) => parse::pi::parse_branch(&p, Some(leaf)),
+                _ => parse::parse_file(&p, source),
+            };
+            parsed.map_err(err)?.events
         };
-        let mut events = parsed.map_err(err)?.events;
         let mut cache = state.images.lock().unwrap();
         let generation = cache.0 + 1;
         let mut images = Vec::with_capacity(events.len());
@@ -256,6 +275,110 @@ async fn load_session(state: State<'_, Shared>, path: String, branch: Option<Str
     })
     .await
     .map_err(err)?
+}
+
+#[derive(Serialize)]
+struct ExportPreview {
+    /// Pass back to `export_save` to write the bundle previewed here.
+    token: u64,
+    summary: bundle::Summary,
+    subagents: Vec<SubagentChoice>,
+}
+
+#[derive(Serialize)]
+struct SubagentChoice {
+    path: String,
+    title: String,
+    included: bool,
+}
+
+/// Builds the bundle for a session and describes it for the export sheet.
+/// `subagents` lists the subagent paths to include (None: all of them).
+#[tauri::command]
+async fn export_preview(
+    app: AppHandle,
+    state: State<'_, Shared>,
+    path: String,
+    branch: Option<String>,
+    subagents: Option<Vec<String>>,
+) -> Result<ExportPreview, String> {
+    let state = state.inner().clone();
+    let exporter = format!("Session Player {}", app.package_info().version);
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = index::open(&state.db_path).map_err(err)?;
+        let choices = if branch.is_some() { Vec::new() } else { bundle::subagents_of(&conn, &path).map_err(err)? };
+        let request = bundle::ExportRequest { path: &path, branch: branch.as_deref(), subagents: subagents.clone() };
+        let built = bundle::build(&conn, request, &exporter).map_err(|e| format!("{e:#}"))?;
+        let summary = bundle::summarize(&built);
+        let mut pending = state.export.lock().unwrap();
+        let token = pending.as_ref().map_or(1, |(t, _)| t + 1);
+        *pending = Some((token, built));
+        Ok(ExportPreview {
+            token,
+            summary,
+            subagents: choices
+                .into_iter()
+                .map(|(path, title)| SubagentChoice {
+                    included: subagents.as_ref().is_none_or(|wanted| wanted.contains(&path)),
+                    path,
+                    title,
+                })
+                .collect(),
+        })
+    })
+    .await
+    .map_err(err)?
+}
+
+/// Writes the bundle from the preview identified by `token` to `dest`.
+#[tauri::command]
+async fn export_save(state: State<'_, Shared>, token: u64, dest: String) -> Result<String, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let pending = state.export.lock().unwrap().take();
+        let built = match pending {
+            Some((t, b)) if t == token => b,
+            other => {
+                *state.export.lock().unwrap() = other;
+                return Err("This preview is out of date. Review the export again before saving.".to_string());
+            }
+        };
+        let mut dest = PathBuf::from(dest);
+        if !bundle::is_bundle_path(&dest) {
+            dest.as_mut_os_string().push(format!(".{}", bundle::EXTENSION));
+        }
+        bundle::write(&built, &dest).map_err(|e| format!("{e:#}"))?;
+        Ok(dest.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(err)?
+}
+
+/// Drops the previewed bundle when the export sheet closes without saving.
+#[tauri::command]
+fn export_cancel(state: State<Shared>) {
+    *state.export.lock().unwrap() = None;
+}
+
+/// Imports a bundle file into the library and re-indexes. With conflicts
+/// and no `on_conflict`, nothing is written and the conflicts are returned.
+#[tauri::command]
+async fn import_bundle(
+    app: AppHandle,
+    state: State<'_, Shared>,
+    path: String,
+    on_conflict: Option<bundle::OnConflict>,
+) -> Result<bundle::ImportReport, String> {
+    let state = state.inner().clone();
+    let library = library_dir(&state);
+    let report = tauri::async_runtime::spawn_blocking(move || bundle::import(&library, Path::new(&path), on_conflict))
+        .await
+        .map_err(err)?
+        .map_err(|e| format!("{e:#}"))?;
+    if !report.imported.is_empty() {
+        request_index(&app, &state, false);
+    }
+    Ok(report)
 }
 
 fn serve_image(state: &Shared, uri: &str) -> tauri::http::Response<Vec<u8>> {
@@ -410,6 +533,7 @@ pub fn run() {
                 pending: AtomicBool::new(false),
                 pending_full: AtomicBool::new(false),
                 watcher: Mutex::new(None),
+                export: Mutex::new(None),
             });
             app.manage(state.clone());
             let handle = app.handle().clone();
@@ -442,7 +566,11 @@ pub fn run() {
             home_dir,
             log_frontend,
             get_setting,
-            set_setting
+            set_setting,
+            export_preview,
+            export_save,
+            export_cancel,
+            import_bundle
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -461,6 +589,7 @@ mod tests {
             pending: AtomicBool::new(false),
             pending_full: AtomicBool::new(false),
             watcher: Mutex::new(None),
+            export: Mutex::new(None),
         });
         let ok = serve_image(&state, "spimg://localhost/7/1/0");
         assert_eq!(ok.status(), 200);

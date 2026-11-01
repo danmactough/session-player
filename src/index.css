@@ -1839,6 +1839,10 @@ mark {
   color: var(--ink-2);
   overflow-wrap: anywhere;
 }
+.md img.img-not-included {
+  font: 11px var(--mono);
+  color: var(--muted);
+}
 .import-button {
   padding: 5px 8px;
   font-size: 12px;

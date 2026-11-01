@@ -393,3 +393,74 @@ fn a_pi_fork_file_exports_with_the_history_it_copied() {
     assert_eq!(texts, ["first question here please", "answer one", "forked question about caching"]);
     assert_eq!(exported.sessions[0].omitted[0].relation, bundle::Relation::Parent);
 }
+
+#[test]
+fn sessions_with_no_conversation_are_not_imported() {
+    let recipient = Recipient::new("empty");
+    let report = import_edited(&recipient, "empty", |v| {
+        // Keep only the slash command: no prompt, reply or tool call.
+        let events = v["sessions"][1]["events"].as_array_mut().unwrap();
+        events.retain(|e| e["kind"] == "system");
+        v["attachments"] = serde_json::json!([]);
+    })
+    .unwrap();
+    assert_eq!(report.imported, vec!["claude:abc".to_string()]);
+    assert_eq!(report.empty, vec!["claude:agent-a1".to_string()]);
+    assert_eq!(std::fs::read_dir(&recipient.library).unwrap().count(), 1);
+}
+
+/// Serves `/shot.png` as a PNG and everything else as 404, on a local port.
+fn image_server() -> String {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut buf = [0u8; 2048];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let request = String::from_utf8_lossy(&buf[..n]);
+            let response: Vec<u8> = if request.starts_with("GET /shot.png ") {
+                [b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello".as_slice()].concat()
+            } else {
+                b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec()
+            };
+            let _ = stream.write_all(&response);
+        }
+    });
+    format!("http://{addr}")
+}
+
+#[test]
+fn remote_images_in_the_transcript_are_downloaded_into_the_bundle() {
+    let host = image_server();
+    let mut sender = Sender::new("remote");
+    let text = format!("Here it is: ![login]({host}/shot.png) and <img alt=\\\"x\\\" src=\\\"{host}/missing.png\\\">");
+    std::fs::write(
+        sender.root.join("claude/-work-repo/remote.jsonl"),
+        format!(
+            "{}\n{}\n",
+            r#"{"type":"user","sessionId":"remote","cwd":"/work/repo","timestamp":"2026-03-03T10:00:00Z","message":{"role":"user","content":"show me the login page"}}"#,
+            format!(r#"{{"type":"assistant","sessionId":"remote","timestamp":"2026-03-03T10:00:01Z","message":{{"id":"m1","model":"claude-opus-5-5","role":"assistant","content":[{{"type":"text","text":"{text}"}}]}}}}"#)
+        ),
+    )
+    .unwrap();
+    index::run(&mut sender.conn, false, None, &|_, _| {}).unwrap();
+    let exported = sender.export("claude/-work-repo/remote.jsonl", None, None);
+
+    let shot = exported.attachments.iter().find(|a| a.name.as_deref() == Some(&format!("{host}/shot.png"))).unwrap();
+    assert_eq!((shot.kind, shot.status, shot.mime.as_deref(), shot.bytes), (bundle::AttachmentKind::Image, bundle::AttachmentStatus::Included, Some("image/png"), Some(5)));
+    let missing = exported.attachments.iter().find(|a| a.name.as_deref() == Some(&format!("{host}/missing.png"))).unwrap();
+    assert_eq!(missing.status, bundle::AttachmentStatus::Omitted);
+    assert!(missing.reason.as_deref().unwrap().contains("couldn't download"), "{:?}", missing.reason);
+    let reply = &exported.sessions[0].events[1].text;
+    assert!(!reply.contains(&host), "remote addresses are replaced: {reply}");
+    assert!(reply.contains(&format!("![login](attachment:{})", shot.id)), "{reply}");
+
+    let file = sender.save(&exported, "remote.spsession");
+    let mut recipient = Recipient::new("remote");
+    bundle::import(&recipient.library, &file, None).unwrap();
+    let rows = recipient.reindex();
+    let events = bundle::load_events(Path::new(&rows[0].path)).unwrap();
+    assert!(events[1].text.contains("![login](data:image/png;base64,aGVsbG8=)"), "{}", events[1].text);
+}

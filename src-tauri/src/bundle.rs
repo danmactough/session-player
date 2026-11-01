@@ -3,7 +3,7 @@
 //! replay without the agent's files. The format is described in
 //! docs/bundle-format.md; keep the two in step.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, anyhow, bail};
@@ -246,13 +246,45 @@ fn bundled_session(
         next_attachment += 1;
         format!("a{}", next_attachment - 1)
     };
+    // Each remote address is fetched once per session; later uses share the attachment.
+    let mut remote: HashMap<String, String> = HashMap::new();
     let mut events = parsed.events;
     for (i, e) in events.iter_mut().enumerate() {
         let anchor = format!("e{i}");
         for image in e.images.iter_mut() {
-            let attachment = image_attachment(next_id(), &id, &anchor, image);
+            let attachment = match remote.get(image.as_str()) {
+                Some(existing) => {
+                    *image = format!("attachment:{existing}");
+                    continue;
+                }
+                None if is_remote(image) => {
+                    let a = remote_image(next_id(), &id, &anchor, image);
+                    remote.insert(image.clone(), a.id.clone());
+                    a
+                }
+                None => image_attachment(next_id(), &id, &anchor, image),
+            };
             *image = format!("attachment:{}", attachment.id);
             attachments.push(attachment);
+        }
+        // Images linked from Markdown or HTML in rendered text would otherwise
+        // load from the web when the recipient reads the transcript.
+        if renders_markdown(e.kind) {
+            let spans: Vec<_> = image_link_spans(&e.text).into_iter().filter(|r| is_remote(&e.text[r.clone()])).collect();
+            for span in spans.into_iter().rev() {
+                let url = e.text[span.clone()].to_string();
+                let attachment_id = match remote.get(&url) {
+                    Some(existing) => existing.clone(),
+                    None => {
+                        let a = remote_image(next_id(), &id, &anchor, &url);
+                        let new_id = a.id.clone();
+                        remote.insert(url, new_id.clone());
+                        attachments.push(a);
+                        new_id
+                    }
+                };
+                e.text.replace_range(span, &format!("attachment:{attachment_id}"));
+            }
         }
         if e.kind == EventKind::User {
             for (name, contents) in file_cards(&e.text) {
@@ -349,6 +381,102 @@ fn image_attachment(id: String, session: &str, anchor: &str, image: &str) -> Att
         None => a.reason = Some(format!("linked, not embedded: {image}")),
     }
     a
+}
+
+/// The events the transcript renders as Markdown (prompts are plain text).
+fn renders_markdown(kind: EventKind) -> bool {
+    matches!(kind, EventKind::Assistant | EventKind::Thinking | EventKind::Compaction)
+}
+
+fn is_remote(url: &str) -> bool {
+    let lower = url.get(..8).unwrap_or(url).to_ascii_lowercase();
+    lower.starts_with("http://") || lower.starts_with("https://")
+}
+
+/// Byte ranges of the image addresses in Markdown images (`![alt](url)`)
+/// and HTML `<img src="url">` tags.
+pub(crate) fn image_link_spans(text: &str) -> Vec<std::ops::Range<usize>> {
+    let mut spans = Vec::new();
+    let mut from = 0;
+    while let Some(i) = text[from..].find("![") {
+        let start = from + i + 2;
+        let Some(close) = text[start..].find("](") else { break };
+        let url_start = start + close + 2;
+        let url_len = text[url_start..].find(|c: char| c == ')' || c.is_whitespace()).unwrap_or(text.len() - url_start);
+        spans.push(url_start..url_start + url_len);
+        from = url_start + url_len;
+    }
+    let lower = text.to_ascii_lowercase();
+    let mut from = 0;
+    while let Some(i) = lower[from..].find("<img") {
+        let tag_start = from + i;
+        let tag_end = lower[tag_start..].find('>').map_or(text.len(), |n| tag_start + n);
+        from = tag_end;
+        let Some(src) = lower[tag_start..tag_end].find("src=") else { continue };
+        let value = tag_start + src + "src=".len();
+        let Some(quote) = text[value..].chars().next().filter(|c| *c == '"' || *c == '\'') else { continue };
+        let Some(len) = text[value + 1..tag_end].find(quote) else { continue };
+        spans.push(value + 1..value + 1 + len);
+    }
+    spans.sort_by_key(|r| r.start);
+    spans
+}
+
+/// The largest remote image downloaded, matching what the parsers keep of an
+/// embedded one (`parse::MAX_IMAGE_B64` of base64).
+const MAX_REMOTE_IMAGE: u64 = 3 << 20;
+
+/// Downloads an image the transcript links to, so the bundle carries it and
+/// the recipient's app never fetches it.
+fn remote_image(id: String, session: &str, anchor: &str, url: &str) -> Attachment {
+    let mut a = Attachment {
+        id,
+        session: session.to_string(),
+        anchor: anchor.to_string(),
+        kind: AttachmentKind::Image,
+        name: Some(url.to_string()),
+        mime: None,
+        bytes: None,
+        status: AttachmentStatus::Omitted,
+        reason: None,
+        data: None,
+    };
+    match download_image(url) {
+        Ok((mime, bytes)) => {
+            a.mime = Some(mime);
+            a.bytes = Some(bytes.len() as u64);
+            a.status = AttachmentStatus::Included;
+            a.data = Some(base64::engine::general_purpose::STANDARD.encode(bytes));
+        }
+        Err(why) => a.reason = Some(format!("couldn't download it: {why}")),
+    }
+    a
+}
+
+/// Fetches with the system's curl, which keeps an HTTP client out of the
+/// app's dependencies.
+fn download_image(url: &str) -> Result<(String, Vec<u8>), String> {
+    let out = std::process::Command::new("/usr/bin/curl")
+        .args(["--silent", "--show-error", "--fail", "--location", "--max-time", "20"])
+        .args(["--proto", "=http,https", "--proto-redir", "=http,https"])
+        .args(["--max-filesize", &MAX_REMOTE_IMAGE.to_string()])
+        // The body goes to stdout and the content type to stderr after it.
+        .args(["--write-out", "%{stderr}%{content_type}", "--", url])
+        .output()
+        .map_err(|e| e.to_string())?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if !out.status.success() {
+        let message = stderr.trim().trim_start_matches("curl: ");
+        return Err(message.split(')').next_back().unwrap_or(message).trim().to_string());
+    }
+    let mime = stderr.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    if !IMAGE_TYPES.contains(&mime.as_str()) {
+        return Err(format!("not an image ({})", if mime.is_empty() { "no type" } else { &mime }));
+    }
+    if out.stdout.len() as u64 > MAX_REMOTE_IMAGE {
+        return Err(format!("larger than {} MB", MAX_REMOTE_IMAGE >> 20));
+    }
+    Ok((mime, out.stdout))
 }
 
 /// Writes the bundle to `dest` through a temporary file, so a failed write
@@ -494,6 +622,9 @@ pub struct ImportReport {
     pub kept: Vec<String>,
     /// Waiting for a decision; when any are listed, nothing was written.
     pub conflicts: Vec<Conflict>,
+    /// Sessions with no prompt, reply or tool call, which would not show in
+    /// the list; they are not imported.
+    pub empty: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -514,6 +645,10 @@ pub fn import(library: &Path, path: &Path, on_conflict: Option<OnConflict>) -> a
     let mut report = ImportReport::default();
     let mut writes: Vec<(PathBuf, Bundle)> = Vec::new();
     for s in &bundle.sessions {
+        if !has_conversation(&s.events) {
+            report.empty.push(s.id.clone());
+            continue;
+        }
         let single = Bundle {
             format: bundle.format.clone(),
             version: bundle.version,
@@ -558,6 +693,15 @@ pub fn import(library: &Path, path: &Path, on_conflict: Option<OnConflict>) -> a
     Ok(report)
 }
 
+/// The same test the indexer applies (`index::build_row`) before listing a session.
+fn has_conversation(events: &[Event]) -> bool {
+    events.iter().any(|e| match e.kind {
+        EventKind::User | EventKind::Assistant => !e.sidechain,
+        EventKind::ToolCall => true,
+        _ => false,
+    })
+}
+
 /// The id is encoded so any id maps to its own safe file name.
 fn library_file(library: &Path, id: &str) -> PathBuf {
     let name = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(id);
@@ -586,11 +730,25 @@ pub fn to_parsed(s: BundledSession) -> Parsed {
 pub fn load_events(path: &Path) -> anyhow::Result<Vec<Event>> {
     let mut bundle = read(path)?;
     let mut events = bundle.sessions.swap_remove(0).events;
+    let data_url = |id: &str| {
+        let a = bundle.attachments.iter().find(|a| a.id == id)?;
+        Some(format!("data:{};base64,{}", a.mime.as_deref()?, a.data.as_deref()?))
+    };
+    for e in events.iter_mut().filter(|e| renders_markdown(e.kind)) {
+        for span in image_link_spans(&e.text).into_iter().rev() {
+            // An image that couldn't be downloaded keeps its reference, which
+            // the transcript shows as not included.
+            if let Some(url) = e.text[span.clone()].strip_prefix("attachment:").and_then(data_url) {
+                e.text.replace_range(span, &url);
+            }
+        }
+    }
     for image in events.iter_mut().flat_map(|e| e.images.iter_mut()) {
         let Some(id) = image.strip_prefix("attachment:") else { continue };
         let attachment = bundle.attachments.iter().find(|a| a.id == id);
         *image = match attachment.and_then(|a| Some((a.mime.as_deref()?, a.data.as_deref()?))) {
             Some((mime, data)) => format!("data:{mime};base64,{data}"),
+            None if attachment.and_then(|a| a.name.as_deref()).is_some_and(is_remote) => "omitted:remote".into(),
             None => "omitted:large".into(),
         };
     }

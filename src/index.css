@@ -2096,3 +2096,29 @@ mark {
 .link-status.on {
   opacity: 1;
 }
+
+/* ---------- referenced conversation ---------- */
+.b-reference {
+  margin: 14px 0 10px;
+  border-left: 2px solid var(--line);
+  padding-left: 14px;
+}
+.b-reference > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font: italic 14px var(--serif);
+  color: var(--muted);
+}
+.b-reference > button:hover {
+  color: var(--ink-2);
+}
+.b-reference .caret {
+  font: 9px var(--sans);
+  font-style: normal;
+}
+.reference-md {
+  margin-top: 10px;
+  font-size: 13px;
+  color: var(--ink-2);
+}

@@ -195,3 +195,33 @@ fn codex_chats_outside_projects_share_a_project() {
     let root = root.to_string_lossy().into_owned();
     assert_eq!(projects, vec![root.clone(), root, home.join("code/app").to_string_lossy().into_owned()]);
 }
+
+#[test]
+fn codex_code_mode_shows_the_tools_a_script_ran() {
+    let (row, events) = index_one(&fixture("codex-code-mode.jsonl"));
+    // The ChatGPT chat the task came from is context, not part of the prompt.
+    assert_eq!(row.first_prompt.as_deref(), Some("Add retries to the uploader"));
+    assert_eq!(row.user_turns, 1);
+    assert_eq!(
+        events,
+        vec![
+            "reference:**You**\n\nhow should the uploader retry?\n\n**ChatGPT**\n\n_Not included in the preview._",
+            "user:Add retries to the uploader",
+            // Each script is replaced by the tools it called. A script that
+            // failed because its tool did goes too, so the failure counts once.
+            "tool_call:{\n  \"command\": \"npm test\",\n  \"workdir\": \"/work/app\"\n}",
+            "tool_result~:1 failing",
+            "tool_call:{\n  \"q\": 1\n}",
+            "tool_result!:GitHub API error 422",
+            "tool_call:{\n  \"path\": \"/work/app/retry.js\"\n}",
+            "tool_result:add /work/app/retry.js\nexport {}\n",
+            "assistant:Added retries.",
+        ]
+    );
+    assert_eq!((row.error_count, row.exit_count), (1, 1));
+}
+
+#[test]
+fn codex_guardian_reviews_are_not_listed() {
+    assert!(!session_player_lib::test_support::is_listed(&fixture("codex-guardian.jsonl")));
+}

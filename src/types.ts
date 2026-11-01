@@ -58,7 +58,9 @@ export type EventKind =
   | "tool_result"
   | "command"
   | "system"
-  | "compaction";
+  | "compaction"
+  /** Earlier conversation handed to the session as context; `title` names it. */
+  | "reference";
 
 export interface SessionEvent {
   kind: EventKind;
@@ -75,6 +77,7 @@ export interface SessionEvent {
   images?: string[];
   sidechain?: boolean;
   entry?: string;
+  title?: string;
 }
 
 export interface RootInfo {

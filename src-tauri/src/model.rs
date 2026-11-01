@@ -31,6 +31,9 @@ pub enum EventKind {
     /// Harness notices: interruptions, hook output, notifications.
     System,
     Compaction,
+    /// Earlier conversation handed to the session as context, such as the
+    /// ChatGPT chat a Codex task was started from. `title` names it.
+    Reference,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -63,6 +66,8 @@ pub struct Event {
     /// The pi entry this event came from, used to place fork markers.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub entry: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 
 impl Event {
@@ -80,6 +85,7 @@ impl Event {
             images: Vec::new(),
             sidechain: false,
             entry: None,
+            title: None,
         }
     }
 }

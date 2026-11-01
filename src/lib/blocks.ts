@@ -13,6 +13,7 @@ export type Block =
   | { type: "command"; ev: SessionEvent; output?: SessionEvent }
   | { type: "system"; ev: SessionEvent }
   | { type: "compaction"; ev: SessionEvent }
+  | { type: "reference"; ev: SessionEvent }
   | { type: "orphan_result"; ev: SessionEvent }
   /** Shown above a branch or fork's first message: where it came from. */
   | { type: "fork_from"; source: SessionRow; self: SessionRow }
@@ -84,6 +85,9 @@ export function buildBlocks(
         break;
       case "compaction":
         blocks.push({ type: "compaction", ev: e });
+        break;
+      case "reference":
+        blocks.push({ type: "reference", ev: e });
         break;
     }
     const last = events[i + 1]?.entry !== e.entry;

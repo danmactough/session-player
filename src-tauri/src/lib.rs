@@ -28,6 +28,14 @@ pub mod test_support {
         (row, events)
     }
 
+    /// Whether the file becomes a row in the session list.
+    pub fn is_listed(path: &str) -> bool {
+        let p = std::path::Path::new(path);
+        let source = crate::parse::detect(p).expect("detect");
+        let parsed = crate::parse::parse_file(p, source).expect("parse");
+        crate::index::index_parsed(path, source, parsed).is_some()
+    }
+
     /// Renders one pi branch as "kind:text" strings.
     pub fn load_branch(path: &str, leaf: &str) -> Vec<String> {
         crate::parse::pi::parse_branch(std::path::Path::new(path), Some(leaf))

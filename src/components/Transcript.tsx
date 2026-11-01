@@ -582,6 +582,8 @@ const BlockView = memo(function BlockView({
       );
     case "compaction":
       return <Compaction ev={b.ev} />;
+    case "reference":
+      return <Reference ev={b.ev} />;
     case "orphan_result":
       return (
         <section className="b-tools">
@@ -616,6 +618,22 @@ function Compaction({ ev }: { ev: SessionEvent }) {
         <span className="rule" />
       </button>
       {open && <Markdown text={ev.text} className="compaction-md" />}
+    </section>
+  );
+}
+
+/** Earlier conversation the session was given, such as the ChatGPT chat a
+ * Codex task started from; collapsed, since the prompt that follows says what
+ * was asked. */
+function Reference({ ev }: { ev: SessionEvent }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <section className="b-reference">
+      <button onClick={() => setOpen((o) => !o)} aria-expanded={open}>
+        <span className="caret">{open ? "▾" : "▸"}</span>
+        <span>{ev.title ?? "Referenced conversation"}</span>
+      </button>
+      {open && <Markdown text={ev.text} className="reference-md" />}
     </section>
   );
 }

@@ -1,5 +1,15 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { OpenTarget, RootInfo, SearchHit, SessionEvent, SessionRow, TerminalApp } from "./types";
+import type {
+  ExportPreview,
+  ImportReport,
+  OnConflict,
+  OpenTarget,
+  RootInfo,
+  SearchHit,
+  SessionEvent,
+  SessionRow,
+  TerminalApp,
+} from "./types";
 
 export const api = {
   listSessions: () => invoke<SessionRow[]>("list_sessions"),
@@ -21,4 +31,12 @@ export const api = {
   homeDir: () => invoke<string>("home_dir"),
   getSetting: (key: string) => invoke<string | null>("get_setting", { key }),
   setSetting: (key: string, value: string) => invoke<void>("set_setting", { key, value }),
+  /** `subagents` lists the subagent paths to include; omit it to include them all. */
+  exportPreview: (path: string, branch?: string, subagents?: string[]) =>
+    invoke<ExportPreview>("export_preview", { path, branch: branch ?? null, subagents: subagents ?? null }),
+  /** Writes the previewed bundle; resolves to the path written. */
+  exportSave: (token: number, dest: string) => invoke<string>("export_save", { token, dest }),
+  exportCancel: () => invoke<void>("export_cancel"),
+  importBundle: (path: string, onConflict?: OnConflict) =>
+    invoke<ImportReport>("import_bundle", { path, onConflict: onConflict ?? null }),
 };

@@ -31,6 +31,8 @@ export interface SessionRow {
   error_count: number;
   /** Shell commands that ran and exited with a failing status. */
   exit_count: number;
+  /** Imported from a shared bundle: replayable here, but there is no agent file to resume or open. */
+  from_bundle: boolean;
   /** Set on rows the UI makes for pi branches: the real session file. */
   branch_of?: string;
   branch_leaf?: string;
@@ -78,6 +80,8 @@ export interface SessionEvent {
   sidechain?: boolean;
   entry?: string;
   title?: string;
+  /** Set on events from an imported bundle; stable across export and import. */
+  anchor?: string;
 }
 
 export interface RootInfo {
@@ -106,6 +110,46 @@ export type SortKey = "recent" | "oldest" | "longest" | "tokens";
 export interface TerminalApp {
   id: string;
   label: string;
+}
+
+/** A session left out of an export, listed so the recipient knows it exists. */
+export interface RelatedSession {
+  relation: "parent" | "subagent" | "branch";
+  id: string;
+  title: string;
+}
+
+export interface BundleAttachment {
+  id: string;
+  session: string;
+  anchor: string;
+  kind: "image" | "file";
+  name: string | null;
+  mime: string | null;
+  bytes: number | null;
+  status: "included" | "omitted";
+  reason: string | null;
+}
+
+export interface ExportPreview {
+  token: number;
+  summary: {
+    bytes: number;
+    file_name: string;
+    sessions: { id: string; title: string; is_subagent: boolean; prompts: number; events: number }[];
+    omitted: RelatedSession[];
+    attachments: BundleAttachment[];
+  };
+  subagents: { path: string; title: string; included: boolean }[];
+}
+
+export type OnConflict = "replace" | "keep";
+
+export interface ImportReport {
+  imported: string[];
+  unchanged: string[];
+  kept: string[];
+  conflicts: { id: string; existing_title: string; incoming_title: string }[];
 }
 
 export interface OpenTarget {

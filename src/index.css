@@ -1822,6 +1822,28 @@ mark {
   color: var(--faint);
 }
 
+/* ---------- export / import ---------- */
+.sheet.export {
+  max-height: 80vh;
+  overflow-y: auto;
+}
+.export-choice {
+  padding: 4px 0;
+}
+.roots li.omitted .root-meta {
+  color: var(--err);
+}
+.sheet-saved {
+  margin-top: 12px;
+  font: 12px var(--mono);
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+.import-button {
+  padding: 5px 8px;
+  font-size: 12px;
+}
+
 /* ---------- scrollbars ---------- */
 ::-webkit-scrollbar {
   width: 10px;

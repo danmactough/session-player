@@ -36,6 +36,7 @@ interface Props {
   /** The chosen resume/open action (see OpenButton). */
   openWith: string | undefined;
   onOpenWith: (id: string) => void;
+  onExport: () => void;
 }
 
 export function Transcript({
@@ -49,6 +50,7 @@ export function Transcript({
   countExits,
   openWith,
   onOpenWith,
+  onExport,
 }: Props) {
   const [events, setEvents] = useState<SessionEvent[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -311,6 +313,7 @@ export function Transcript({
           {session.is_subagent && <span className="tag">subagent</span>}
           {session.branch_of && <span className="tag">branch</span>}
           {session.imported_from && <span className="tag">imported from {session.imported_from}</span>}
+          {session.from_bundle && <span className="tag">imported bundle</span>}
         </div>
         <h1 className="t-title">{session.title}</h1>
         {session.title_source !== "prompt" && session.first_prompt && (
@@ -363,7 +366,14 @@ export function Transcript({
           )}
         </dl>
         <div className="t-actions">
-          <OpenButton session={session} choice={openWith} onChoice={onOpenWith} keyboard={keyboard} />
+          {session.from_bundle ? (
+            <button disabled title="Imported sessions have no agent files on this Mac to resume or open">
+              Can&rsquo;t resume an imported session
+            </button>
+          ) : (
+            <OpenButton session={session} choice={openWith} onChoice={onOpenWith} keyboard={keyboard} />
+          )}
+          <button onClick={onExport}>Export…</button>
           <button onClick={() => api.reveal(session.path)}>Reveal file</button>
           <button onClick={() => copy("path", session.path)}>{copied === "path" ? "Copied" : "Copy path"}</button>
           <span className="t-file" title={session.path}>

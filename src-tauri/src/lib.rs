@@ -497,13 +497,19 @@ fn external_links<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
 }
 
 /// The standard menu with "Settings…" (⌘,) added to the app menu, after
-/// "About", where macOS apps put it.
+/// "About", where macOS apps put it, and "Import Session…" (⌘⇧I) at the top
+/// of the File menu.
 fn install_menu(app: &AppHandle) -> tauri::Result<()> {
     use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
     let menu = Menu::default(app)?;
     let settings = MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?;
-    if let Some(app_menu) = menu.items()?.first().and_then(|m| m.as_submenu()) {
+    let items = menu.items()?;
+    if let Some(app_menu) = items.first().and_then(|m| m.as_submenu()) {
         app_menu.insert_items(&[&settings, &PredefinedMenuItem::separator(app)?], 2)?;
+    }
+    if let Some(file_menu) = items.iter().filter_map(|m| m.as_submenu()).find(|m| m.text().is_ok_and(|t| t == "File")) {
+        let import = MenuItem::with_id(app, "import-session", "Import Session…", true, Some("CmdOrCtrl+Shift+I"))?;
+        file_menu.insert_items(&[&import, &PredefinedMenuItem::separator(app)?], 0)?;
     }
     app.set_menu(menu)?;
     Ok(())
@@ -545,8 +551,14 @@ pub fn run() {
             Ok(())
         })
         .on_menu_event(|app, event| {
-            if event.id() == "settings" {
-                let _ = app.emit("open-settings", ());
+            match event.id().as_ref() {
+                "settings" => {
+                    let _ = app.emit("open-settings", ());
+                }
+                "import-session" => {
+                    let _ = app.emit("import-session", ());
+                }
+                _ => {}
             }
         })
         .invoke_handler(tauri::generate_handler![

@@ -12,8 +12,11 @@ export interface ListRow {
   expanded: boolean;
 }
 
-const idKey = (s: SessionRow) => `${s.source}|${s.native_id}`;
-const parentKey = (s: SessionRow) => (s.parent_id ? `${s.source}|${s.parent_id}` : null);
+// An imported copy of a session sits beside the local original, so each
+// nests only under its own kind of parent.
+const origin = (s: SessionRow) => (s.from_bundle ? "bundle" : "local");
+const idKey = (s: SessionRow) => `${origin(s)}|${s.source}|${s.native_id}`;
+const parentKey = (s: SessionRow) => (s.parent_id ? `${origin(s)}|${s.source}|${s.parent_id}` : null);
 
 /** One list row per alternate pi branch, opened through the parent's file. */
 export function branchRows(s: SessionRow): SessionRow[] {

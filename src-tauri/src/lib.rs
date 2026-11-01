@@ -75,9 +75,55 @@ struct AppState {
     pending: AtomicBool,
     pending_full: AtomicBool,
     watcher: Mutex<Option<Debouncer<notify::RecommendedWatcher>>>,
-    /// The bundle shown in the export sheet. Saving writes this exact bundle,
-    /// so what the user reviewed is what leaves the machine.
-    export: Mutex<Option<(u64, bundle::Bundle)>>,
+    export: Mutex<PendingExport>,
+}
+
+/// The bundle shown in the export sheet. Saving writes this exact bundle,
+/// so what the user reviewed is what leaves the machine. Previews can
+/// overlap and finish in any order (the sheet asks again when a subagent is
+/// ticked, and React runs effects twice in development), so the sheet
+/// numbers its requests and only the newest one's bundle is kept.
+#[derive(Default)]
+struct PendingExport {
+    latest: u64,
+    bundle: Option<(u64, bundle::Bundle)>,
+}
+
+impl PendingExport {
+    fn begin(&mut self, request: u64) {
+        if request > self.latest {
+            self.latest = request;
+            self.bundle = None;
+        }
+    }
+
+    fn finish(&mut self, token: u64, built: bundle::Bundle) {
+        if token == self.latest {
+            self.bundle = Some((token, built));
+        }
+    }
+
+    fn take(&mut self, token: u64) -> Option<bundle::Bundle> {
+        match self.bundle.take() {
+            Some((t, built)) if t == token => Some(built),
+            other => {
+                self.bundle = other;
+                None
+            }
+        }
+    }
+
+    /// Returns a bundle whose save failed, so the user can try again.
+    fn put_back(&mut self, token: u64, built: bundle::Bundle) {
+        if token == self.latest && self.bundle.is_none() {
+            self.bundle = Some((token, built));
+        }
+    }
+
+    fn cancel(&mut self) {
+        self.latest += 1;
+        self.bundle = None;
+    }
 }
 
 type Shared = Arc<AppState>;
@@ -294,6 +340,7 @@ struct SubagentChoice {
 
 /// Builds the bundle for a session and describes it for the export sheet.
 /// `subagents` lists the subagent paths to include (None: all of them).
+/// `request` increases with every preview the sheet asks for.
 #[tauri::command]
 async fn export_preview(
     app: AppHandle,
@@ -301,18 +348,19 @@ async fn export_preview(
     path: String,
     branch: Option<String>,
     subagents: Option<Vec<String>>,
+    request: u64,
 ) -> Result<ExportPreview, String> {
     let state = state.inner().clone();
     let exporter = format!("Session Player {}", app.package_info().version);
+    let token = request;
+    state.export.lock().unwrap().begin(token);
     tauri::async_runtime::spawn_blocking(move || {
         let conn = index::open(&state.db_path).map_err(err)?;
         let choices = if branch.is_some() { Vec::new() } else { bundle::subagents_of(&conn, &path).map_err(err)? };
         let request = bundle::ExportRequest { path: &path, branch: branch.as_deref(), subagents: subagents.clone() };
         let built = bundle::build(&conn, request, &exporter).map_err(|e| format!("{e:#}"))?;
         let summary = bundle::summarize(&built);
-        let mut pending = state.export.lock().unwrap();
-        let token = pending.as_ref().map_or(1, |(t, _)| t + 1);
-        *pending = Some((token, built));
+        state.export.lock().unwrap().finish(token, built);
         Ok(ExportPreview {
             token,
             summary,
@@ -335,20 +383,20 @@ async fn export_preview(
 async fn export_save(state: State<'_, Shared>, token: u64, dest: String) -> Result<String, String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let pending = state.export.lock().unwrap().take();
-        let built = match pending {
-            Some((t, b)) if t == token => b,
-            other => {
-                *state.export.lock().unwrap() = other;
-                return Err("This preview is out of date. Review the export again before saving.".to_string());
-            }
+        let Some(built) = state.export.lock().unwrap().take(token) else {
+            return Err("This preview is out of date. Review the export again before saving.".to_string());
         };
         let mut dest = PathBuf::from(dest);
         if !bundle::is_bundle_path(&dest) {
             dest.as_mut_os_string().push(format!(".{}", bundle::EXTENSION));
         }
-        bundle::write(&built, &dest).map_err(|e| format!("{e:#}"))?;
-        Ok(dest.to_string_lossy().into_owned())
+        match bundle::write(&built, &dest) {
+            Ok(()) => Ok(dest.to_string_lossy().into_owned()),
+            Err(e) => {
+                state.export.lock().unwrap().put_back(token, built);
+                Err(format!("{e:#}"))
+            }
+        }
     })
     .await
     .map_err(err)?
@@ -357,7 +405,7 @@ async fn export_save(state: State<'_, Shared>, token: u64, dest: String) -> Resu
 /// Drops the previewed bundle when the export sheet closes without saving.
 #[tauri::command]
 fn export_cancel(state: State<Shared>) {
-    *state.export.lock().unwrap() = None;
+    state.export.lock().unwrap().cancel();
 }
 
 /// Imports a bundle file into the library and re-indexes. With conflicts
@@ -556,7 +604,7 @@ pub fn run() {
                 pending: AtomicBool::new(false),
                 pending_full: AtomicBool::new(false),
                 watcher: Mutex::new(None),
-                export: Mutex::new(None),
+                export: Mutex::new(PendingExport::default()),
             });
             app.manage(state.clone());
             let handle = app.handle().clone();
@@ -611,6 +659,47 @@ pub fn run() {
 mod tests {
     use super::*;
 
+    fn bundle_titled(title: &str) -> bundle::Bundle {
+        bundle::Bundle {
+            format: bundle::FORMAT.into(),
+            version: bundle::VERSION,
+            exported_at: 0,
+            exporter: title.into(),
+            sessions: Vec::new(),
+            attachments: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_preview_that_finishes_late_does_not_replace_a_newer_one() {
+        let mut pending = PendingExport::default();
+        let (first, second) = (1, 2);
+        // Requests can also start out of order.
+        pending.begin(second);
+        pending.begin(first);
+        pending.finish(second, bundle_titled("second"));
+        pending.finish(first, bundle_titled("first"));
+        assert!(pending.take(first).is_none());
+        assert_eq!(pending.take(second).unwrap().exporter, "second");
+    }
+
+    #[test]
+    fn a_failed_save_keeps_the_preview_and_a_cancelled_one_is_dropped() {
+        let mut pending = PendingExport::default();
+        let token = 1;
+        pending.begin(token);
+        pending.finish(token, bundle_titled("shown"));
+        let taken = pending.take(token).unwrap();
+        pending.put_back(token, taken);
+        assert!(pending.take(token).is_some());
+
+        let late = 2;
+        pending.begin(late);
+        pending.cancel();
+        pending.finish(late, bundle_titled("late"));
+        assert!(pending.take(late).is_none());
+    }
+
     #[test]
     fn serves_cached_image_for_current_generation_only() {
         let state: Shared = Arc::new(AppState {
@@ -620,7 +709,7 @@ mod tests {
             pending: AtomicBool::new(false),
             pending_full: AtomicBool::new(false),
             watcher: Mutex::new(None),
-            export: Mutex::new(None),
+            export: Mutex::new(PendingExport::default()),
         });
         let ok = serve_image(&state, "spimg://localhost/7/1/0");
         assert_eq!(ok.status(), 200);

@@ -12,6 +12,12 @@ import type {
   TerminalApp,
 } from "./types";
 
+// Overlapping previews can finish in any order; the backend keeps the bundle
+// of the newest request. Based on the clock so numbers keep increasing after
+// the page reloads while the backend keeps running.
+let lastExportRequest = 0;
+const nextExportRequest = () => (lastExportRequest = Math.max(Date.now(), lastExportRequest + 1));
+
 export const api = {
   listSessions: () => invoke<SessionRow[]>("list_sessions"),
   search: (query: string) => invoke<SearchHit[]>("search", { query }),
@@ -34,7 +40,7 @@ export const api = {
   setSetting: (key: string, value: string) => invoke<void>("set_setting", { key, value }),
   /** `subagents` lists the subagent paths to include; omit it to include them all. */
   exportPreview: (path: string, branch?: string, subagents?: string[]) =>
-    invoke<ExportPreview>("export_preview", { path, branch: branch ?? null, subagents: subagents ?? null }),
+    invoke<ExportPreview>("export_preview", { path, branch: branch ?? null, subagents: subagents ?? null, request: nextExportRequest() }),
   /** Writes the previewed bundle; resolves to the path written. */
   exportSave: (token: number, dest: string) => invoke<string>("export_save", { token, dest }),
   exportCancel: () => invoke<void>("export_cancel"),

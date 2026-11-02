@@ -721,6 +721,7 @@ export function Transcript({
                     key={item.key}
                     data-index={item.index}
                     ref={virt.measureElement}
+                    onMouseEnter={(e) => centerOnFirstLine(e.currentTarget)}
                     className={`row ${matchSet.has(item.index) ? "hit" : ""} ${isCurrent ? "hit-current" : ""} ${item.index === focusIndex || (item.index === errorTarget?.block && b.type !== "tools") || (item.index === reveal?.block && b.type !== "tools") ? "focused" : ""}`}
                     style={{ transform: `translateY(${item.start}px)` }}
                   >
@@ -789,6 +790,26 @@ function childSummary(children: SessionRow[]): string {
   return [part(branches, "branch", "branches"), part(subs, "subagent", "subagents"), part(forks, "fork", "forks")]
     .filter(Boolean)
     .join(", ");
+}
+
+/** Moves a row's + to the middle of the first line of text its block
+ * shows, whatever the block's margins, padding and fonts. */
+function centerOnFirstLine(row: HTMLElement) {
+  const button = row.querySelector<HTMLElement>(":scope > .annotate-btn");
+  const block = row.firstElementChild;
+  if (!button || !block) return;
+  const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT, {
+    // Carets are drawn smaller than the text they sit beside.
+    acceptNode: (n) => (n.textContent?.trim() && !n.parentElement?.closest(".caret") ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT),
+  });
+  const text = walker.nextNode();
+  if (!text) return;
+  const range = document.createRange();
+  range.selectNodeContents(text);
+  const line = range.getClientRects()[0];
+  if (!line) return;
+  const top = line.top + line.height / 2 - row.getBoundingClientRect().top - button.offsetHeight / 2;
+  button.style.top = `${top}px`;
 }
 
 const forkNoun = (s: SessionRow) => (s.branch_of ? "Branch" : s.is_subagent ? "Subagent" : "Fork");

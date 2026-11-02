@@ -1434,6 +1434,9 @@ mark {
 .b-thinking .caret {
   font-size: 10px;
   width: 10px;
+  /* Centered on the header line rather than sitting on its baseline. */
+  align-self: center;
+  line-height: 1;
 }
 .b-thinking .lbl {
   font: italic 14px var(--serif);
@@ -2026,15 +2029,6 @@ mark {
   color: var(--muted);
   opacity: 0;
 }
-/* A prompt box starts lower in its row (its top margin and padding), so
-   the + lines up with its "Prompt n" label instead of the row's top. */
-.t-stream > .row:has(> .b-user) > .annotate-btn {
-  top: 34px;
-}
-/* Context blocks start below their top margin; center the + on their line. */
-.t-stream > .row:has(> .b-context) > .annotate-btn {
-  top: 8.5px;
-}
 .t-stream > .row:hover > .annotate-btn,
 .t-stream > .row > .annotate-btn:focus-visible {
   opacity: 1;
@@ -2528,6 +2522,8 @@ mark {
   color: var(--ink-2);
 }
 .b-reference .caret {
+  align-self: center;
+  line-height: 1;
   font: 9px var(--sans);
   font-style: normal;
 }

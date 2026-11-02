@@ -65,9 +65,17 @@ fn metadata_is_saved_edited_and_kept_through_an_index_rebuild() {
     let conn = index::open(&path).unwrap();
     assert_eq!(notes::meta(&conn, KEY).unwrap().unwrap().title.as_deref(), Some("Flaky login test, round two"));
 
-    // Clearing every field (blank tags count as empty) removes the record.
+    // Clearing every field (blank tags count as empty) keeps only which
+    // fields were cleared, so generating won't fill them again.
     notes::save_meta(&conn, &notes::SessionMeta { key: KEY.into(), tags: vec![" ".into()], ..Default::default() }).unwrap();
-    assert_eq!(notes::meta(&conn, KEY).unwrap(), None);
+    let cleared = notes::meta(&conn, KEY).unwrap().unwrap();
+    assert_eq!((cleared.title, cleared.goal, cleared.tags.len()), (None, None, 0));
+    assert_eq!(cleared.cleared, ["title", "goal", "outcome", "tags"]);
+
+    // A session that never had any details stores nothing.
+    let other = "local:claude:never";
+    notes::save_meta(&conn, &notes::SessionMeta { key: other.into(), ..Default::default() }).unwrap();
+    assert_eq!(notes::meta(&conn, other).unwrap(), None);
 }
 
 fn event_ref(anchor: &str, kind: &str, ts: Option<i64>) -> notes::EventRef {

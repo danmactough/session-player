@@ -403,8 +403,11 @@ fn suggestion(v: &Value) -> Option<Suggestion> {
 /// only the model's annotations no one has accepted or edited are replaced.
 pub fn apply(conn: &Connection, key: &str, g: &Generated, events: &[Event]) -> anyhow::Result<()> {
     let mut meta = annotations::meta(conn, key)?.unwrap_or_else(|| SessionMeta { key: key.to_string(), ..Default::default() });
-    // A field is open to a suggestion when it's empty or holds an earlier one.
-    let open = |meta: &SessionMeta, name: &str, empty: bool| empty || meta.generated.iter().any(|x| x == name);
+    // A field is open to a suggestion when it holds an earlier one, or is
+    // empty and wasn't emptied by a person.
+    let open = |meta: &SessionMeta, name: &str, empty: bool| {
+        meta.generated.iter().any(|x| x == name) || (empty && !meta.cleared.iter().any(|x| x == name))
+    };
     let mark = |meta: &mut SessionMeta, name: &str| {
         if !meta.generated.iter().any(|x| x == name) {
             meta.generated.push(name.to_string());
@@ -433,8 +436,7 @@ pub fn apply(conn: &Connection, key: &str, g: &Generated, events: &[Event]) -> a
         meta.tags = g.tags.clone();
         mark(&mut meta, "tags");
     }
-    let order = ["title", "goal", "context", "outcome", "tags"];
-    meta.generated.sort_by_key(|n| order.iter().position(|o| o == n));
+    meta.generated.sort_by_key(|n| annotations::META_FIELDS.iter().position(|o| o == n));
     meta.generated_by = Some(Generation { model: g.model.clone(), at: chrono::Utc::now().timestamp_millis(), revision: g.revision.clone() });
     annotations::store_meta(conn, &meta)?;
 

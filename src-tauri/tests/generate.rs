@@ -243,3 +243,59 @@ fn real_claude_generates_valid_notes() {
     println!("{:#?}", notes::meta(&conn, KEY).unwrap());
     assert!(!out.annotations.is_empty() || out.goal.is_some());
 }
+
+#[test]
+fn accepting_a_suggestion_is_not_an_edit() {
+    let conn = temp_db("accept");
+    let events = fixture_events();
+    let mut calls = Vec::new();
+    let g = generate::generate(&events, &mut stub(answer(), &mut calls), &mut |_, _| {}).unwrap();
+    generate::apply(&conn, KEY, &g, &events).unwrap();
+    let suggestion = notes::annotations(&conn, KEY).unwrap().into_iter().find(|a| a.kind == notes::Kind::ToolError).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let accepted = notes::save_annotation(&conn, suggestion.clone()).unwrap();
+    assert!(accepted.accepted);
+    assert_eq!(accepted.updated_at, suggestion.updated_at, "accepting leaves it unedited");
+    let mut edited = accepted.clone();
+    edited.note = "changed".into();
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    assert!(notes::save_annotation(&conn, edited).unwrap().updated_at > accepted.updated_at);
+}
+
+#[test]
+fn a_field_a_person_cleared_stays_empty() {
+    let conn = temp_db("cleared");
+    let events = fixture_events();
+    let mut calls = Vec::new();
+    let g = generate::generate(&events, &mut stub(answer(), &mut calls), &mut |_, _| {}).unwrap();
+    generate::apply(&conn, KEY, &g, &events).unwrap();
+    let mut meta = notes::meta(&conn, KEY).unwrap().unwrap();
+    meta.goal = None;
+    meta.tags = vec![];
+    notes::save_meta(&conn, &meta).unwrap();
+    let saved = notes::meta(&conn, KEY).unwrap().unwrap();
+    assert_eq!(saved.cleared, ["goal", "tags"]);
+
+    generate::apply(&conn, KEY, &g, &events).unwrap();
+    let meta = notes::meta(&conn, KEY).unwrap().unwrap();
+    assert_eq!((meta.goal.clone(), meta.tags.clone()), (None, vec![]));
+    assert!(!meta.generated.iter().any(|f| f == "goal" || f == "tags"));
+
+    // Filling it in again lifts that.
+    let mut refilled = meta.clone();
+    refilled.goal = Some("Mine".into());
+    notes::save_meta(&conn, &refilled).unwrap();
+    assert_eq!(notes::meta(&conn, KEY).unwrap().unwrap().cleared, ["tags"]);
+
+    // Emptying every field still remembers which ones were emptied.
+    let mut all_clear = notes::meta(&conn, KEY).unwrap().unwrap();
+    all_clear.title = None;
+    all_clear.goal = None;
+    all_clear.context = None;
+    all_clear.outcome = notes::Outcome::Unknown;
+    all_clear.outcome_note = None;
+    notes::save_meta(&conn, &all_clear).unwrap();
+    generate::apply(&conn, KEY, &g, &events).unwrap();
+    let meta = notes::meta(&conn, KEY).unwrap().unwrap();
+    assert_eq!((meta.title, meta.goal, meta.context, meta.outcome), (None, None, None, notes::Outcome::Unknown));
+}

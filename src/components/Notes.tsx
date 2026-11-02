@@ -19,6 +19,7 @@ const blank = (key: string): SessionMeta => ({
   updated_at: 0,
   generated: [],
   generated_by: null,
+  cleared: [],
 });
 
 const FIELD_LABEL: Record<string, string> = { title: "title", goal: "goal", context: "context", outcome: "outcome", tags: "tags" };

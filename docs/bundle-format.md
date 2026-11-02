@@ -34,7 +34,7 @@ Timestamps are milliseconds since the Unix epoch, in UTC.
 | `source_file` | File name of the session log it was read from. The bundle never stores the full path. |
 | `omitted` | Related sessions that are **not** in the bundle: `{relation, id, title}`, where `relation` is `parent`, `subagent` or `branch` |
 | `events` | The normalized transcript (see below) |
-| `meta` | Optional. The session's details: `title`, `goal`, `context`, `outcome` (`unknown`, `succeeded`, `partial` or `failed`), `outcome_note`, `tags`, `links` (`{url, label}`, `http` or `https` only), `generated` (the fields holding a model's suggestion no one has edited or accepted) and `generated_by` (`{model, at, revision}`). |
+| `meta` | Optional. The session's details: `title`, `goal`, `context`, `outcome` (`unknown`, `succeeded`, `partial` or `failed`), `outcome_note`, `tags`, `links` (`{url, label}`, `http` or `https` only), `generated` (the fields holding a model's suggestion no one has edited or accepted), `generated_by` (`{model, at, revision}`) and `cleared` (the fields a person emptied on purpose, which generating leaves empty). |
 | `annotations` | Optional. Annotations on the session (see below). |
 
 ### Events

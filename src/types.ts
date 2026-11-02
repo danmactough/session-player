@@ -177,6 +177,8 @@ export interface SessionMeta {
   /** Fields ("title", "goal", "context", "outcome", "tags") holding a model's suggestion no one has edited or accepted. */
   generated: string[];
   generated_by: { model: string; at: number; revision: string } | null;
+  /** Fields a person emptied on purpose; generating leaves them empty. */
+  cleared: string[];
 }
 
 export type AnnotationKind =

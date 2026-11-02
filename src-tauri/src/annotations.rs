@@ -57,6 +57,9 @@ pub struct SessionMeta {
     /// model's suggestion that no one has edited or accepted yet.
     pub generated: Vec<String>,
     pub generated_by: Option<Generation>,
+    /// Fields a person emptied on purpose; generating leaves them empty
+    /// until someone fills them in again.
+    pub cleared: Vec<String>,
 }
 
 /// Which model made the suggestions, when, and from which transcript.
@@ -67,6 +70,21 @@ pub struct Generation {
     /// `generate::revision` of the transcript; a different one now means the
     /// suggestions are out of date.
     pub revision: String,
+}
+
+/// The fields `SessionMeta::generated` and `cleared` can name, in display order.
+pub const META_FIELDS: [&str; 5] = ["title", "goal", "context", "outcome", "tags"];
+
+pub fn field_is_empty(meta: &SessionMeta, name: &str) -> bool {
+    let blank = |s: &Option<String>| s.as_deref().is_none_or(|s| s.trim().is_empty());
+    match name {
+        "title" => blank(&meta.title),
+        "goal" => blank(&meta.goal),
+        "context" => blank(&meta.context),
+        "outcome" => meta.outcome == Outcome::Unknown && blank(&meta.outcome_note),
+        "tags" => meta.tags.iter().all(|t| t.trim().is_empty()),
+        _ => true,
+    }
 }
 
 /// The value of one of the fields `SessionMeta::generated` can name. The
@@ -92,6 +110,8 @@ impl SessionMeta {
             && self.outcome == Outcome::Unknown
             && self.tags.is_empty()
             && self.links.is_empty()
+            // Kept so generating doesn't refill what a person emptied.
+            && self.cleared.is_empty()
     }
 
     fn search_text(&self) -> String {
@@ -128,6 +148,16 @@ pub fn save_meta(conn: &Connection, meta: &SessionMeta) -> anyhow::Result<()> {
             .as_ref()
             .is_some_and(|old| old.generated.contains(name) && meta_field(old, name) == meta_field(&edited, name))
     });
+    // Emptying a field records that; filling it lifts it.
+    meta.cleared = existing.as_ref().map(|old| old.cleared.clone()).unwrap_or_default();
+    for name in META_FIELDS {
+        let filled = |m: &SessionMeta| !field_is_empty(m, name);
+        if filled(&meta) {
+            meta.cleared.retain(|c| c != name);
+        } else if existing.as_ref().is_some_and(filled) && !meta.cleared.iter().any(|c| c == name) {
+            meta.cleared.push(name.to_string());
+        }
+    }
     store_meta(conn, &meta)
 }
 
@@ -272,10 +302,14 @@ pub fn save_annotation(conn: &Connection, mut a: Annotation) -> anyhow::Result<A
         let Some(existing) = existing else { anyhow::bail!("This annotation no longer exists") };
         let existing: Annotation = serde_json::from_str(&existing)?;
         a.created_at = existing.created_at;
-        a.key = existing.key;
-        a.author = existing.author;
+        a.key = existing.key.clone();
+        a.author = existing.author.clone();
         a.accepted = matches!(a.author, Author::Model { .. });
-        a.updated_at = now().max(a.created_at);
+        // Saving it unchanged (accepting a suggestion) isn't an edit.
+        let same_anchors = a.anchors.len() == existing.anchors.len()
+            && a.anchors.iter().zip(&existing.anchors).all(|(x, y)| x.anchor == y.anchor && x.kind == y.kind && x.ts == y.ts && x.entry == y.entry);
+        let changed = a.kind != existing.kind || a.note != existing.note || !same_anchors;
+        a.updated_at = if changed { now().max(a.created_at) } else { existing.updated_at };
     }
     for r in &mut a.anchors {
         r.found = false;

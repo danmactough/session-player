@@ -47,11 +47,63 @@ pub struct ClaudeOutput {
     pub model: String,
 }
 
+/// The `claude` command and the environment to run it in.
+#[derive(Debug, Clone)]
+pub struct Claude {
+    pub bin: PathBuf,
+    /// Added to the app's own environment; see `claude_env`.
+    pub env: Vec<(String, String)>,
+}
+
+/// The environment `claude` would have in the user's terminal, which an app
+/// opened from the Finder doesn't get: `shell_env` (the login shell's), then
+/// the `env` block of the Claude settings in `config_dir`, since `claude`
+/// runs here without reading its settings (see `run_in`). An `apiKeyHelper`
+/// there is run for the key when no key is set, as `claude` would. With none
+/// of these, `claude` uses the user's Claude Code sign-in.
+pub fn claude_env(shell_env: Vec<(String, String)>, config_dir: &Path) -> anyhow::Result<Vec<(String, String)>> {
+    let mut env = shell_env;
+    let mut helper: Option<String> = None;
+    // settings.local.json overrides settings.json.
+    for file in ["settings.json", "settings.local.json"] {
+        let Ok(text) = std::fs::read_to_string(config_dir.join(file)) else { continue };
+        let settings: Value = serde_json::from_str(&text).with_context(|| format!("Couldn't read {}", config_dir.join(file).display()))?;
+        for (name, value) in settings.get("env").and_then(Value::as_object).into_iter().flatten() {
+            let value = match value {
+                Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            env.push((name.clone(), value));
+        }
+        if let Some(h) = settings.get("apiKeyHelper").and_then(Value::as_str) {
+            helper = Some(h.to_string());
+        }
+    }
+    let set = |name: &str| env.iter().any(|(k, v)| k == name && !v.is_empty());
+    if let Some(helper) = helper
+        && !set("ANTHROPIC_API_KEY")
+        && !set("ANTHROPIC_AUTH_TOKEN")
+    {
+        let out = Command::new("/bin/sh")
+            .args(["-c", &helper])
+            .envs(env.iter().cloned())
+            .stdin(Stdio::null())
+            .output()
+            .with_context(|| format!("Couldn't run the apiKeyHelper from {}", config_dir.display()))?;
+        let key = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if !out.status.success() || key.is_empty() {
+            bail!("The apiKeyHelper in {} gave no key ({})", config_dir.display(), out.status);
+        }
+        env.push(("ANTHROPIC_API_KEY".into(), key));
+    }
+    Ok(env)
+}
+
 /// Runs `claude -p` once. `input` (the transcript) is written to stdin;
 /// `cancel` kills the process.
-pub fn run_claude(bin: &Path, system: &str, input: &str, schema: &Value, cancel: &Arc<AtomicBool>) -> anyhow::Result<ClaudeOutput> {
+pub fn run_claude(claude: &Claude, system: &str, input: &str, schema: &Value, cancel: &Arc<AtomicBool>) -> anyhow::Result<ClaudeOutput> {
     let cwd = empty_dir()?;
-    let result = run_in(bin, &cwd, system, input, schema, cancel);
+    let result = run_in(claude, &cwd, system, input, schema, cancel);
     let _ = std::fs::remove_dir_all(&cwd);
     result
 }
@@ -64,9 +116,11 @@ fn empty_dir() -> anyhow::Result<PathBuf> {
     Ok(dir)
 }
 
-fn run_in(bin: &Path, cwd: &Path, system: &str, input: &str, schema: &Value, cancel: &Arc<AtomicBool>) -> anyhow::Result<ClaudeOutput> {
+fn run_in(claude: &Claude, cwd: &Path, system: &str, input: &str, schema: &Value, cancel: &Arc<AtomicBool>) -> anyhow::Result<ClaudeOutput> {
     use std::os::unix::process::CommandExt;
+    let bin = &claude.bin;
     let mut child = Command::new(bin)
+        .envs(claude.env.iter().cloned())
         // A group of its own, so cancelling stops anything it started too.
         .process_group(0)
         .current_dir(cwd)

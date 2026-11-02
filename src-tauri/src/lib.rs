@@ -87,8 +87,8 @@ struct AppState {
     export: Mutex<PendingExport>,
     /// Sessions (by key) a model is generating notes for, with the flag that cancels each.
     generating: Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>,
-    /// Where the `claude` command is, once found.
-    claude: Mutex<Option<PathBuf>>,
+    /// Where the `claude` command is and the login shell's environment, once found.
+    claude: Mutex<Option<(PathBuf, Vec<(String, String)>)>>,
 }
 
 /// The bundle shown in the export sheet. Saving writes this exact bundle,
@@ -556,6 +556,28 @@ fn find_claude() -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
+/// The login shell's environment (including what .zshrc exports), which an
+/// app opened from the Finder doesn't inherit. Empty if the shell fails.
+fn login_shell_env() -> Vec<(String, String)> {
+    const MARK: &str = "__SESSION_PLAYER_ENV__";
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+    let Ok(out) = std::process::Command::new(shell)
+        .args(["-ilc", &format!("printf '\\n{MARK}\\n'; env -0")])
+        .stdin(std::process::Stdio::null())
+        .output()
+    else {
+        return Vec::new();
+    };
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // Anything the profile prints comes before the marker.
+    let Some((_, env)) = stdout.rsplit_once(&format!("{MARK}\n")) else { return Vec::new() };
+    env.split('\0')
+        .filter_map(|pair| pair.split_once('='))
+        .filter(|(k, _)| !k.is_empty() && !k.contains(char::is_whitespace))
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
+}
+
 #[derive(Serialize, Clone)]
 struct GenerateProgress {
     key: String,
@@ -599,16 +621,24 @@ fn generate_notes(app: AppHandle, state: State<Shared>, key: String, path: Strin
         let progress_key = key.clone();
         let result = (|| -> anyhow::Result<usize> {
             // A login shell can take seconds to start, so this happens here, once.
-            let claude = {
+            let found = {
                 let mut cached = state.claude.lock().unwrap();
                 if cached.is_none() {
-                    *cached = find_claude();
+                    *cached = find_claude().map(|bin| (bin, login_shell_env()));
                 }
                 cached.clone()
             };
-            let Some(claude) = claude else {
+            let Some((bin, shell_env)) = found else {
                 anyhow::bail!("Couldn't find the claude command. Install Claude Code and sign in, then try again.");
             };
+            // Read on every run, so changed settings or a fresh apiKeyHelper key apply.
+            let config_dir = shell_env
+                .iter()
+                .rev()
+                .find(|(k, v)| k == "CLAUDE_CONFIG_DIR" && !v.is_empty())
+                .map(|(_, v)| PathBuf::from(v))
+                .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".claude"));
+            let claude = generate::Claude { env: generate::claude_env(shell_env, &config_dir)?, bin };
             let events = session_events(&path, branch.as_deref()).map_err(anyhow::Error::msg)?;
             let mut ask = |system: &str, input: &str, schema: &serde_json::Value| generate::run_claude(&claude, system, input, schema, &cancel);
             let generated = generate::generate(&events, &mut ask, &mut |done, total| {

@@ -4,7 +4,7 @@ use std::path::Path;
 use serde_json::Value;
 
 use super::{between, content_text, for_each_line, parse_ts, pretty, str_of};
-use crate::model::{Branch, Event, EventKind, Parsed, Source};
+use crate::model::{Branch, ContextKind, Event, EventKind, Parsed, Source};
 
 pub fn parse(path: &Path) -> anyhow::Result<Parsed> {
     parse_branch(path, None)
@@ -144,6 +144,7 @@ fn parse_tree(path: &Path, leaf: Option<&str>, from_split: bool) -> anyhow::Resu
         }
     }
     super::mark_failed_exits(&mut p.events);
+    super::mark_repeated_context(&mut p.events);
     Ok(p)
 }
 
@@ -354,6 +355,10 @@ fn handle_entry(p: &mut Parsed, v: &Value) {
                     if e.text.starts_with("<skill name=\"") {
                         let name = between(&e.text, "<skill name=\"", "\"").unwrap_or("skill");
                         p.events.push(Event::new(EventKind::Command, ts, format!("/skill:{name}")));
+                        let location = between(&e.text, "location=\"", "\"").unwrap_or(name);
+                        if let Some(body) = between(&e.text, ">", "</skill>") {
+                            p.events.push(super::context_event(ContextKind::Skill, location, ts, body));
+                        }
                         e.text = match e.text.find("</skill>") {
                             Some(i) => e.text[i + "</skill>".len()..].trim().to_string(),
                             None => String::new(),
@@ -361,6 +366,27 @@ fn handle_entry(p: &mut Parsed, v: &Value) {
                     }
                     if !e.text.is_empty() || !e.images.is_empty() {
                         p.events.push(e);
+                    }
+                }
+                // A subagent run records its system prompt in sections: the
+                // agent's definition (its preamble) and the project's
+                // instruction files.
+                "system" => {
+                    let sections = m.get("sections");
+                    let section = |k: &str| sections.and_then(|s| str_of(s, k)).unwrap_or("");
+                    let preamble = section("preamble");
+                    if let Some(agent) = between(preamble, "<active_agent name=\"", "\"") {
+                        let body = preamble.find("/>").map_or(preamble, |i| &preamble[i + 2..]);
+                        p.events.push(super::context_event(ContextKind::Agent, agent, ts, body));
+                    }
+                    let mut rest = section("project_context");
+                    while let Some(start) = rest.find("<project_instructions path=\"") {
+                        let tag = &rest[start + "<project_instructions path=\"".len()..];
+                        let (Some(path_end), Some(open_end), Some(close)) = (tag.find('"'), tag.find('>'), tag.find("</project_instructions>")) else {
+                            break;
+                        };
+                        p.events.push(super::context_event(ContextKind::Instructions, &tag[..path_end], ts, &tag[open_end + 1..close]));
+                        rest = &tag[close..];
                     }
                 }
                 "assistant" => {

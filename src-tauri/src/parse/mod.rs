@@ -8,7 +8,7 @@ use std::path::Path;
 
 use serde_json::Value;
 
-use crate::model::{Event, EventKind, Parsed, Source};
+use crate::model::{ContextKind, ContextSource, Event, EventKind, Parsed, Source};
 
 /// Images larger than this (base64 length) are replaced with a placeholder so a
 /// single screenshot-heavy session cannot balloon the payload sent to the UI.
@@ -76,6 +76,26 @@ fn with_anchors(mut p: Parsed) -> Parsed {
         e.anchor = Some(format!("e{i}"));
     }
     p
+}
+
+/// An instruction file, skill, agent definition or MCP server's
+/// instructions, as a `Context` event.
+pub fn context_event(kind: ContextKind, name: &str, ts: Option<i64>, text: &str) -> Event {
+    let mut e = Event::new(EventKind::Context, ts, text.trim());
+    e.context = Some(ContextSource { kind, name: name.trim().to_string(), repeat: false });
+    e
+}
+
+/// Marks context documents given again unchanged later in the session, so
+/// they can be shown folded and left out of what is analyzed.
+pub fn mark_repeated_context(events: &mut [Event]) {
+    let mut seen = std::collections::HashSet::new();
+    for e in events.iter_mut() {
+        if let Some(c) = &mut e.context {
+            let key = (serde_json::to_string(&c.kind).unwrap_or_default(), c.name.clone(), e.text.clone());
+            c.repeat = !seen.insert(key);
+        }
+    }
 }
 
 /// The exit code Codex reported in a shell tool's output: "Process exited

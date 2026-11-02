@@ -170,7 +170,8 @@ fn a_pi_branch_exports_its_whole_path_and_lists_the_others() {
     assert_eq!(s.title, "Retry: stress test my caching plan");
     // The shared history before the split comes along so the branch reads on its own.
     let texts: Vec<_> = s.events.iter().map(|e| e.text.as_str()).collect();
-    assert_eq!(texts, ["/skill:grill-me", "stress test my caching plan", "abandoned branch"]);
+    // The skill the prompt invoked comes along as context.
+    assert_eq!(texts, ["/skill:grill-me", "long skill body", "stress test my caching plan", "abandoned branch"]);
     let omitted: Vec<_> = s.omitted.iter().map(|r| (r.relation, r.id.as_str(), r.title.as_str())).collect();
     assert_eq!(omitted, [(bundle::Relation::Branch, "pi:01a-pi", "Caching plan review")]);
 

@@ -31,6 +31,9 @@ pub enum EventKind {
     /// Harness notices: interruptions, hook output, notifications.
     System,
     Compaction,
+    /// Something the harness put in the prompt for the agent to follow: an
+    /// instruction file, a skill, an agent definition, MCP server instructions.
+    Context,
     /// Earlier conversation handed to the session as context, such as the
     /// ChatGPT chat a Codex task was started from. `title` names it.
     Reference,
@@ -68,6 +71,9 @@ pub struct Event {
     pub entry: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// For a `Context` event: what kind of document it is and where it came from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<ContextSource>,
     /// Identifies the event within an exported bundle ("e<n>"); unchanged by
     /// import, so references to it survive a round trip.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -91,8 +97,31 @@ impl Event {
             entry: None,
             title: None,
             anchor: None,
+            context: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextKind {
+    /// CLAUDE.md, CLAUDE.local.md, AGENTS.md and the like.
+    Instructions,
+    Skill,
+    /// A subagent's definition.
+    Agent,
+    /// Instructions an MCP server gives the agent.
+    Mcp,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContextSource {
+    pub kind: ContextKind,
+    /// The file's path, or the skill, agent or server's name.
+    pub name: String,
+    /// The same document was given earlier in the session.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub repeat: bool,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]

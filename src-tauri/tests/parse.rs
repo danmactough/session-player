@@ -105,7 +105,8 @@ fn pi_session() {
     assert_eq!(row.source, "pi");
     assert_eq!(row.title, "Caching plan review");
     assert_eq!(row.models, vec!["glm-5".to_string()]);
-    assert_eq!(events, vec!["command:/skill:grill-me", "user:stress test my caching plan", "assistant:kept branch"]);
+    // The skill's SKILL.md stays in the transcript as context.
+    assert_eq!(events, vec!["command:/skill:grill-me", "context:long skill body", "user:stress test my caching plan", "assistant:kept branch"]);
     // Tokens include every model call, abandoned branches too.
     assert_eq!(row.output_tokens, 3);
 }
@@ -264,4 +265,73 @@ fn codex_code_mode_shows_the_tools_a_script_ran() {
 #[test]
 fn codex_guardian_reviews_are_not_listed() {
     assert!(!session_player_lib::test_support::is_listed(&fixture("codex-guardian.jsonl")));
+}
+
+/// Context events as "kind:name:text", repeats marked with "(again)".
+fn context_of(events: &[session_player_lib::test_support::model::Event]) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|e| {
+            let c = e.context.as_ref()?;
+            let kind = serde_json::to_value(c.kind).unwrap();
+            Some(format!("{}:{}:{}{}", kind.as_str().unwrap(), c.name, e.text.trim(), if c.repeat { " (again)" } else { "" }))
+        })
+        .collect()
+}
+
+fn parsed(path: &str) -> Vec<session_player_lib::test_support::model::Event> {
+    use session_player_lib::test_support::parse;
+    let p = Path::new(path);
+    parse::parse_file(p, parse::detect(p).unwrap()).unwrap().events
+}
+
+#[test]
+fn claude_instruction_files_skills_and_mcp_instructions_are_context() {
+    let events = parsed(&fixture("claude-context.jsonl"));
+    assert_eq!(
+        context_of(&events),
+        [
+            "instructions:/home/u/.claude/CLAUDE.md:# Rules\nUse tabs.",
+            "instructions:/work/repo/CLAUDE.local.md:Local note.",
+            "mcp:docs:## docs\nUse the docs tools for docs.",
+            "skill:/home/u/.claude/skills/deploy:# deploy\n\nRun the deploy script.",
+            "instructions:/home/u/.claude/CLAUDE.md:# Rules\nUse tabs. (again)",
+        ]
+    );
+    // Other harness messages stay out, and context isn't a prompt.
+    assert!(!events.iter().any(|e| e.text.contains("Caveat")));
+    let (row, _) = index_one(&fixture("claude-context.jsonl"));
+    assert_eq!(row.user_turns, 1);
+}
+
+#[test]
+fn a_claude_subagent_has_its_agent_definition_as_context() {
+    let events = parsed(&fixture("context/claude/abc/subagents/agent-x1.jsonl"));
+    assert_eq!(context_of(&events), ["agent:senior-code-reviewer:You are a careful reviewer.\nFind bugs.\n\nNotes: the cwd resets."]);
+}
+
+#[test]
+fn codex_agents_md_and_skills_are_context() {
+    let events = parsed(&fixture("codex-context.jsonl"));
+    assert_eq!(
+        context_of(&events),
+        ["instructions:AGENTS.md (/work/repo):Run tests before committing.", "skill:/home/u/.codex/skills/release/SKILL.md:Tag and push."]
+    );
+    assert!(!events.iter().any(|e| e.text.contains("environment_context")));
+}
+
+#[test]
+fn pi_project_instructions_agents_and_skills_are_context() {
+    let events = parsed(&fixture("pi-context.jsonl"));
+    assert_eq!(
+        context_of(&events),
+        [
+            "agent:worker:You are worker: the implementer.",
+            "instructions:/home/u/.pi/agent/AGENTS.md:Be terse.",
+            "instructions:/work/repo/AGENTS.md:Use pnpm.",
+            "skill:/home/u/.pi/skills/grill-me/SKILL.md:Ask hard questions.",
+        ]
+    );
+    let texts: Vec<_> = events.iter().filter(|e| e.context.is_none()).map(|e| e.text.as_str()).collect();
+    assert_eq!(texts, ["/skill:grill-me", "stress test my plan", "Here goes."]);
 }

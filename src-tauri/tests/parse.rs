@@ -42,6 +42,46 @@ fn codex_session() {
 }
 
 #[test]
+fn compressed_codex_session_matches_plain_transcript() {
+    let path = std::env::temp_dir().join(format!("sp-compressed-{}.jsonl.zst", std::process::id()));
+    let bytes = std::fs::read(fixture("codex.jsonl")).unwrap();
+    std::fs::write(&path, zstd::stream::encode_all(bytes.as_slice(), 1).unwrap()).unwrap();
+    let (plain, events) = index_one(&fixture("codex.jsonl"));
+    let (compressed, compressed_events) = index_one(path.to_str().unwrap());
+    std::fs::remove_file(path).unwrap();
+    assert_eq!(compressed_events, events);
+    assert_eq!(compressed.native_id, plain.native_id);
+    assert_eq!(compressed.title, plain.title);
+    assert_eq!(compressed.user_turns, plain.user_turns);
+    assert_eq!(compressed.input_tokens, plain.input_tokens);
+}
+
+#[test]
+fn index_discovers_compressed_sessions_and_tracks_updates() {
+    use session_player_lib::test_support::index;
+    let root = std::env::temp_dir().join(format!("sp-compressed-index-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("rollout.jsonl.zst");
+    let mut bytes = std::fs::read(fixture("codex.jsonl")).unwrap();
+    std::fs::write(&path, zstd::stream::encode_all(bytes.as_slice(), 1).unwrap()).unwrap();
+    let mut conn = index::open(&root.join("index.sqlite")).unwrap();
+    index::add_root(&conn, root.to_str().unwrap()).unwrap();
+    let stats = index::run(&mut conn, false, None, &|_, _| {}).unwrap();
+    assert_eq!((stats.scanned, stats.updated, stats.failed), (1, 1, 0));
+    assert_eq!(index::list(&conn).unwrap()[0].native_id, "019d-codex");
+    assert_eq!(index::run(&mut conn, false, None, &|_, _| {}).unwrap().updated, 0);
+    bytes.extend_from_slice(b"\n{\"timestamp\":\"2026-11-02T12:00:00Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Another request added later\"}]}}\n");
+    std::fs::write(&path, zstd::stream::encode_all(bytes.as_slice(), 1).unwrap()).unwrap();
+    assert_eq!(index::run(&mut conn, false, None, &|_, _| {}).unwrap().updated, 1);
+    assert_eq!(index::list(&conn).unwrap()[0].user_turns, 3);
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(index::run(&mut conn, false, None, &|_, _| {}).unwrap().removed, 1);
+    assert!(index::list(&conn).unwrap().is_empty());
+    drop(conn);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn codex_session_imported_from_claude_code() {
     // The import record sits next to the sessions folder, as in ~/.codex.
     let home = std::env::temp_dir().join(format!("sp-codex-import-{}", std::process::id()));

@@ -216,7 +216,7 @@ fn restart_watcher(app: &AppHandle, state: &Shared) -> anyhow::Result<()> {
             if let Ok(events) = res
                 && events
                     .iter()
-                    .any(|e| e.path.extension().and_then(|x| x.to_str()) == Some("jsonl"))
+                    .any(|e| parse::is_session_path(&e.path))
             {
                 request_index(&app2, &state2, false);
             }

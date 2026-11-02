@@ -14,10 +14,24 @@ use crate::model::{Event, EventKind, Parsed, Source};
 /// single screenshot-heavy session cannot balloon the payload sent to the UI.
 const MAX_IMAGE_B64: usize = 4 * 1024 * 1024;
 
+/// Codex may compress older rollouts after migrating their history.
+pub fn is_session_path(path: &Path) -> bool {
+    path.extension().and_then(|s| s.to_str()) == Some("jsonl")
+        || path.file_name().and_then(|s| s.to_str()).is_some_and(|s| s.ends_with(".jsonl.zst"))
+}
+
+fn reader(path: &Path) -> anyhow::Result<Box<dyn BufRead>> {
+    let file = File::open(path)?;
+    let input: Box<dyn std::io::Read> = if path.extension().and_then(|s| s.to_str()) == Some("zst") {
+        Box::new(zstd::stream::read::Decoder::new(file)?)
+    } else {
+        Box::new(file)
+    };
+    Ok(Box::new(BufReader::with_capacity(256 * 1024, input)))
+}
+
 pub fn detect(path: &Path) -> Option<Source> {
-    let file = File::open(path).ok()?;
-    let reader = BufReader::new(file);
-    for line in reader.lines().take(8) {
+    for line in reader(path).ok()?.lines().take(8) {
         let line = line.ok()?;
         // Claude Code writes very large request-blob lines; peeking at the prefix is enough.
         if line.contains("\"type\":\"session_meta\"") {
@@ -150,9 +164,7 @@ fn shell_command(args: &str) -> Option<String> {
 }
 
 pub fn for_each_line(path: &Path, mut f: impl FnMut(&str)) -> anyhow::Result<()> {
-    let file = File::open(path)?;
-    let reader = BufReader::with_capacity(256 * 1024, file);
-    for line in reader.lines() {
+    for line in reader(path)?.lines() {
         let line = line?;
         if line.is_empty() {
             continue;

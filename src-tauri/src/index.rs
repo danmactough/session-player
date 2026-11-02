@@ -11,7 +11,7 @@ use crate::model::{EventKind, Parsed, SessionRow, Source};
 use crate::parse;
 
 /// Bump when parsing changes so existing indexes are rebuilt on launch.
-const INDEX_VERSION: &str = "21";
+const INDEX_VERSION: &str = "22";
 const FTS_BODY_LIMIT: usize = 400_000;
 const SKIP_DIRS: &[&str] = &["memory", "tool-results", "subagent-artifacts", "node_modules", ".git"];
 
@@ -161,7 +161,7 @@ pub fn run(
         });
         for entry in walker.filter_map(Result::ok) {
             if !entry.file_type().is_file()
-                || entry.path().extension().and_then(|e| e.to_str()) != Some("jsonl")
+                || !parse::is_session_path(entry.path())
             {
                 continue;
             }

@@ -21,7 +21,12 @@ const INJECTED_PREFIXES: &[&str] = &[
 ];
 
 pub fn parse(path: &Path) -> anyhow::Result<Parsed> {
-    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    let uncompressed = if path.extension().and_then(|s| s.to_str()) == Some("zst") {
+        path.with_extension("")
+    } else {
+        path.to_path_buf()
+    };
+    let stem = uncompressed.file_stem().and_then(|s| s.to_str()).unwrap_or("");
     // rollout-<timestamp>-<uuid>: the uuid is the last 36 characters.
     let fallback_id = if stem.len() >= 36 { &stem[stem.len() - 36..] } else { stem };
     let mut p = Parsed::new(Source::Codex, fallback_id.to_string());

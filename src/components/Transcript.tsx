@@ -185,7 +185,7 @@ export function Transcript({
     if (events) void loadNotes();
   }, [events, loadNotes]);
 
-  // Generating notes with Claude runs in the backend; progress arrives as events.
+  // Analyzing with Claude runs in the backend; progress arrives as events.
   const [gen, setGen] = useState<{ done: number; total: number } | null>(null);
   const [genMessage, setGenMessage] = useState<string | null>(null);
   const loadNotesRef = useRef(loadNotes);
@@ -206,8 +206,8 @@ export function Transcript({
         heard = true;
         setGen(null);
         const { error, cancelled, rejected } = e.payload;
-        if (error) setGenMessage(`Couldn't generate notes: ${error}`);
-        else if (cancelled) setGenMessage("Generating was cancelled.");
+        if (error) setGenMessage(`Couldn't analyze this session: ${error}`);
+        else if (cancelled) setGenMessage("Analysis was cancelled.");
         else {
           setGenMessage(
             rejected
@@ -588,12 +588,12 @@ export function Transcript({
               )}
               {gen ? (
                 <span className="generating">
-                  <span className="pulse">Generating notes{gen.total > 1 ? ` · part ${Math.min(gen.done + 1, gen.total)} of ${gen.total}` : "…"}</span>
+                  <span className="pulse">Analyzing{gen.total > 1 ? ` · part ${Math.min(gen.done + 1, gen.total)} of ${gen.total}` : "…"}</span>
                   <button onClick={() => void api.cancelGenerate(key)}>Cancel</button>
                 </span>
               ) : (
-                <button onClick={() => void generate()} title="Suggest details and annotations with Claude Haiku">
-                  Generate notes
+                <button onClick={() => void generate()} title="Find the outcome, components and annotations with Claude Haiku">
+                  Analyze
                 </button>
               )}
               <button onClick={onExport}>Export…</button>

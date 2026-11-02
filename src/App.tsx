@@ -63,7 +63,7 @@ interface Prefs {
   kindFilter: AnnotationKind[];
   /** Shown as the author of annotations. */
   authorName: string;
-  /** The user agreed that generating notes sends the transcript to Anthropic. */
+  /** The user agreed that Analyze sends the transcript to Anthropic. */
   generateConsent: boolean;
   /** The summary under a transcript's title is hidden. */
   summaryCollapsed: boolean;
@@ -799,8 +799,8 @@ export default function App() {
             confirmGenerate={async () => {
               if (p.generateConsent) return true;
               const ok = await ask(
-                "Generating notes sends this session's transcript to Anthropic, through the claude command and your Claude Code sign-in, so Claude Haiku can suggest details and annotations. Nothing is sent until you generate notes for a session.",
-                { title: "Send this transcript to Anthropic?", kind: "info", okLabel: "Generate", cancelLabel: "Cancel" },
+                "Analyze sends this session's transcript to Anthropic, through the claude command and your Claude Code sign-in, so Claude Haiku can find the outcome, components and annotations. Nothing is sent until you analyze a session.",
+                { title: "Send this transcript to Anthropic?", kind: "info", okLabel: "Analyze", cancelLabel: "Cancel" },
               );
               if (ok) update({ generateConsent: true });
               return ok;

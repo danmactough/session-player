@@ -87,7 +87,6 @@ export function MultiMenu<K extends string>({
             </button>
           </span>
         ))}
-        <span className="caret">▾</span>
         {chosen.length > 1 && (
           <button
             className="chip-box-clear"

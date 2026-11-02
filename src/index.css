@@ -2182,10 +2182,6 @@ mark {
 .chip-box-clear:hover {
   color: var(--ink);
 }
-.chip-box .caret {
-  font-size: 9px;
-  color: var(--muted);
-}
 .chip-box-clear {
   font-size: 11px;
   color: var(--muted);

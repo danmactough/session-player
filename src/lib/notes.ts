@@ -1,10 +1,10 @@
 import type { AnnotationKind, EventRef, Outcome, SessionEvent, SessionRow } from "../types";
 import type { Block } from "./blocks";
 
-/** The key a session's metadata and annotations are stored under (see annotations.rs). */
+/** The key a session's metadata and annotations are stored under (see
+ * `session_key` in annotations.rs). A pi session's branches share it. */
 export function sessionKey(s: SessionRow): string {
-  const origin = s.from_bundle ? "bundle" : "local";
-  return `${origin}:${s.source}:${s.native_id}${s.branch_leaf ? `@${s.branch_leaf}` : ""}`;
+  return `${s.from_bundle ? "bundle" : "local"}:${s.source}:${s.native_id}`;
 }
 
 export const KIND_LABEL: Record<AnnotationKind, string> = {
@@ -30,7 +30,7 @@ export const OUTCOME_LABEL: Record<Outcome, string> = {
   failed: "Failed",
 };
 
-export const ref = (e: SessionEvent): EventRef => ({ anchor: e.anchor ?? "", kind: e.kind, ts: e.ts });
+export const ref = (e: SessionEvent): EventRef => ({ anchor: e.anchor ?? "", kind: e.kind, ts: e.ts, entry: e.entry });
 
 /** The events a block shows, which an annotation on the block points at. */
 export function blockEvents(b: Block): SessionEvent[] {

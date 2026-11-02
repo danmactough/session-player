@@ -4,7 +4,7 @@
 //! that survives re-indexing: "<local|bundle>:<source>:<native id>", plus
 //! "@<leaf>" for a pi branch.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -96,12 +96,12 @@ pub fn save_meta(conn: &Connection, meta: &SessionMeta) -> anyhow::Result<()> {
     if let Some(bad) = meta.links.iter().find(|l| !(l.url.starts_with("https://") || l.url.starts_with("http://"))) {
         anyhow::bail!("{} isn't a web address (http:// or https://)", bad.url);
     }
+    let mut meta = meta.clone();
+    meta.tags.retain(|t| !t.trim().is_empty());
     let tx = conn.unchecked_transaction()?;
     tx.execute("DELETE FROM session_meta WHERE key=?1", [&meta.key])?;
     tx.execute("DELETE FROM notes_fts WHERE key=?1 AND item='meta'", [&meta.key])?;
     if !meta.is_empty() {
-        let mut meta = meta.clone();
-        meta.tags.retain(|t| !t.trim().is_empty());
         meta.updated_at = now();
         tx.execute("INSERT INTO session_meta(key, json) VALUES(?1, ?2)", params![meta.key, serde_json::to_string(&meta)?])?;
         tx.execute(
@@ -147,9 +147,17 @@ pub struct EventRef {
     pub anchor: String,
     pub kind: EventKind,
     pub ts: Option<i64>,
+    /// The pi entry the event came from. pi renumbers events when the user
+    /// rewinds, so its events are found by entry instead of by anchor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry: Option<String>,
     /// Set by `resolve`: whether the event is in the transcript as loaded.
     #[serde(default)]
     pub found: bool,
+    /// Set by `resolve`: the event is on another branch of the pi session,
+    /// so this view leaves the annotation out.
+    #[serde(default)]
+    pub elsewhere: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -201,6 +209,7 @@ pub fn save_annotation(conn: &Connection, mut a: Annotation) -> anyhow::Result<A
     }
     for r in &mut a.anchors {
         r.found = false;
+        r.elsewhere = false;
     }
     tx.execute(
         // An upsert keeps the row's rowid, which orders annotations made in the same millisecond.
@@ -232,33 +241,51 @@ pub fn delete_annotation(conn: &Connection, id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Marks which anchors point at an event in `events`. An anchor whose event
-/// has moved (a parser change renumbered the transcript) is moved to the
-/// first event with the same kind and timestamp; one with no match is left
-/// as it is, unfound, so the annotation is shown as unanchored, not lost.
-pub fn resolve(list: &mut [Annotation], events: &[Event]) {
+/// Marks which anchors point at an event in `events`, the transcript as the
+/// UI shows it. A pi event is found by its entry; `entries` lists every entry
+/// in the file, so one on another branch is marked `elsewhere` rather than
+/// lost. Any other anchor whose event has moved (a parser change renumbered
+/// the transcript) is moved to the one event with the same kind and
+/// timestamp. One with no match keeps its anchor, unfound, so the annotation
+/// is shown as unanchored, not dropped.
+pub fn resolve(list: &mut [Annotation], events: &[Event], entries: Option<&HashSet<String>>) {
     let by_anchor: HashMap<&str, &Event> = events.iter().filter_map(|e| Some((e.anchor.as_deref()?, e))).collect();
     for r in list.iter_mut().flat_map(|a| a.anchors.iter_mut()) {
+        r.found = false;
+        r.elsewhere = false;
+        if let Some(entry) = r.entry.clone() {
+            match events.iter().find(|e| e.entry.as_deref() == Some(entry.as_str()) && e.kind == r.kind) {
+                Some(e) => {
+                    r.anchor = e.anchor.clone().unwrap_or_default();
+                    r.found = true;
+                }
+                None => r.elsewhere = entries.is_some_and(|all| all.contains(&entry)),
+            }
+            continue;
+        }
         let same = |e: &Event| e.kind == r.kind && e.ts == r.ts;
         if by_anchor.get(r.anchor.as_str()).is_some_and(|e| same(e)) {
             r.found = true;
-        } else if let Some(moved) = events.iter().filter(|_| r.ts.is_some()).find(|e| same(e)).and_then(|e| e.anchor.clone()) {
-            r.anchor = moved;
+            continue;
+        }
+        // Parallel tool calls can share a timestamp; only an unambiguous match moves the anchor.
+        let mut matches = events.iter().filter(|e| r.ts.is_some() && same(e));
+        if let (Some(e), None) = (matches.next(), matches.next())
+            && let Some(anchor) = e.anchor.clone()
+        {
+            r.anchor = anchor;
             r.found = true;
-        } else {
-            r.found = false;
         }
     }
 }
 
-/// The key metadata and annotations are stored under for a session row,
-/// or for one of its pi branches.
-pub fn session_key(row: &SessionRow, branch: Option<&str>) -> String {
+/// The key metadata and annotations are stored under for a session row.
+/// A local pi session's branches share it: a branch's leaf changes whenever
+/// the user rewinds or continues it, so it can't identify notes. (An
+/// imported pi branch never changes, and its native id carries its leaf.)
+pub fn session_key(row: &SessionRow) -> String {
     let origin = if row.from_bundle { "bundle" } else { "local" };
-    match branch {
-        Some(leaf) => format!("{origin}:{}:{}@{leaf}", row.source, row.native_id),
-        None => format!("{origin}:{}:{}", row.source, row.native_id),
-    }
+    format!("{origin}:{}:{}", row.source, row.native_id)
 }
 
 /// What the session list needs to show and filter by.

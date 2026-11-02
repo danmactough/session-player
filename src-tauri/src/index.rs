@@ -768,15 +768,12 @@ pub fn search(conn: &Connection, query: &str) -> anyhow::Result<Vec<SearchHit>> 
         .collect::<Result<_, _>>()?;
 
     // Metadata and annotations are stored by session key; find the path the
-    // list knows each session by (a pi branch is "<file>#<leaf>").
+    // list knows each session by.
     let notes = crate::annotations::search(conn, &fts_query)?;
     if !notes.is_empty() {
         let mut paths: HashMap<String, String> = HashMap::new();
         for row in list(conn)? {
-            for b in &row.branches {
-                paths.insert(crate::annotations::session_key(&row, Some(&b.leaf)), format!("{}#{}", row.path, b.leaf));
-            }
-            paths.insert(crate::annotations::session_key(&row, None), row.path);
+            paths.insert(crate::annotations::session_key(&row), row.path);
         }
         let mut seen: HashSet<String> = hits.iter().map(|h| h.path.clone()).collect();
         for (key, snippet, rank) in notes {

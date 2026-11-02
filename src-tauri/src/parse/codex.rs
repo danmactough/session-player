@@ -102,6 +102,12 @@ pub fn parse(path: &Path) -> anyhow::Result<Parsed> {
         // A session with no events isn't listed.
         p.events.clear();
     }
+    // Numbered before code-mode wrappers are dropped: a wrapper is dropped
+    // only once its commands appear, which in a running session can be later,
+    // and numbering after would shift every later anchor when it happens.
+    for (i, e) in p.events.iter_mut().enumerate() {
+        e.anchor = Some(format!("e{i}"));
+    }
     drop_code_mode_wrappers(&mut p.events);
     super::mark_failed_exits(&mut p.events);
     Ok(p)

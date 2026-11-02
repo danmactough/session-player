@@ -472,7 +472,14 @@ async fn session_notes(state: State<'_, Shared>, key: String, path: String, bran
         let meta = annotations::meta(&conn, &key).map_err(err)?;
         let mut list = annotations::annotations(&conn, &key).map_err(err)?;
         if list.iter().any(|a| !a.anchors.is_empty()) {
-            annotations::resolve(&mut list, &session_events(&path, branch.as_deref())?);
+            let events = session_events(&path, branch.as_deref())?;
+            // pi annotations made on another branch of the file are told apart from lost ones.
+            let p = Path::new(&path);
+            let entries = match parse::detect(p) {
+                Some(model::Source::Pi) if !bundle::is_bundle_path(p) => parse::pi::entry_ids(p).ok(),
+                _ => None,
+            };
+            annotations::resolve(&mut list, &events, entries.as_ref());
         }
         Ok(SessionNotes { meta, annotations: list })
     })

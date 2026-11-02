@@ -125,7 +125,8 @@ export function SessionList({ rows, selected, onSelect, onToggle, hits, showProj
                   onToggle={onToggle}
                   hit={hits?.get(it.row.s.path)}
                   showProject={showProject}
-                  note={notes.get(sessionKey(it.row.s))}
+                  // A pi branch shares its session's notes; its own label stays.
+                  note={it.row.s.branch_of ? undefined : notes.get(sessionKey(it.row.s))}
                 />
               )}
             </div>

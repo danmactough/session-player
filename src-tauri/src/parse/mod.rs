@@ -48,8 +48,9 @@ pub fn detect(path: &Path) -> Option<Source> {
 pub fn parse_file(path: &Path, source: Source) -> anyhow::Result<Parsed> {
     match source {
         Source::Claude => claude::parse(path).map(with_anchors),
-        Source::Codex => codex::parse(path).map(with_anchors),
-        // pi numbers events along the whole chain, including history a branch view hides.
+        // Codex numbers its own, before dropping code-mode wrappers; pi numbers
+        // events along the whole chain, including history a branch view hides.
+        Source::Codex => codex::parse(path),
         Source::Pi => pi::parse(path),
     }
 }

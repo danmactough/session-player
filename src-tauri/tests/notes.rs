@@ -51,9 +51,11 @@ fn metadata_is_saved_edited_and_kept_through_an_index_rebuild() {
     };
     notes::save_meta(&conn, &meta).unwrap();
     meta.tags.push("flaky".into());
+    meta.title = Some("Flaky login test, round two".into());
     notes::save_meta(&conn, &meta).unwrap();
     let saved = notes::meta(&conn, KEY).unwrap().unwrap();
     assert_eq!(saved.tags, ["ci", "auth", "flaky"]);
+    assert_eq!(saved.title.as_deref(), Some("Flaky login test, round two"));
     assert!(saved.updated_at > 0);
 
     // Rebuild index, then a parser change that forces a rebuild on open.
@@ -61,10 +63,10 @@ fn metadata_is_saved_edited_and_kept_through_an_index_rebuild() {
     conn.execute("UPDATE settings SET value='0' WHERE key='index_version'", []).unwrap();
     drop(conn);
     let conn = index::open(&path).unwrap();
-    assert_eq!(notes::meta(&conn, KEY).unwrap().unwrap().title.as_deref(), Some("Fix the flaky login test"));
+    assert_eq!(notes::meta(&conn, KEY).unwrap().unwrap().title.as_deref(), Some("Flaky login test, round two"));
 
-    // Clearing every field removes the record.
-    notes::save_meta(&conn, &notes::SessionMeta { key: KEY.into(), ..Default::default() }).unwrap();
+    // Clearing every field (blank tags count as empty) removes the record.
+    notes::save_meta(&conn, &notes::SessionMeta { key: KEY.into(), tags: vec![" ".into()], ..Default::default() }).unwrap();
     assert_eq!(notes::meta(&conn, KEY).unwrap(), None);
 }
 
@@ -125,7 +127,7 @@ fn anchors_are_checked_against_the_transcript_and_refound_when_events_shift() {
         notes::Annotation::new(KEY, notes::Kind::HumanIntervention, "", vec![event_ref("e0", "user", prompt_ts)], person()),
         notes::Annotation::new(KEY, notes::Kind::ToolError, "gone", vec![event_ref("e9", "tool_result", Some(1))], person()),
     ];
-    notes::resolve(&mut list, &events);
+    notes::resolve(&mut list, &events, None);
     let refs: Vec<_> = list.iter().map(|a| (a.anchors[0].anchor.as_str(), a.anchors[0].found)).collect();
     assert_eq!(refs, [("e1", true), ("e1", true), ("e9", false)]);
 }
@@ -144,17 +146,18 @@ fn search_finds_sessions_by_their_metadata_and_annotations() {
 
     let meta = notes::SessionMeta { key: KEY.into(), goal: Some("stabilize the zeppelin harness".into()), tags: vec!["quokka".into()], ..Default::default() };
     notes::save_meta(&conn, &meta).unwrap();
-    notes::save_annotation(&conn, notes::Annotation::new("local:pi:01a-pi@a3", notes::Kind::AgentStuck, "retried the marmalade cache three times", vec![], person())).unwrap();
+    // A pi session's notes belong to the file, whichever branch they were made on.
+    notes::save_annotation(&conn, notes::Annotation::new("local:pi:01a-pi", notes::Kind::AgentStuck, "retried the marmalade cache three times", vec![], person())).unwrap();
 
     let hit = |q: &str| index::search(&conn, q).unwrap().into_iter().map(|h| h.path).collect::<Vec<_>>();
     let claude = root.join("claude/-work-repo/abc.jsonl").to_string_lossy().into_owned();
     let pi = root.join("pi/--work-pi--/2026_01a-pi.jsonl").to_string_lossy().into_owned();
     assert_eq!(hit("zeppelin"), [claude.clone()]);
     assert_eq!(hit("quokka"), [claude]);
-    assert_eq!(hit("marmalade"), [format!("{pi}#a3")]);
+    assert_eq!(hit("marmalade"), [pi]);
 
     let summaries = notes::summaries(&conn).unwrap();
-    let pi_summary = summaries.iter().find(|s| s.key == "local:pi:01a-pi@a3").unwrap();
+    let pi_summary = summaries.iter().find(|s| s.key == "local:pi:01a-pi").unwrap();
     assert_eq!(pi_summary.kinds, [notes::Kind::AgentStuck]);
     let claude_summary = summaries.iter().find(|s| s.key == KEY).unwrap();
     assert_eq!((claude_summary.tags.as_slice(), claude_summary.outcome), (["quokka".to_string()].as_slice(), notes::Outcome::Unknown));
@@ -172,4 +175,44 @@ fn links_must_be_web_addresses() {
     let err = notes::save_meta(&conn, &meta).unwrap_err().to_string();
     assert!(err.contains("isn't a web address"), "{err}");
     assert_eq!(notes::meta(&conn, KEY).unwrap(), None);
+}
+
+fn pi_ref(anchor: &str, kind: &str, ts: Option<i64>, entry: &str) -> notes::EventRef {
+    serde_json::from_value(serde_json::json!({ "anchor": anchor, "kind": kind, "ts": ts, "entry": entry })).unwrap()
+}
+
+#[test]
+fn pi_anchors_follow_their_entry_and_other_branches_are_kept_apart() {
+    let tree = fixture("pi-tree.jsonl");
+    let main = parse::pi::parse_branch(&tree, None).unwrap().events;
+    let entries = parse::pi::entry_ids(&tree).unwrap();
+    let reply = main.iter().find(|e| e.text == "main reply").unwrap();
+    let mut list = vec![
+        // Numbered when the transcript had a different shape; the entry still finds it.
+        notes::Annotation::new("local:pi:01b-tree", notes::Kind::KeyDecision, "", vec![pi_ref("e9", "assistant", reply.ts, "m4")], person()),
+        // Made on the b1 branch: not in this view, but still in the file.
+        notes::Annotation::new("local:pi:01b-tree", notes::Kind::Other, "", vec![pi_ref("e3", "assistant", Some(1), "b1a")], person()),
+        notes::Annotation::new("local:pi:01b-tree", notes::Kind::Other, "", vec![pi_ref("e3", "assistant", Some(1), "gone")], person()),
+    ];
+    notes::resolve(&mut list, &main, Some(&entries));
+    let state: Vec<_> = list.iter().map(|a| (a.anchors[0].anchor.as_str(), a.anchors[0].found, a.anchors[0].elsewhere)).collect();
+    assert_eq!(state, [(reply.anchor.as_deref().unwrap(), true, false), ("e3", false, true), ("e3", false, false)]);
+}
+
+#[test]
+fn notes_never_change_the_agent_files() {
+    let (path, mut conn) = temp_db("untouched");
+    let root = path.with_extension("agents");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("claude/-work-repo")).unwrap();
+    let file = root.join("claude/-work-repo/abc.jsonl");
+    std::fs::copy(fixture("claude.jsonl"), &file).unwrap();
+    let before = (std::fs::read(&file).unwrap(), std::fs::metadata(&file).unwrap().modified().unwrap());
+    index::add_root(&conn, &root.to_string_lossy()).unwrap();
+    index::run(&mut conn, false, None, &|_, _| {}).unwrap();
+    notes::save_meta(&conn, &notes::SessionMeta { key: KEY.into(), title: Some("x".into()), ..Default::default() }).unwrap();
+    notes::save_annotation(&conn, notes::Annotation::new(KEY, notes::Kind::ToolError, "y", vec![], person())).unwrap();
+    index::run(&mut conn, true, None, &|_, _| {}).unwrap();
+    assert_eq!((std::fs::read(&file).unwrap(), std::fs::metadata(&file).unwrap().modified().unwrap()), before);
+    let _ = std::fs::remove_dir_all(&root);
 }

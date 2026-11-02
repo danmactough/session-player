@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { ask } from "@tauri-apps/plugin-dialog";
 import type { Annotation, AnnotationKind, Outcome, SessionMeta, SessionRow } from "../types";
 import { KINDS, KIND_LABEL, OUTCOME_LABEL } from "../lib/notes";
 import { fullDate } from "../lib/format";
@@ -29,18 +30,21 @@ export function SessionDetails({
   session,
   sessionKey,
   meta,
+  original,
   onSave,
 }: {
   session: SessionRow;
   sessionKey: string;
   meta: SessionMeta | null;
+  /** The transcript's own title, when the heading shows the one from `meta`. */
+  original?: string;
   onSave: (meta: SessionMeta) => Promise<void>;
 }) {
   const [editing, setEditing] = useState(false);
   const has = !!meta;
   return (
     <div className="t-details">
-      {meta?.title && <p className="t-original">Transcript title: {session.title}</p>}
+      {original && <p className="t-original">Transcript title: {original}</p>}
       {has && !editing && (
         <dl className="details-view">
           {meta.goal && (
@@ -80,8 +84,8 @@ export function SessionDetails({
             <div>
               <dt>Links</dt>
               <dd className="links">
-                {meta.links.map((l) => (
-                  <a key={l.url} className="link" href={l.url} title={l.url}>
+                {meta.links.map((l, i) => (
+                  <a key={i} className="link" href={l.url} title={l.url}>
                     {l.label || l.url}
                   </a>
                 ))}
@@ -231,12 +235,18 @@ export function AnnotationEditor({
   const [kind, setKind] = useState<AnnotationKind>(initial?.kind ?? "other");
   const [note, setNote] = useState(initial?.note ?? "");
   const [err, setErr] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
   const save = async () => {
+    // A second click or ⌘Enter while saving would create a second annotation.
+    if (saving) return;
     setErr(null);
+    setSaving(true);
     try {
       await onSave(kind, note.trim());
     } catch (e) {
       setErr(String(e));
+    } finally {
+      setSaving(false);
     }
   };
   return (
@@ -257,7 +267,7 @@ export function AnnotationEditor({
       <textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} placeholder="What happened here (optional)" autoFocus />
       {err && <div className="sheet-err">{err}</div>}
       <div className="details-actions">
-        <button className="primary" onClick={() => void save()} title="⌘Enter">
+        <button className="primary" onClick={() => void save()} title="⌘Enter" disabled={saving}>
           Save
         </button>
         <button className="ghost" onClick={onCancel}>
@@ -314,7 +324,12 @@ export function AnnotationItem({
         <button className="link" onClick={() => setEditing(true)}>
           Edit
         </button>
-        <button className="link danger" onClick={() => void onDelete(a)}>
+        <button
+          className="link danger"
+          onClick={async () => {
+            if (await ask("Delete this annotation?", { title: "Delete annotation", kind: "warning", okLabel: "Delete" })) await onDelete(a);
+          }}
+        >
           Delete
         </button>
       </div>

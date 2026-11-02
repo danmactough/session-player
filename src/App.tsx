@@ -221,19 +221,15 @@ export default function App() {
 
   const hiddenSet = useMemo(() => new Set(p.hiddenProjects), [p.hiddenProjects]);
 
-  // A session passes the note filter when it, or one of its pi branches, has the outcome, tag or kind.
   const passesNoteFilter = useCallback(
     (s: SessionRow) => {
       const [what, value] = p.noteFilter.split(/:(.*)/s);
       if (!value) return true;
-      const keys = [sessionKey(s), ...(s.branches ?? []).map((b) => `${sessionKey(s)}@${b.leaf}`)];
-      return keys.some((k) => {
-        const n = notes.get(k);
-        if (!n) return what === "outcome" && value === "unknown";
-        if (what === "outcome") return n.outcome === value;
-        if (what === "tag") return n.tags.includes(value);
-        return (n.kinds as string[]).includes(value);
-      });
+      const n = notes.get(sessionKey(s));
+      if (!n) return what === "outcome" && value === "unknown";
+      if (what === "outcome") return n.outcome === value;
+      if (what === "tag") return n.tags.includes(value);
+      return (n.kinds as string[]).includes(value);
     },
     [p.noteFilter, notes],
   );
@@ -785,7 +781,11 @@ export default function App() {
             openWith={p.openWith[selected.source]}
             onOpenWith={(choice) => update({ openWith: { ...p.openWith, [selected.source]: choice } })}
             authorName={p.authorName.trim() || null}
-            onNotesChanged={reloadNotes}
+            onNotesChanged={() => {
+              reloadNotes();
+              // Re-runs the full-text search, which covers notes.
+              setVersion((v) => v + 1);
+            }}
             onExport={() => setExporting(selected)}
           />
         ) : (

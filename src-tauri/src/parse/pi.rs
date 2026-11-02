@@ -116,6 +116,8 @@ fn parse_tree(path: &Path, leaf: Option<&str>, from_split: bool) -> anyhow::Resu
     for (i, v) in shown.iter().enumerate() {
         if i == start {
             hidden = p.events.len();
+            // Models used before the split belong to the source session.
+            p.models.clear();
         }
         let before = p.events.len();
         handle_entry(&mut p, v);
@@ -143,6 +145,20 @@ fn parse_tree(path: &Path, leaf: Option<&str>, from_split: bool) -> anyhow::Resu
     }
     super::mark_failed_exits(&mut p.events);
     Ok(p)
+}
+
+/// The id of every entry in the file, on any branch.
+pub fn entry_ids(path: &Path) -> anyhow::Result<HashSet<String>> {
+    let mut ids = HashSet::new();
+    for_each_line(path, |line| {
+        if let Ok(v) = serde_json::from_str::<Value>(line)
+            && let Some(id) = str_of(&v, "id")
+            && str_of(&v, "type") != Some("session")
+        {
+            ids.insert(id.to_string());
+        }
+    })?;
+    Ok(ids)
 }
 
 /// The root-to-leaf chain ending at `leaf`, or at the last entry in the file.
@@ -302,16 +318,7 @@ fn prompt_text(m: &Value) -> String {
 /// How many leading entries of a fork file's chain were copied from the
 /// session it was forked from (pi keeps the entry ids when it copies them).
 fn shared_prefix(chain: &[&Value], parent: &Path) -> Option<usize> {
-    let mut ids: HashSet<String> = HashSet::new();
-    for_each_line(parent, |line| {
-        if let Ok(v) = serde_json::from_str::<Value>(line)
-            && let Some(id) = str_of(&v, "id")
-            && str_of(&v, "type") != Some("session")
-        {
-            ids.insert(id.to_string());
-        }
-    })
-    .ok()?;
+    let ids = entry_ids(parent).ok()?;
     let n = chain.iter().take_while(|v| str_of(v, "id").is_some_and(|id| ids.contains(id))).count();
     (n > 0).then_some(n)
 }

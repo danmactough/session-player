@@ -191,8 +191,12 @@ export interface EventRef {
   anchor: string;
   kind: EventKind;
   ts: number | null;
+  /** The pi entry the event came from; pi events are found by entry. */
+  entry?: string;
   /** Whether the event is in the transcript as loaded. */
   found?: boolean;
+  /** The event is on another branch of the pi session. */
+  elsewhere?: boolean;
 }
 
 export type Author = { type: "person"; name: string | null } | { type: "model"; model: string };

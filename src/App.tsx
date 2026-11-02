@@ -700,7 +700,6 @@ export default function App() {
             {showNoteFilters && (
               <div className="mid-filters">
                 <MultiMenu
-                  className="caps-sort"
                   label="Outcome"
                   options={OUTCOMES.map((o) => ({ key: o, label: OUTCOME_LABEL[o] }))}
                   value={p.outcomeFilter}
@@ -708,7 +707,6 @@ export default function App() {
                 />
                 {kindOptions.length > 0 && (
                   <MultiMenu
-                    className="caps-sort"
                     label="Annotation type"
                     options={kindOptions}
                     value={p.kindFilter}

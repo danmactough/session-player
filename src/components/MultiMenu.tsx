@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 
 /**
- * A dropdown of checkboxes, styled like Menu. Choosing an option toggles it
- * and leaves the menu open; nothing chosen means no filter. The button names
- * what is chosen, and an × beside it (or Clear in the menu) clears it all.
+ * A multi-select filter shown as a chip box: each chosen value is a chip with
+ * its own ×, and clicking the box opens a checklist (styled like Menu) that
+ * stays open while values are toggled. Nothing chosen means no filter.
  */
 export function MultiMenu<K extends string>({
   label,
@@ -21,7 +21,7 @@ export function MultiMenu<K extends string>({
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const rootRef = useRef<HTMLDivElement>(null);
-  const buttonRef = useRef<HTMLButtonElement>(null);
+  const fieldRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -37,7 +37,7 @@ export function MultiMenu<K extends string>({
 
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (!open) {
-      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "Enter" || e.key === " ") {
         e.preventDefault();
         setOpen(true);
       }
@@ -47,7 +47,7 @@ export function MultiMenu<K extends string>({
     e.stopPropagation();
     if (e.key === "Escape") {
       setOpen(false);
-      buttonRef.current?.focus();
+      fieldRef.current?.focus();
     } else if (e.key === "ArrowDown") {
       e.preventDefault();
       setActive((i) => (i + 1) % options.length);
@@ -61,34 +61,48 @@ export function MultiMenu<K extends string>({
   };
 
   return (
-    <div className={`menu ${open ? "open" : ""} ${chosen.length ? "filtering" : ""} ${className}`} ref={rootRef} onKeyDown={onKeyDown}>
-      <button
-        ref={buttonRef}
-        className="menu-button"
+    <div className={`menu chip-box ${open ? "open" : ""} ${chosen.length ? "filtering" : ""} ${className}`} ref={rootRef} onKeyDown={onKeyDown}>
+      {/* The whole box opens the checklist; the chips' × buttons don't. */}
+      <div
+        ref={fieldRef}
+        className="chip-box-field"
+        role="button"
+        tabIndex={0}
         aria-haspopup="listbox"
         aria-expanded={open}
-        title={chosen.length ? `${label}: ${chosen.map((o) => o.label).join(", ")}` : undefined}
         onClick={() => setOpen((o) => !o)}
       >
-        <span className="menu-value">
-          {label}
-          {chosen.length > 0 && `: ${chosen.map((o) => o.label).join(", ")}`}
-        </span>
+        <span className="chip-box-label">{label}</span>
+        {chosen.map((o) => (
+          <span key={o.key} className="chip-box-chip">
+            {o.label}
+            <button
+              aria-label={`Remove ${o.label}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                toggle(o.key);
+              }}
+            >
+              ×
+            </button>
+          </span>
+        ))}
         <span className="caret">▾</span>
-      </button>
-      {chosen.length > 0 && (
-        <button className="menu-clear" aria-label={`Clear ${label}`} title={`Clear ${label}`} onClick={() => onChange([])}>
-          ×
-        </button>
-      )}
+        {chosen.length > 1 && (
+          <button
+            className="chip-box-clear"
+            title={`Clear ${label}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onChange([]);
+            }}
+          >
+            Clear
+          </button>
+        )}
+      </div>
       {open && (
         <ul className="menu-list" role="listbox" aria-multiselectable="true" aria-label={label}>
-          {chosen.length > 0 && (
-            <li className="menu-clear-row" onClick={() => onChange([])}>
-              <span className="check" />
-              Clear
-            </li>
-          )}
           {options.map((o, i) => (
             <li
               key={o.key}

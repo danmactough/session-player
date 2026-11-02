@@ -107,7 +107,6 @@ export function Analysis({
           <span className="analysis-label">Annotations</span>
           {present.length > 1 && (
             <MultiMenu
-              className="caps-sort"
               label="Annotation type"
               options={present.map((k) => ({ key: k, label: KIND_LABEL[k] }))}
               value={active}

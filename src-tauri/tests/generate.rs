@@ -206,3 +206,20 @@ fn results_are_out_of_date_once_the_transcript_changes() {
     grown.push(session_player_lib::test_support::model::Event::new(session_player_lib::test_support::model::EventKind::User, None, "one more thing"));
     assert_ne!(before, generate::revision(&grown));
 }
+
+/// Calls the real `claude` (network, the user's sign-in, a few cents):
+/// `cargo test --test generate -- --ignored --nocapture real_claude`
+#[test]
+#[ignore]
+fn real_claude_generates_valid_notes() {
+    let bin = std::env::var("CLAUDE_BIN").map(PathBuf::from).unwrap_or_else(|_| dirs::home_dir().unwrap().join(".local/bin/claude"));
+    let events = fixture_events();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let mut ask = |system: &str, input: &str, schema: &serde_json::Value| generate::run_claude(&bin, system, input, schema, &cancel);
+    let out = generate::generate(&events, &mut ask, &mut |_, _| {}).unwrap();
+    println!("{out:#?}");
+    let conn = temp_db("real");
+    generate::apply(&conn, KEY, &out, &events).unwrap();
+    println!("{:#?}", notes::meta(&conn, KEY).unwrap());
+    assert!(!out.annotations.is_empty() || out.goal.is_some());
+}

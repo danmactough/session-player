@@ -136,7 +136,7 @@ export interface ExportPreview {
   summary: {
     bytes: number;
     file_name: string;
-    sessions: { id: string; title: string; is_subagent: boolean; prompts: number; events: number }[];
+    sessions: { id: string; title: string; is_subagent: boolean; prompts: number; events: number; has_details: boolean; annotations: number }[];
     omitted: RelatedSession[];
     attachments: BundleAttachment[];
   };
@@ -172,6 +172,9 @@ export interface SessionMeta {
   tags: string[];
   links: { url: string; label: string | null }[];
   updated_at: number;
+  /** Fields ("title", "goal", "context", "outcome", "tags") holding a model's suggestion no one has edited or accepted. */
+  generated: string[];
+  generated_by: { model: string; at: number; revision: string } | null;
 }
 
 export type AnnotationKind =
@@ -212,6 +215,12 @@ export interface Annotation {
   author: Author;
   created_at: number;
   updated_at: number;
+  /** A model's annotation someone accepted or edited; regenerating keeps it. */
+  accepted?: boolean;
+  rationale?: string;
+  confidence?: string;
+  /** The transcript revision a model's annotation was made from. */
+  revision?: string;
 }
 
 export interface NoteSummary {

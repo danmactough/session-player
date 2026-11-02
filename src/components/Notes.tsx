@@ -17,7 +17,15 @@ const blank = (key: string): SessionMeta => ({
   tags: [],
   links: [],
   updated_at: 0,
+  generated: [],
+  generated_by: null,
 });
+
+const FIELD_LABEL: Record<string, string> = { title: "title", goal: "goal", context: "context", outcome: "outcome", tags: "tags" };
+
+/** Marks a field holding a model's suggestion. */
+const Suggested = ({ meta, field }: { meta: SessionMeta; field: string }) =>
+  meta.generated.includes(field) ? <span className="tag suggested">suggested</span> : null;
 
 const text = (s: string) => (s.trim() ? s.trim() : null);
 
@@ -31,6 +39,7 @@ export function SessionDetails({
   sessionKey,
   meta,
   original,
+  revision,
   onSave,
 }: {
   session: SessionRow;
@@ -38,6 +47,8 @@ export function SessionDetails({
   meta: SessionMeta | null;
   /** The transcript's own title, when the heading shows the one from `meta`. */
   original?: string;
+  /** The transcript's current revision, to tell whether suggestions are out of date. */
+  revision: string | null;
   onSave: (meta: SessionMeta) => Promise<void>;
 }) {
   const [editing, setEditing] = useState(false);
@@ -50,13 +61,17 @@ export function SessionDetails({
           {meta.goal && (
             <div>
               <dt>Goal</dt>
-              <dd>{meta.goal}</dd>
+              <dd>
+                {meta.goal} <Suggested meta={meta} field="goal" />
+              </dd>
             </div>
           )}
           {meta.context && (
             <div>
               <dt>Context</dt>
-              <dd>{meta.context}</dd>
+              <dd>
+                {meta.context} <Suggested meta={meta} field="context" />
+              </dd>
             </div>
           )}
           {(meta.outcome !== "unknown" || meta.outcome_note) && (
@@ -64,7 +79,7 @@ export function SessionDetails({
               <dt>Outcome</dt>
               <dd>
                 <span className={`outcome outcome-${meta.outcome}`}>{OUTCOME_LABEL[meta.outcome]}</span>
-                {meta.outcome_note && <span> {meta.outcome_note}</span>}
+                {meta.outcome_note && <span> {meta.outcome_note}</span>} <Suggested meta={meta} field="outcome" />
               </dd>
             </div>
           )}
@@ -77,6 +92,7 @@ export function SessionDetails({
                     {t}
                   </span>
                 ))}
+                <Suggested meta={meta} field="tags" />
               </dd>
             </div>
           )}
@@ -93,6 +109,17 @@ export function SessionDetails({
             </div>
           )}
         </dl>
+      )}
+      {has && !editing && meta.generated.length > 0 && (
+        <p className="suggestion-line">
+          {meta.generated_by?.model ?? "A model"} suggested the {meta.generated.map((f) => FIELD_LABEL[f] ?? f).join(", ")}.
+          {meta.generated_by && revision && meta.generated_by.revision !== revision && (
+            <span className="stale"> The transcript has changed since.</span>
+          )}{" "}
+          <button className="link" onClick={() => void onSave({ ...meta, generated: [] })}>
+            Accept suggestions
+          </button>
+        </p>
       )}
       {editing ? (
         <DetailsForm
@@ -284,11 +311,14 @@ const byLine = (a: Annotation) =>
 /** One annotation, with edit and delete. */
 export function AnnotationItem({
   annotation: a,
+  revision,
   onSave,
   onDelete,
   onJump,
 }: {
   annotation: Annotation;
+  /** The transcript's current revision, to tell whether a model's annotation is out of date. */
+  revision: string | null;
   onSave: (a: Annotation) => Promise<void>;
   onDelete: (a: Annotation) => Promise<void>;
   /** Shown in the panel: scrolls to the annotated event. */
@@ -296,6 +326,8 @@ export function AnnotationItem({
 }) {
   const [editing, setEditing] = useState(false);
   const unanchored = a.anchors.length > 0 && !a.anchors.some((r) => r.found);
+  const suggestion = a.author.type === "model" && !a.accepted;
+  const stale = !!(a.revision && revision && a.revision !== revision);
   if (editing) {
     return (
       <AnnotationEditor
@@ -312,13 +344,20 @@ export function AnnotationItem({
     <div className={`annotation kind-${a.kind}`}>
       <div className="annotation-head">
         <span className="annotation-kind">{KIND_LABEL[a.kind]}</span>
-        {a.author.type === "model" && <span className="tag">generated</span>}
+        {a.author.type === "model" && <span className={`tag ${suggestion ? "suggested" : ""}`}>{suggestion ? "suggested" : "generated"}</span>}
+        {a.confidence && <span className="dim">{a.confidence} confidence</span>}
+        {stale && <span className="stale" title="The transcript has changed since this was generated">out of date</span>}
         {onJump && a.anchors.length === 0 && <span className="dim">whole session</span>}
         {unanchored && <span className="annotation-lost" title="The event it pointed at isn't in this transcript any more">event not found</span>}
         <span className="annotation-by">{byLine(a)}</span>
         {onJump && !unanchored && a.anchors.length > 0 && (
           <button className="link" onClick={() => onJump(a)}>
             Show
+          </button>
+        )}
+        {suggestion && (
+          <button className="link" onClick={() => void onSave(a)}>
+            Accept
           </button>
         )}
         <button className="link" onClick={() => setEditing(true)}>
@@ -334,6 +373,7 @@ export function AnnotationItem({
         </button>
       </div>
       {a.note && <p className="annotation-note">{a.note}</p>}
+      {a.rationale && <p className="annotation-rationale">Why: {a.rationale}</p>}
     </div>
   );
 }
@@ -341,12 +381,14 @@ export function AnnotationItem({
 /** Every annotation on the session, filterable by kind, with a way to add a note about the whole session. */
 export function AnnotationsPanel({
   annotations,
+  revision,
   onSave,
   onDelete,
   onJump,
   onAdd,
 }: {
   annotations: Annotation[];
+  revision: string | null;
   onSave: (a: Annotation) => Promise<void>;
   onDelete: (a: Annotation) => Promise<void>;
   onJump: (a: Annotation) => void;
@@ -386,7 +428,7 @@ export function AnnotationsPanel({
         <p className="dim">No annotations yet. Hover a message and click + in the margin, or open a tool call and click Annotate this call.</p>
       )}
       {shown.map((a) => (
-        <AnnotationItem key={a.id} annotation={a} onSave={onSave} onDelete={onDelete} onJump={onJump} />
+        <AnnotationItem key={a.id} annotation={a} revision={revision} onSave={onSave} onDelete={onDelete} onJump={onJump} />
       ))}
     </section>
   );

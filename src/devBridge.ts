@@ -196,7 +196,10 @@ const handlers: Record<string, Handler> = {
   export_save: ({ dest }) => dest,
   export_cancel: () => null,
   remove_imported: () => null,
-  session_notes: ({ key }) => ({ meta: devMeta.get(String(key)) ?? null, annotations: devNotes.filter((a) => a.key === key).map((a) => ({ ...a, anchors: a.anchors.map((r) => ({ ...r, found: true })) })) }),
+  generate_notes: () => null,
+  cancel_generate: () => null,
+  generating: () => [],
+  session_notes: ({ key }) => ({ revision: null, meta: devMeta.get(String(key)) ?? null, annotations: devNotes.filter((a) => a.key === key).map((a) => ({ ...a, anchors: a.anchors.map((r) => ({ ...r, found: true })) })) }),
   save_meta: ({ meta }) => {
     const m = { ...(meta as SessionMeta), updated_at: Date.now() };
     devMeta.set(m.key, m);

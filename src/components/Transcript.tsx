@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Annotation, AnnotationKind, EventRef, SessionEvent, SessionMeta, SessionRow } from "../types";
 import { ask, message } from "@tauri-apps/plugin-dialog";
+import { listen } from "@tauri-apps/api/event";
 import { api } from "../api";
 import { buildBlocks, blockText, type Block, type ToolStep } from "../lib/blocks";
 import {
@@ -45,6 +46,8 @@ interface Props {
   authorName: string | null;
   /** Metadata or annotations changed, so the list's titles and filters should refresh. */
   onNotesChanged: () => void;
+  /** Asks, the first time, whether sending a transcript to Anthropic is all right. */
+  confirmGenerate: () => Promise<boolean>;
 }
 
 export function Transcript({
@@ -61,6 +64,7 @@ export function Transcript({
   onExport,
   authorName,
   onNotesChanged,
+  confirmGenerate,
 }: Props) {
   const [events, setEvents] = useState<SessionEvent[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -154,7 +158,11 @@ export function Transcript({
   // Metadata and annotations. Anchors are checked against the transcript on
   // the backend, so they are fetched again whenever the events reload.
   const key = useMemo(() => sessionKey(session), [session]);
-  const [notes, setNotes] = useState<{ meta: SessionMeta | null; annotations: Annotation[] }>({ meta: null, annotations: [] });
+  const [notes, setNotes] = useState<{ meta: SessionMeta | null; annotations: Annotation[]; revision: string | null }>({
+    meta: null,
+    annotations: [],
+    revision: null,
+  });
   const [panel, setPanel] = useState(false);
   const [composing, setComposing] = useState<{ block: number; refs: EventRef[] } | null>(null);
   // `n` changes with every jump, so a block collapsed since the last one opens again.
@@ -172,6 +180,52 @@ export function Transcript({
   useEffect(() => {
     if (events) void loadNotes();
   }, [events, loadNotes]);
+
+  // Generating notes with Claude runs in the backend; progress arrives as events.
+  const [gen, setGen] = useState<{ done: number; total: number } | null>(null);
+  const [genMessage, setGenMessage] = useState<string | null>(null);
+  const afterGenerate = useRef(() => {});
+  afterGenerate.current = () => {
+    void loadNotes();
+    onNotesChanged();
+  };
+  useEffect(() => {
+    let live = true;
+    void api.generating().then((keys) => live && keys.includes(key) && setGen({ done: 0, total: 0 }));
+    const un = [
+      listen<{ key: string; done: number; total: number }>("generate-progress", (e) => {
+        if (e.payload.key === key) setGen({ done: e.payload.done, total: e.payload.total });
+      }),
+      listen<{ key: string; error: string | null; cancelled: boolean; rejected: number }>("generate-done", (e) => {
+        if (e.payload.key !== key) return;
+        setGen(null);
+        const { error, cancelled, rejected } = e.payload;
+        if (error) setGenMessage(`Couldn't generate notes: ${error}`);
+        else if (cancelled) setGenMessage("Generating was cancelled.");
+        else {
+          setGenMessage(
+            rejected
+              ? `Left out ${rejected} suggested ${rejected === 1 ? "annotation that pointed" : "annotations that pointed"} at events this transcript doesn't have.`
+              : null,
+          );
+          afterGenerate.current();
+        }
+      }),
+    ];
+    return () => {
+      live = false;
+      un.forEach((p) => p.then((f) => f()));
+    };
+  }, [key]);
+  const generate = async () => {
+    if (!(await confirmGenerate())) return;
+    setGenMessage(null);
+    setGen({ done: 0, total: 0 });
+    await api.generateNotes(key, session.branch_of ?? session.path, session.branch_leaf).catch((e) => {
+      setGen(null);
+      setGenMessage(String(e));
+    });
+  };
 
   const saveMeta = async (meta: SessionMeta) => {
     const saved = await api.saveMeta(meta);
@@ -420,6 +474,7 @@ export function Transcript({
             sessionKey={key}
             meta={notes.meta}
             original={!session.branch_of && notes.meta?.title ? session.title : undefined}
+            revision={notes.revision}
             onSave={saveMeta}
           />
           <dl className="t-meta">
@@ -476,6 +531,16 @@ export function Transcript({
             ) : (
               <OpenButton session={session} choice={openWith} onChoice={onOpenWith} keyboard={keyboard} />
             )}
+            {gen ? (
+              <span className="generating">
+                <span className="pulse">Generating notes{gen.total > 1 ? ` · part ${Math.min(gen.done + 1, gen.total)} of ${gen.total}` : "…"}</span>
+                <button onClick={() => void api.cancelGenerate(key)}>Cancel</button>
+              </span>
+            ) : (
+              <button onClick={() => void generate()} title="Suggest details and annotations with Claude Haiku">
+                Generate notes
+              </button>
+            )}
             <button onClick={onExport}>Export…</button>
           {session.from_bundle && (
             <button onClick={() => void removeImported(session, children)}>Remove…</button>
@@ -486,6 +551,7 @@ export function Transcript({
               {tildify(session.cwd)} · {bytes(session.size)}
             </span>
           </div>
+          {genMessage && <p className="gen-message">{genMessage}</p>}
           {(parent || children.length > 0) && (
             <div className="t-family">
               {parent && (
@@ -568,6 +634,7 @@ export function Transcript({
         {panel && (
           <AnnotationsPanel
             annotations={notes.annotations}
+            revision={notes.revision}
             onSave={saveAnnotation}
             onDelete={deleteAnnotation}
             onJump={jumpTo}
@@ -613,7 +680,7 @@ export function Transcript({
                     {(notesByBlock.has(item.index) || composing?.block === item.index) && (
                       <div className="row-notes">
                         {notesByBlock.get(item.index)?.map((a) => (
-                          <AnnotationItem key={a.id} annotation={a} onSave={saveAnnotation} onDelete={deleteAnnotation} />
+                          <AnnotationItem key={a.id} annotation={a} revision={notes.revision} onSave={saveAnnotation} onDelete={deleteAnnotation} />
                         ))}
                         {composing?.block === item.index && (
                           <AnnotationEditor

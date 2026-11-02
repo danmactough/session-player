@@ -52,7 +52,11 @@ export const api = {
   removeImported: (path: string) => invoke<void>("remove_imported", { path }),
   libraryErrors: () => invoke<LibraryError[]>("library_errors"),
   sessionNotes: (key: string, path: string, branch?: string) =>
-    invoke<{ meta: SessionMeta | null; annotations: Annotation[] }>("session_notes", { key, path, branch: branch ?? null }),
+    invoke<{ meta: SessionMeta | null; annotations: Annotation[]; revision: string | null }>("session_notes", { key, path, branch: branch ?? null }),
+  /** Starts generating in the background; watch for "generate-progress" and "generate-done". */
+  generateNotes: (key: string, path: string, branch?: string) => invoke<void>("generate_notes", { key, path, branch: branch ?? null }),
+  cancelGenerate: (key: string) => invoke<void>("cancel_generate", { key }),
+  generating: () => invoke<string[]>("generating"),
   /** Resolves to the metadata as saved, or null when every field was empty. */
   saveMeta: (meta: SessionMeta) => invoke<SessionMeta | null>("save_meta", { meta }),
   saveAnnotation: (annotation: Annotation) => invoke<Annotation>("save_annotation", { annotation }),

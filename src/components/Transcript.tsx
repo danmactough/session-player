@@ -494,12 +494,13 @@ export function Transcript({
           <div className="t-title-row">
             <h1 className="t-title">{session.title}</h1>
             <button
-              className="ghost collapse-toggle"
+              className="collapse-toggle"
               aria-expanded={!collapsed}
+              aria-label={collapsed ? "Show the summary" : "Hide the summary"}
               title={collapsed ? "Show the summary" : "Hide the summary"}
               onClick={() => onCollapse(!collapsed)}
             >
-              {collapsed ? "▸ Summary" : "▾ Summary"}
+              {collapsed ? "▸" : "▾"}
             </button>
           </div>
           {!collapsed && (

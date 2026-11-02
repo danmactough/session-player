@@ -66,17 +66,12 @@ export function Analysis({
       ) : (
         <dl className="details-view">
           <div>
-            <dt>Outcome</dt>
-            <dd>
-              {hasOutcome ? (
-                <>
-                  <span className={`outcome outcome-${m.outcome}`}>{OUTCOME_LABEL[m.outcome]}</span>
-                  {m.outcome_note && <span> {m.outcome_note}</span>}
-                </>
-              ) : (
-                <span className="dim">Not set</span>
-              )}
-            </dd>
+            {/* The status sits under its label so the explanation lines up with the other values. */}
+            <dt>
+              Outcome
+              {hasOutcome && <span className={`outcome outcome-${m.outcome}`}>{OUTCOME_LABEL[m.outcome]}</span>}
+            </dt>
+            <dd>{hasOutcome ? m.outcome_note : <span className="dim">Not set</span>}</dd>
           </div>
           <div>
             <dt>Components</dt>
@@ -108,11 +103,12 @@ export function Analysis({
 
       <div className="analysis-annotations">
         <div className="analysis-annotations-head">
-          <span className="details-label">
+          <span className="analysis-label">
             Annotations{annotations.length ? ` · ${annotations.length}` : ""}
           </span>
           {present.length > 1 && (
             <Menu
+              className="caps-sort"
               label="Filter annotations"
               value={active}
               options={[{ key: "all" as const, label: "All kinds" }, ...present.map((k) => ({ key: k, label: KIND_LABEL[k] }))]}

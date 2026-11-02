@@ -1,0 +1,6 @@
+{"timestamp":"2026-04-02T10:00:00Z","type":"session_meta","payload":{"id":"cdx-ctx","cwd":"/work/repo"}}
+{"timestamp":"2026-04-02T10:00:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for /work/repo\n\n<INSTRUCTIONS>\nRun tests before committing.\n</INSTRUCTIONS>"}]}}
+{"timestamp":"2026-04-02T10:00:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>\n<cwd>/work/repo</cwd>\n</environment_context>"}]}}
+{"timestamp":"2026-04-02T10:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<skill>\n<name>release</name>\n<path>/home/u/.codex/skills/release/SKILL.md</path>\nTag and push.\n</skill>"}]}}
+{"timestamp":"2026-04-02T10:00:02Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"cut a release"}]}}
+{"timestamp":"2026-04-02T10:00:03Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Tagged."}]}}

@@ -3316,18 +3316,31 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
- "chrono",
  "dirs 6.0.0",
  "notify",
  "notify-debouncer-mini",
- "rayon",
  "rusqlite",
  "serde",
  "serde_json",
+ "session-player-core",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
+]
+
+[[package]]
+name = "session-player-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "chrono",
+ "dirs 6.0.0",
+ "rayon",
+ "rusqlite",
+ "serde",
+ "serde_json",
  "walkdir",
  "zstd",
 ]

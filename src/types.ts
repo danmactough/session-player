@@ -61,6 +61,7 @@ export type EventKind =
   | "command"
   | "system"
   | "compaction"
+  | "context"
   /** Earlier conversation handed to the session as context; `title` names it. */
   | "reference";
 
@@ -80,6 +81,16 @@ export interface SessionEvent {
   sidechain?: boolean;
   entry?: string;
   title?: string;
+  /** For a "context" event: what the harness put in the prompt, and where it came from. */
+  context?: {
+    kind: "instructions" | "skill" | "agent" | "mcp";
+    /** The file's path, or the skill, agent or server's name. */
+    name: string;
+    /** The same document was given earlier in the session. */
+    repeat?: boolean;
+    /** Whose document it is: "user", "repo", "local" or "managed". */
+    scope?: string;
+  };
   /** Set on events from an imported bundle; stable across export and import. */
   anchor?: string;
 }
@@ -136,7 +147,17 @@ export interface ExportPreview {
   summary: {
     bytes: number;
     file_name: string;
-    sessions: { id: string; title: string; is_subagent: boolean; prompts: number; events: number; has_details: boolean; annotations: number }[];
+    sessions: {
+      id: string;
+      title: string;
+      is_subagent: boolean;
+      prompts: number;
+      events: number;
+      has_details: boolean;
+      annotations: number;
+      /** Instruction files, skills, agent definitions and MCP instructions in the transcript, each once. */
+      context: NonNullable<SessionEvent["context"]>[];
+    }[];
     omitted: RelatedSession[];
     attachments: BundleAttachment[];
   };
@@ -190,6 +211,7 @@ export type AnnotationKind =
   | "missing_context"
   | "automatable"
   | "key_decision"
+  | "ignored_instruction"
   | "other";
 
 export interface EventRef {
@@ -198,6 +220,8 @@ export interface EventRef {
   ts: number | null;
   /** The pi entry the event came from; pi events are found by entry. */
   entry?: string;
+  /** For a context document: its name, which tells apart documents sent together. */
+  name?: string;
   /** Whether the event is in the transcript as loaded. */
   found?: boolean;
   /** The event is on another branch of the pi session. */

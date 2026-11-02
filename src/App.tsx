@@ -98,7 +98,15 @@ export default function App() {
   const [hits, setHits] = useState<Map<string, SearchHit> | null>(null);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [stats, setStats] = useState<IndexStats | null>(null);
-  const [indexError, setIndexError] = useState<string | null>(null);
+  // A short-lived line over the bottom of the project list, like a browser's link preview.
+  const [notice, setNotice] = useState<{ text: string; shown: boolean }>({ text: "", shown: false });
+  const noticeTimer = useRef<number | undefined>(undefined);
+  const showNotice = useCallback((text: string, ms: number) => {
+    window.clearTimeout(noticeTimer.current);
+    setNotice({ text, shown: true });
+    // Keep the text while it fades out.
+    noticeTimer.current = window.setTimeout(() => setNotice((n) => ({ ...n, shown: false })), ms);
+  }, []);
   const [sheet, setSheet] = useState(false);
   const [help, setHelp] = useState(false);
   const [exporting, setExporting] = useState<SessionRow | null>(null);
@@ -148,11 +156,11 @@ export default function App() {
         setSessions(rows);
       })
       .catch((e) => {
-        setIndexError(String(e));
+        showNotice(`Index error: ${e}`, 8000);
         api.log("error", `list_sessions failed: ${e}`);
       });
     setVersion((v) => v + 1);
-  }, [reloadNotes]);
+  }, [reloadNotes, showNotice]);
 
   useEffect(() => {
     api.homeDir().then(setHome);
@@ -174,8 +182,8 @@ export default function App() {
       listen<IndexStats>("index-done", (e) => {
         setProgress(null);
         setStats(e.payload);
-        setIndexError(null);
         const s = e.payload;
+        showNotice(`Indexed · ${s.elapsed_ms} ms`, 2500);
         // scanned === 0 is the synthetic event sent after a folder is removed.
         if (s.updated || s.removed || s.scanned === 0) reload();
       }),
@@ -192,11 +200,11 @@ export default function App() {
       }),
       listen<string>("index-error", (e) => {
         setProgress(null);
-        setIndexError(e.payload);
+        showNotice(`Index error: ${e.payload}`, 8000);
       }),
     ];
     return () => un.forEach((p) => p.then((f) => f()));
-  }, [reload, chooseBundle, reloadNotes]);
+  }, [reload, chooseBundle, reloadNotes, showNotice]);
 
   const update = useCallback((patch: Partial<Prefs>) => {
     setPrefs((p) => {
@@ -664,15 +672,9 @@ export default function App() {
           <button className="ghost help-button" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts" onClick={() => setHelp(true)}>
             ?
           </button>
-          <span className="status">
-            {progress
-              ? `Indexing ${progress.done}/${progress.total}`
-              : indexError
-                ? "Index error"
-                : stats
-                  ? `Indexed · ${stats.elapsed_ms} ms`
-                  : ""}
-          </span>
+          <div className={`rail-status ${notice.shown ? "on" : ""}`} role="status" title={notice.text}>
+            {notice.text}
+          </div>
         </footer>
       </aside>
 

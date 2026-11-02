@@ -3,7 +3,7 @@ use std::path::Path;
 use serde_json::Value;
 
 use super::{content_text, for_each_line, parse_ts, pretty, str_of};
-use crate::model::{Event, EventKind, Parsed, Source};
+use crate::model::{ContextKind, Event, EventKind, Parsed, Source};
 
 /// User-role messages that Codex injects on its own (environment, instructions).
 const INJECTED_PREFIXES: &[&str] = &[
@@ -110,12 +110,47 @@ pub fn parse(path: &Path) -> anyhow::Result<Parsed> {
     // Numbered before code-mode wrappers are dropped: a wrapper is dropped
     // only once its commands appear, which in a running session can be later,
     // and numbering after would shift every later anchor when it happens.
-    for (i, e) in p.events.iter_mut().enumerate() {
-        e.anchor = Some(format!("e{i}"));
-    }
+    super::assign_anchors(&mut p.events);
     drop_code_mode_wrappers(&mut p.events);
     super::mark_failed_exits(&mut p.events);
+    super::fill_context_scopes(&mut p.events, p.cwd.as_deref());
+    super::mark_repeated_context(&mut p.events);
     Ok(p)
+}
+
+/// Instructions and skills Codex adds to the conversation as user
+/// messages: AGENTS.md ("# AGENTS.md instructions for <dir>" around an
+/// <INSTRUCTIONS> block), older <user_instructions>, and a skill's SKILL.md
+/// in a <skill> block with its <name> and <path>.
+fn injected_context(text: &str, ts: Option<i64>) -> Option<Event> {
+    let inner = |open: &str, close: &str| super::between(text, open, close).map(str::trim);
+    if let Some(rest) = text.strip_prefix("# AGENTS.md instructions for ") {
+        let dir = rest.lines().next().unwrap_or("").trim();
+        let body = inner("<INSTRUCTIONS>", "</INSTRUCTIONS>").unwrap_or(rest);
+        return Some(super::context_event(ContextKind::Instructions, &format!("{}/AGENTS.md", dir.trim_end_matches('/')), ts, body));
+    }
+    if text.starts_with("<INSTRUCTIONS>") {
+        let body = inner("<INSTRUCTIONS>", "</INSTRUCTIONS>").unwrap_or(text);
+        return Some(super::context_event(ContextKind::Instructions, "instructions", ts, body));
+    }
+    if text.starts_with("<user_instructions>") {
+        let body = inner("<user_instructions>", "</user_instructions>").unwrap_or(text);
+        return Some(super::context_event(ContextKind::Instructions, "user instructions", ts, body));
+    }
+    if text.starts_with("<skill>") {
+        let body = inner("<skill>", "</skill>").unwrap_or(text);
+        let name = super::between(body, "<path>", "</path>").or_else(|| super::between(body, "<name>", "</name>")).unwrap_or("skill");
+        let mut rest = body.to_string();
+        for tag in ["name", "path"] {
+            if let Some(start) = rest.find(&format!("<{tag}>"))
+                && let Some(len) = rest[start..].find(&format!("</{tag}>"))
+            {
+                rest.replace_range(start..start + len + tag.len() + 3, "");
+            }
+        }
+        return Some(super::context_event(ContextKind::Skill, name, ts, &rest));
+    }
+    None
 }
 
 fn handle_item(p: &mut Parsed, item: &Value, ts: Option<i64>, model: Option<&str>) {
@@ -129,6 +164,10 @@ fn handle_item(p: &mut Parsed, item: &Value, ts: Option<i64>, model: Option<&str
             let text = content_text(item.get("content").unwrap_or(&Value::Null), &mut images);
             let trimmed = text.trim();
             if role == "user" {
+                if let Some(context) = injected_context(trimmed, ts) {
+                    p.events.push(context);
+                    return;
+                }
                 if INJECTED_PREFIXES.iter().any(|pre| trimmed.starts_with(pre)) {
                     return;
                 }

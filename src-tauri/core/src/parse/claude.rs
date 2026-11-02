@@ -4,7 +4,7 @@ use std::path::Path;
 use serde_json::Value;
 
 use super::{between, content_text, for_each_line, parse_ts, pretty, str_of, strip_tag_blocks};
-use crate::model::{Event, EventKind, Parsed, Source};
+use crate::model::{ContextKind, Event, EventKind, Parsed, Source};
 
 pub fn parse(path: &Path) -> anyhow::Result<Parsed> {
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
@@ -12,7 +12,8 @@ pub fn parse(path: &Path) -> anyhow::Result<Parsed> {
 
     // Subagent transcripts live at <session-id>/subagents/<agent>.jsonl.
     let parent = path.parent();
-    if parent.and_then(|d| d.file_name()).and_then(|n| n.to_str()) == Some("subagents") {
+    let subagent = parent.and_then(|d| d.file_name()).and_then(|n| n.to_str()) == Some("subagents");
+    if subagent {
         p.is_subagent = true;
         p.parent_id = parent
             .and_then(|d| d.parent())
@@ -20,6 +21,15 @@ pub fn parse(path: &Path) -> anyhow::Result<Parsed> {
             .and_then(|n| n.to_str())
             .map(str::to_string);
     }
+
+    // A subagent's type is in the <agent>.meta.json beside its log.
+    let agent: Option<String> = subagent.then(|| {
+        std::fs::read_to_string(path.with_extension("meta.json"))
+            .ok()
+            .and_then(|m| serde_json::from_str::<Value>(&m).ok())
+            .and_then(|m| str_of(&m, "agentType").map(str::to_string))
+            .unwrap_or_else(|| "subagent".to_string())
+    });
 
     let mut custom_title: Option<String> = None;
     let mut ai_title: Option<String> = None;
@@ -46,7 +56,7 @@ pub fn parse(path: &Path) -> anyhow::Result<Parsed> {
             "agent-name" => agent_name = str_of(&v, "agentName").map(str::to_string),
             "summary" => summary = str_of(&v, "summary").map(str::to_string),
             "user" | "assistant" => handle_message(&mut p, &v, t, &mut usage),
-            "attachment" => handle_attachment(&mut p, &v),
+            "attachment" => handle_attachment(&mut p, &v, agent.as_deref()),
             "system" => {
                 let ts = parse_ts(v.get("timestamp"));
                 match str_of(&v, "subtype") {
@@ -83,6 +93,8 @@ pub fn parse(path: &Path) -> anyhow::Result<Parsed> {
         .or(summary.map(|t| (t, "summary")));
 
     super::mark_failed_exits(&mut p.events);
+    super::fill_context_scopes(&mut p.events, p.cwd.as_deref());
+    super::mark_repeated_context(&mut p.events);
     Ok(p)
 }
 
@@ -99,6 +111,14 @@ fn handle_message(
         p.git_branch = Some(b.to_string());
     }
     if v.get("isMeta").and_then(Value::as_bool) == Some(true) {
+        // A skill's SKILL.md is sent as a hidden message; other hidden
+        // messages are harness notes.
+        let mut images = Vec::new();
+        let text = content_text(v.get("message").and_then(|m| m.get("content")).unwrap_or(&Value::Null), &mut images);
+        if let Some(rest) = text.strip_prefix("Base directory for this skill:") {
+            let (dir, body) = rest.split_once('\n').unwrap_or((rest, ""));
+            p.events.push(super::context_event(ContextKind::Skill, dir, parse_ts(v.get("timestamp")), body));
+        }
         return;
     }
     let ts = parse_ts(v.get("timestamp"));
@@ -208,9 +228,63 @@ fn handle_message(
     }
 }
 
+/// What the harness put in the prompt: instruction files (CLAUDE.md and
+/// friends), MCP servers' instructions, and, in a subagent's log, its
+/// agent definition (the first part of the system prompt; Claude Code's own
+/// system prompt in a main session's log is left out).
+fn handle_context_attachment(p: &mut Parsed, a: &Value, ts: Option<i64>, agent: Option<&str>) {
+    match str_of(a, "type") {
+        Some("instructions") => {
+            for f in a.get("files").and_then(Value::as_array).into_iter().flatten() {
+                if let (Some(path), Some(content)) = (str_of(f, "path"), str_of(f, "content")) {
+                    let mut e = super::context_event(ContextKind::Instructions, path, ts, content);
+                    // Claude Code says whose file it is; its "Project" is the repo's.
+                    let scope = str_of(f, "type").map(|t| match t.to_lowercase().as_str() {
+                        "project" => "repo".to_string(),
+                        other => other.to_string(),
+                    });
+                    if let Some(c) = e.context.as_mut() {
+                        c.scope = scope;
+                    }
+                    p.events.push(e);
+                }
+            }
+        }
+        Some("mcp_instructions_delta") => {
+            let names = a.get("addedNames").and_then(Value::as_array).cloned().unwrap_or_default();
+            for (i, block) in a.get("addedBlocks").and_then(Value::as_array).into_iter().flatten().enumerate() {
+                let Some(text) = block.as_str() else { continue };
+                let name = names.get(i).and_then(Value::as_str).unwrap_or("MCP server");
+                p.events.push(super::context_event(ContextKind::Mcp, name, ts, text));
+            }
+        }
+        Some("prompt_snapshot") => {
+            let Some(agent) = agent else { return };
+            let mut images = Vec::new();
+            // The agent definition, then the notes Claude Code adds to every agent.
+            let text = a
+                .get("systemPrompt")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .map(|part| super::content_text(part, &mut images))
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            if !text.trim().is_empty() {
+                p.events.push(super::context_event(ContextKind::Agent, agent, ts, &text));
+            }
+        }
+        _ => {}
+    }
+}
+
 /// An `@file` mention: Claude Code records the file's contents as an
 /// attachment right after the prompt. Show it inside that prompt.
-fn handle_attachment(p: &mut Parsed, v: &Value) {
+fn handle_attachment(p: &mut Parsed, v: &Value, agent: Option<&str>) {
+    let ts = parse_ts(v.get("timestamp"));
+    if let Some(a) = v.get("attachment") {
+        handle_context_attachment(p, a, ts, agent);
+    }
     let Some(a) = v.get("attachment").filter(|a| str_of(a, "type") == Some("file")) else {
         return;
     };

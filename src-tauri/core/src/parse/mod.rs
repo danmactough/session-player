@@ -8,7 +8,7 @@ use std::path::Path;
 
 use serde_json::Value;
 
-use crate::model::{Event, EventKind, Parsed, Source};
+use crate::model::{ContextKind, ContextSource, Event, EventKind, Parsed, Source};
 
 /// Images larger than this (base64 length) are replaced with a placeholder so a
 /// single screenshot-heavy session cannot balloon the payload sent to the UI.
@@ -72,10 +72,59 @@ pub fn parse_file(path: &Path, source: Source) -> anyhow::Result<Parsed> {
 /// Gives each event its anchor, "e<n>" for its position in the file, so
 /// annotations and bundles can refer to it.
 fn with_anchors(mut p: Parsed) -> Parsed {
-    for (i, e) in p.events.iter_mut().enumerate() {
-        e.anchor = Some(format!("e{i}"));
-    }
+    assign_anchors(&mut p.events);
     p
+}
+
+/// Numbers the conversation's events "e0", "e1"… and context documents
+/// "c0", "c1"… separately, so finding more context in a log (a parser that
+/// learns a new kind) doesn't renumber the conversation that annotations
+/// point at.
+pub fn assign_anchors(events: &mut [Event]) {
+    let (mut conversation, mut context) = (0, 0);
+    for e in events.iter_mut() {
+        if e.kind == EventKind::Context {
+            e.anchor = Some(format!("c{context}"));
+            context += 1;
+        } else {
+            e.anchor = Some(format!("e{conversation}"));
+            conversation += 1;
+        }
+    }
+}
+
+/// An instruction file, skill, agent definition or MCP server's
+/// instructions, as a `Context` event.
+pub fn context_event(kind: ContextKind, name: &str, ts: Option<i64>, text: &str) -> Event {
+    let mut e = Event::new(EventKind::Context, ts, text.trim());
+    e.context = Some(ContextSource { kind, name: name.trim().to_string(), repeat: false, scope: None });
+    e
+}
+
+/// Fills in the scope of context documents the log doesn't give one for:
+/// a file inside the session's working folder belongs to the repo, and any
+/// other file to the user. Names that aren't paths get none.
+pub fn fill_context_scopes(events: &mut [Event], cwd: Option<&str>) {
+    let cwd = cwd.map(|c| format!("{}/", c.trim_end_matches('/')));
+    for c in events.iter_mut().filter_map(|e| e.context.as_mut()).filter(|c| c.scope.is_none()) {
+        if !(c.name.starts_with('/') || c.name.starts_with('~')) {
+            continue;
+        }
+        let in_repo = cwd.as_deref().is_some_and(|cwd| c.name.starts_with(cwd));
+        c.scope = Some(if in_repo { "repo" } else { "user" }.to_string());
+    }
+}
+
+/// Marks context documents given again unchanged later in the session, so
+/// they can be shown folded and left out of what is analyzed.
+pub fn mark_repeated_context(events: &mut [Event]) {
+    let mut seen = std::collections::HashSet::new();
+    for e in events.iter_mut() {
+        if let Some(c) = &mut e.context {
+            let key = (serde_json::to_string(&c.kind).unwrap_or_default(), c.name.clone(), e.text.clone());
+            c.repeat = !seen.insert(key);
+        }
+    }
 }
 
 /// The exit code Codex reported in a shell tool's output: "Process exited

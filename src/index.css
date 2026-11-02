@@ -589,11 +589,33 @@ mark {
   gap: 10px;
   padding: 10px 12px 12px;
   border-top: 1px solid var(--line);
+  position: relative;
 }
-.rail-foot .status {
+/* Floats over the bottom of the project list, then fades, like a browser's link preview. */
+.rail-status {
+  position: absolute;
+  left: 0;
+  bottom: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 3px 8px;
   font: 10.5px var(--mono);
-  color: var(--faint);
-  margin-left: auto;
+  color: var(--muted);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 0;
+  border-bottom: 0;
+  border-top-right-radius: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s;
+}
+.rail-status.on {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 /* ---------- buttons ---------- */
@@ -1025,13 +1047,31 @@ mark {
 
 .t-toolbar {
   display: flex;
-  align-items: center;
-  gap: 18px;
+  flex-direction: column;
+  gap: 6px;
   padding: 8px 40px;
   border-bottom: 1px solid var(--line-2);
 }
-.err-nav {
+.t-toolbar-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 18px;
+}
+.t-toggles .toggle {
+  white-space: nowrap;
+}
+.t-toggles {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 18px;
   margin-left: auto;
+}
+.t-navs {
+  justify-content: flex-end;
+}
+.err-nav {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -1057,20 +1097,21 @@ mark {
   background: var(--hover);
   color: var(--ink);
 }
-.err-nav + .t-find {
-  margin-left: 12px;
-}
 .err-count {
   color: var(--err);
 }
 .t-find {
-  margin-left: auto;
+  /* Shrinks to the room the toggles leave, up to its usual width; in a very
+     narrow pane the toggles wrap below it instead. */
+  flex: 0 1 180px;
+  min-width: 120px;
   position: relative;
   display: flex;
   align-items: center;
 }
 .t-find input {
-  width: 180px;
+  width: 100%;
+  min-width: 0;
   height: 26px;
   border-radius: 6px;
   border: 1px solid transparent;
@@ -1088,8 +1129,8 @@ mark {
   border-color: var(--line);
   background: var(--panel);
 }
-.t-find.open input {
-  width: 260px;
+.t-find.open {
+  flex-basis: 260px;
 }
 .t-find .count {
   position: absolute;
@@ -1434,6 +1475,9 @@ mark {
 .b-thinking .caret {
   font-size: 10px;
   width: 10px;
+  /* Centered on the header line rather than sitting on its baseline. */
+  align-self: center;
+  line-height: 1;
 }
 .b-thinking .lbl {
   font: italic 14px var(--serif);
@@ -1912,7 +1956,8 @@ mark {
 }
 .srow-title .outcome {
   flex: none;
-  margin-left: 6px;
+  /* Pinned to the right edge so badges line up down the list. */
+  margin-left: auto;
 }
 .details-form,
 .annotation-editor {
@@ -1973,7 +2018,8 @@ mark {
 .annotation.kind-agent_stuck,
 .annotation.kind-human_frustration,
 .annotation.kind-wrong_assumption,
-.annotation.kind-wasted_work {
+.annotation.kind-wasted_work,
+.annotation.kind-ignored_instruction {
   border-left-color: var(--err);
 }
 .annotation.kind-key_decision,
@@ -2024,11 +2070,6 @@ mark {
   font: 14px/18px var(--mono);
   color: var(--muted);
   opacity: 0;
-}
-/* A prompt box starts lower in its row (its top margin and padding), so
-   the + lines up with its "Prompt n" label instead of the row's top. */
-.t-stream > .row:has(> .b-user) > .annotate-btn {
-  top: 34px;
 }
 .t-stream > .row:hover > .annotate-btn,
 .t-stream > .row > .annotate-btn:focus-visible {
@@ -2226,9 +2267,6 @@ mark {
 }
 .note-nav .err-dot {
   background: var(--accent);
-}
-.note-nav + .err-nav {
-  margin-left: 12px;
 }
 
 /* ---------- scrollbars ---------- */
@@ -2523,8 +2561,59 @@ mark {
   color: var(--ink-2);
 }
 .b-reference .caret {
+  align-self: center;
+  line-height: 1;
   font: 9px var(--sans);
   font-style: normal;
+}
+.b-context {
+  margin: 8px 0;
+}
+.b-context > button {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.b-context > button:hover {
+  color: var(--ink-2);
+}
+.b-context .caret {
+  font-size: 9px;
+  /* The text pieces share a baseline; the caret sits on the line's center, with the +. */
+  align-self: center;
+  line-height: 1;
+}
+.b-context-kind {
+  font: 10.5px var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.b-context-name {
+  font: 12px var(--mono);
+  color: var(--ink-2);
+}
+.b-context-scope {
+  font-size: 11px;
+  color: var(--faint);
+}
+.b-context.repeat > button {
+  opacity: 0.75;
+}
+.b-context-path {
+  margin: 6px 0 0 17px;
+  font: 11px var(--mono);
+  color: var(--faint);
+}
+.context-md {
+  margin: 8px 0 0 17px;
+  padding: 10px 14px;
+  max-height: 420px;
+  overflow-y: auto;
+  border-left: 2px solid var(--line);
+  font-size: 13px;
+  color: var(--ink-2);
 }
 .reference-md {
   margin-top: 10px;

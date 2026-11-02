@@ -97,6 +97,8 @@ function transcript(s: SessionRow, prefix = "e", turns = s.user_turns, setup = t
     ev.push({ kind: "tool_result", ts: at(), call_id: id, text: out, is_error: err });
   };
   if (setup) {
+    ev.push({ kind: "context", ts: at(), text: "# Rules\n\n- Run `npm test` before committing.\n- Prefer small PRs.", context: { kind: "instructions", name: `${HOME}/.claude/CLAUDE.md`, scope: "user" } });
+    ev.push({ kind: "context", ts: at(), text: "Use pnpm, not npm.", context: { kind: "instructions", name: `${s.cwd}/CLAUDE.local.md`, scope: "local" } });
     ev.push({ kind: "command", ts: at(), text: "/model opus" });
     ev.push({ kind: "system", ts: at(), text: "Set model to opus" });
   }
@@ -183,7 +185,21 @@ const handlers: Record<string, Handler> = {
       summary: {
         bytes: 48_213,
         file_name: `${s.title}.spsession`,
-        sessions: [{ id: `${s.source}:${s.native_id}`, title: s.title, is_subagent: false, prompts: s.user_turns, events: s.user_turns * 9 }],
+        sessions: [
+          {
+            id: `${s.source}:${s.native_id}`,
+            title: s.title,
+            is_subagent: false,
+            prompts: s.user_turns,
+            events: s.user_turns * 9,
+            has_details: false,
+            annotations: 0,
+            context: [
+              { kind: "instructions", name: `${HOME}/.claude/CLAUDE.md` },
+              { kind: "instructions", name: `${s.cwd}/CLAUDE.local.md` },
+            ],
+          },
+        ],
         omitted: [],
         attachments: [
           { id: "a0", session: `${s.source}:${s.native_id}`, anchor: "e3", kind: "image", name: null, mime: "image/png", bytes: 182_331, status: "included", reason: null },
@@ -231,14 +247,24 @@ const handlers: Record<string, Handler> = {
   ],
   open_in_terminal: ({ app }) => console.log("open in", app),
   log_frontend: ({ level, message }) => console.log(`[${level}]`, message),
-  "plugin:event|listen": () => 1,
+  "plugin:event|listen": ({ event, handler }) => {
+    (listeners[event as string] ??= []).push(handler as number);
+    return handler;
+  },
   "plugin:event|unlisten": () => null,
 };
 
 let cb = 0;
+const callbacks: Record<number, (e: unknown) => void> = {};
+const listeners: Record<string, number[]> = {};
 Object.assign(window, {
+  // Fires an app event from the console, e.g. __emit("index-done", { elapsed_ms: 391, … }).
+  __emit: (event: string, payload: unknown) => listeners[event]?.forEach((id) => callbacks[id]?.({ event, id, payload })),
   __TAURI_INTERNALS__: {
-    transformCallback: () => ++cb,
+    transformCallback: (f: (e: unknown) => void) => {
+      callbacks[++cb] = f;
+      return cb;
+    },
     invoke: async (cmd: string, args: Record<string, unknown> = {}) => {
       const h = handlers[cmd];
       if (!h) throw new Error(`devBridge: no handler for ${cmd}`);

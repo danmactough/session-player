@@ -1,7 +1,7 @@
 // Integration tests run against small synthetic transcripts in tests/fixtures.
 use std::path::Path;
 
-use session_player_lib::test_support::{index_one, load_branch, Row};
+use session_player_core::test_support::{index_one, load_branch, Row};
 
 fn fixture(name: &str) -> String {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name).to_string_lossy().into_owned()
@@ -58,7 +58,7 @@ fn compressed_codex_session_matches_plain_transcript() {
 
 #[test]
 fn index_discovers_compressed_sessions_and_tracks_updates() {
-    use session_player_lib::test_support::index;
+    use session_player_core::test_support::index;
     let root = std::env::temp_dir().join(format!("sp-compressed-index-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
     let path = root.join("rollout.jsonl.zst");
@@ -105,7 +105,8 @@ fn pi_session() {
     assert_eq!(row.source, "pi");
     assert_eq!(row.title, "Caching plan review");
     assert_eq!(row.models, vec!["glm-5".to_string()]);
-    assert_eq!(events, vec!["command:/skill:grill-me", "user:stress test my caching plan", "assistant:kept branch"]);
+    // The skill's SKILL.md stays in the transcript as context.
+    assert_eq!(events, vec!["command:/skill:grill-me", "context:long skill body", "user:stress test my caching plan", "assistant:kept branch"]);
     // Tokens include every model call, abandoned branches too.
     assert_eq!(row.output_tokens, 3);
 }
@@ -263,5 +264,136 @@ fn codex_code_mode_shows_the_tools_a_script_ran() {
 
 #[test]
 fn codex_guardian_reviews_are_not_listed() {
-    assert!(!session_player_lib::test_support::is_listed(&fixture("codex-guardian.jsonl")));
+    assert!(!session_player_core::test_support::is_listed(&fixture("codex-guardian.jsonl")));
+}
+
+/// Context events as "kind:name:text", repeats marked with "(again)".
+fn context_of(events: &[session_player_core::test_support::model::Event]) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|e| {
+            let c = e.context.as_ref()?;
+            let kind = serde_json::to_value(c.kind).unwrap();
+            Some(format!("{}:{}:{}{}", kind.as_str().unwrap(), c.name, e.text.trim(), if c.repeat { " (again)" } else { "" }))
+        })
+        .collect()
+}
+
+fn parsed(path: &str) -> Vec<session_player_core::test_support::model::Event> {
+    use session_player_core::test_support::parse;
+    let p = Path::new(path);
+    parse::parse_file(p, parse::detect(p).unwrap()).unwrap().events
+}
+
+#[test]
+fn claude_instruction_files_skills_and_mcp_instructions_are_context() {
+    let events = parsed(&fixture("claude-context.jsonl"));
+    assert_eq!(
+        context_of(&events),
+        [
+            "instructions:/home/u/.claude/CLAUDE.md:# Rules\nUse tabs.",
+            "instructions:/work/repo/CLAUDE.local.md:Local note.",
+            "mcp:docs:## docs\nUse the docs tools for docs.",
+            "skill:/home/u/.claude/skills/deploy:# deploy\n\nRun the deploy script.",
+            "instructions:/home/u/.claude/CLAUDE.md:# Rules\nUse tabs. (again)",
+        ]
+    );
+    // Other harness messages stay out, and context isn't a prompt.
+    assert!(!events.iter().any(|e| e.text.contains("Caveat")));
+    let (row, _) = index_one(&fixture("claude-context.jsonl"));
+    assert_eq!(row.user_turns, 1);
+}
+
+#[test]
+fn a_claude_subagent_has_its_agent_definition_as_context() {
+    let events = parsed(&fixture("context/claude/abc/subagents/agent-x1.jsonl"));
+    assert_eq!(context_of(&events), ["agent:senior-code-reviewer:You are a careful reviewer.\nFind bugs.\n\nNotes: the cwd resets."]);
+}
+
+#[test]
+fn codex_agents_md_and_skills_are_context() {
+    let events = parsed(&fixture("codex-context.jsonl"));
+    assert_eq!(
+        context_of(&events),
+        ["instructions:/work/repo/AGENTS.md:Run tests before committing.", "skill:/home/u/.codex/skills/release/SKILL.md:Tag and push."]
+    );
+    assert!(!events.iter().any(|e| e.text.contains("environment_context")));
+}
+
+#[test]
+fn pi_project_instructions_agents_and_skills_are_context() {
+    let events = parsed(&fixture("pi-context.jsonl"));
+    assert_eq!(
+        context_of(&events),
+        [
+            "agent:worker:You are worker: the implementer.",
+            "instructions:/home/u/.pi/agent/AGENTS.md:Be terse.",
+            "instructions:/work/repo/AGENTS.md:Use pnpm.",
+            "skill:/home/u/.pi/skills/grill-me/SKILL.md:Ask hard questions.",
+        ]
+    );
+    let texts: Vec<_> = events.iter().filter(|e| e.context.is_none()).map(|e| e.text.as_str()).collect();
+    assert_eq!(texts, ["/skill:grill-me", "stress test my plan", "Here goes."]);
+}
+
+#[test]
+fn context_events_are_numbered_apart_from_the_conversation() {
+    let events = parsed(&fixture("claude-context.jsonl"));
+    let anchors: Vec<_> = events.iter().map(|e| e.anchor.clone().unwrap()).collect();
+    // Adding context to a log doesn't renumber the conversation's events.
+    assert_eq!(anchors, ["c0", "c1", "c2", "e0", "c3", "e1", "c4"]);
+}
+
+#[test]
+fn pi_addendum_and_delegate_agents_are_context_and_malformed_tags_are_skipped() {
+    let dir = std::env::temp_dir().join(format!("sp-pi-addendum-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("session.jsonl");
+    let system = serde_json::json!({
+        "type": "message", "id": "s1", "parentId": null, "timestamp": "2026-04-03T10:00:00.000Z",
+        "message": { "role": "system", "content": "", "sections": {
+            "preamble": "You are a helpful agent. See <br/> here.",
+            "addendum": "<addendum>\n<active_agent name=\"delegate\"/>\nHand work to others.\n</addendum>",
+            "project_context": "<project_context><project_instructions path=\"/a\"</project_instructions><project_instructions path=\"/b\">Fine.</project_instructions></project_context>"
+        } }
+    });
+    let user = serde_json::json!({ "type": "message", "id": "u1", "parentId": "s1", "timestamp": "2026-04-03T10:00:01.000Z",
+        "message": { "role": "user", "content": [{ "type": "text", "text": "<skill name=\"plain\">\nBody mentions location=\"/nope\" in passing.\n</skill>\n\ndo it" }] } });
+    std::fs::write(&file, format!("{}\n{}\n{}\n", r#"{"type":"session","version":3,"id":"pi-add","timestamp":"2026-04-03T10:00:00.000Z","cwd":"/w"}"#, system, user)).unwrap();
+    let events = parsed(&file.to_string_lossy());
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(
+        context_of(&events),
+        [
+            "agent:delegate:Hand work to others.",
+            "instructions:/b:Fine.",
+            "skill:plain:Body mentions location=\"/nope\" in passing.",
+        ]
+    );
+}
+
+/// Each context document's name and scope, as "name (scope)".
+fn scopes_of(events: &[session_player_core::test_support::model::Event]) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|e| e.context.as_ref())
+        .filter(|c| !c.repeat)
+        .map(|c| format!("{} ({})", c.name, c.scope.as_deref().unwrap_or("-")))
+        .collect()
+}
+
+#[test]
+fn context_documents_say_whose_they_are() {
+    assert_eq!(
+        scopes_of(&parsed(&fixture("claude-context.jsonl"))),
+        ["/home/u/.claude/CLAUDE.md (user)", "/work/repo/CLAUDE.local.md (local)", "docs (-)", "/home/u/.claude/skills/deploy (user)"]
+    );
+    assert_eq!(
+        scopes_of(&parsed(&fixture("codex-context.jsonl"))),
+        ["/work/repo/AGENTS.md (repo)", "/home/u/.codex/skills/release/SKILL.md (user)"]
+    );
+    assert_eq!(
+        scopes_of(&parsed(&fixture("pi-context.jsonl"))),
+        ["worker (-)", "/home/u/.pi/agent/AGENTS.md (user)", "/work/repo/AGENTS.md (repo)", "/home/u/.pi/skills/grill-me/SKILL.md (user)"]
+    );
 }

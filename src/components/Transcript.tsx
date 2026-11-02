@@ -75,6 +75,7 @@ export function Transcript({
   const [error, setError] = useState<string | null>(null);
   const [showTools, setShowTools] = useState(true);
   const [showThinking, setShowThinking] = useState(true);
+  const [showContext, setShowContext] = useState(true);
   const [find, setFind] = useState("");
   const [findOpen, setFindOpen] = useState(false);
   const [findIdx, setFindIdx] = useState(0);
@@ -127,9 +128,10 @@ export function Transcript({
     return buildBlocks(shown, forks).filter((b) => {
       if (!showTools && (b.type === "tools" || b.type === "orphan_result")) return false;
       if (!showThinking && b.type === "thinking") return false;
+      if (!showContext && b.type === "context") return false;
       return true;
     });
-  }, [events, forks, showTools, showThinking, countExits]);
+  }, [events, forks, showTools, showThinking, showContext, countExits]);
 
   const matches = useMemo(() => {
     const terms = find.toLowerCase().split(/\s+/).filter(Boolean);
@@ -275,6 +277,7 @@ export function Transcript({
       const hidden = a.anchors.find((r) => r.found);
       if (!hidden) return;
       if (hidden.kind === "thinking") setShowThinking(true);
+      else if (hidden.kind === "context") setShowContext(true);
       else setShowTools(true);
       setPendingJump(a);
       return;
@@ -286,11 +289,12 @@ export function Transcript({
     virt.scrollToIndex(i, { align: "center" });
   };
   // The annotation navigator steps through annotations in transcript order.
-  const anchorNumber = (a: Annotation) => Math.min(...a.anchors.filter((r) => r.found).map((r) => Number(r.anchor.slice(1)) || 0));
-  const noteStops = useMemo(
-    () => notes.annotations.filter((a) => a.anchors.some((r) => r.found)).sort((x, y) => anchorNumber(x) - anchorNumber(y)),
-    [notes.annotations],
-  );
+  // Context (c…) and conversation (e…) anchors are numbered apart, so order by place in the transcript.
+  const noteStops = useMemo(() => {
+    const position = new Map((events ?? []).map((e, i) => [e.anchor, i]));
+    const first = (a: Annotation) => Math.min(...a.anchors.filter((r) => r.found).map((r) => position.get(r.anchor) ?? Infinity));
+    return notes.annotations.filter((a) => a.anchors.some((r) => r.found)).sort((x, y) => first(x) - first(y));
+  }, [notes.annotations, events]);
   const [noteIdx, setNoteIdx] = useState<number | null>(null);
   const stepNote = (dir: 1 | -1) => {
     if (!noteStops.length) return;
@@ -632,71 +636,84 @@ export function Transcript({
         </header>
 
         <div className="t-toolbar">
-          <label className="toggle">
-            <input type="checkbox" checked={showTools} onChange={(e) => setShowTools(e.target.checked)} />
-            Tool calls
-          </label>
-          <label className="toggle">
-            <input type="checkbox" checked={showThinking} onChange={(e) => setShowThinking(e.target.checked)} />
-            Reasoning
-          </label>
-          {noteStops.length > 0 && (
-            <div className="err-nav note-nav" title="Jump between annotations">
-              <span className="err-dot" />
-              <span className="err-label">
-                {noteIdx === null ? noteStops.length : `${noteIdx + 1}/${noteStops.length}`}{" "}
-                {noteStops.length === 1 ? "annotation" : "annotations"}
-              </span>
-              <button aria-label="Previous annotation" onClick={() => stepNote(-1)}>
-                ↑
-              </button>
-              <button aria-label="Next annotation" onClick={() => stepNote(1)}>
-                ↓
-              </button>
+          {/* Two rows so nothing wraps: find and the view toggles, then the navigators. */}
+          <div className="t-toolbar-row">
+            <div className={`t-find ${findOpen || find ? "open" : ""}`}>
+              <input
+                ref={findRef}
+                placeholder="Find in session  ⌘F"
+                value={find}
+                onChange={(e) => {
+                  setFind(e.target.value);
+                  setFindIdx(0);
+                }}
+                onFocus={() => setFindOpen(true)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && matches.length) {
+                    setFindIdx((i) => (e.shiftKey ? (i - 1 + matches.length) % matches.length : (i + 1) % matches.length));
+                  }
+                  if (e.key === "Escape") {
+                    setFind("");
+                    setFindOpen(false);
+                    (e.target as HTMLInputElement).blur();
+                  }
+                }}
+              />
+              {find && (
+                <span className="count">
+                  {matches.length ? `${(findIdx % matches.length) + 1}/${matches.length}` : "0"}
+                </span>
+              )}
             </div>
-          )}
-          {errorStops.length > 0 && (
-            <div className="err-nav" title="Jump between failed tool calls and errors">
-              <span className="err-dot" />
-              <span className="err-label">
-                {errIdx === null ? errorStops.length : `${errIdx + 1}/${errorStops.length}`}{" "}
-                {errorStops.length === 1 ? "error" : "errors"}
-              </span>
-              <button aria-label="Previous error" onClick={() => stepError(-1)}>
-                ↑
-              </button>
-              <button aria-label="Next error" onClick={() => stepError(1)}>
-                ↓
-              </button>
+            <div className="t-toggles">
+              <label className="toggle">
+                <input type="checkbox" checked={showTools} onChange={(e) => setShowTools(e.target.checked)} />
+                Tool calls
+              </label>
+              <label className="toggle">
+                <input type="checkbox" checked={showThinking} onChange={(e) => setShowThinking(e.target.checked)} />
+                Reasoning
+              </label>
+              <label className="toggle" title="Instruction files, skills and agent definitions the agent was given">
+                <input type="checkbox" checked={showContext} onChange={(e) => setShowContext(e.target.checked)} />
+                Instructions
+              </label>
             </div>
-          )}
-          <div className={`t-find ${findOpen || find ? "open" : ""}`}>
-            <input
-              ref={findRef}
-              placeholder="Find in session  ⌘F"
-              value={find}
-              onChange={(e) => {
-                setFind(e.target.value);
-                setFindIdx(0);
-              }}
-              onFocus={() => setFindOpen(true)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && matches.length) {
-                  setFindIdx((i) => (e.shiftKey ? (i - 1 + matches.length) % matches.length : (i + 1) % matches.length));
-                }
-                if (e.key === "Escape") {
-                  setFind("");
-                  setFindOpen(false);
-                  (e.target as HTMLInputElement).blur();
-                }
-              }}
-            />
-            {find && (
-              <span className="count">
-                {matches.length ? `${(findIdx % matches.length) + 1}/${matches.length}` : "0"}
-              </span>
-            )}
           </div>
+          {(noteStops.length > 0 || errorStops.length > 0) && (
+            <div className="t-toolbar-row t-navs">
+              {noteStops.length > 0 && (
+                <div className="err-nav note-nav" title="Jump between annotations">
+                  <span className="err-dot" />
+                  <span className="err-label">
+                    {noteIdx === null ? noteStops.length : `${noteIdx + 1}/${noteStops.length}`}{" "}
+                    {noteStops.length === 1 ? "annotation" : "annotations"}
+                  </span>
+                  <button aria-label="Previous annotation" onClick={() => stepNote(-1)}>
+                    ↑
+                  </button>
+                  <button aria-label="Next annotation" onClick={() => stepNote(1)}>
+                    ↓
+                  </button>
+                </div>
+              )}
+              {errorStops.length > 0 && (
+                <div className="err-nav" title="Jump between failed tool calls and errors">
+                  <span className="err-dot" />
+                  <span className="err-label">
+                    {errIdx === null ? errorStops.length : `${errIdx + 1}/${errorStops.length}`}{" "}
+                    {errorStops.length === 1 ? "error" : "errors"}
+                  </span>
+                  <button aria-label="Previous error" onClick={() => stepError(-1)}>
+                    ↑
+                  </button>
+                  <button aria-label="Next error" onClick={() => stepError(1)}>
+                    ↓
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="t-body">
@@ -713,6 +730,7 @@ export function Transcript({
                     key={item.key}
                     data-index={item.index}
                     ref={virt.measureElement}
+                    onMouseEnter={(e) => centerOnFirstLine(e.currentTarget)}
                     className={`row ${matchSet.has(item.index) ? "hit" : ""} ${isCurrent ? "hit-current" : ""} ${item.index === focusIndex || (item.index === errorTarget?.block && b.type !== "tools") || (item.index === reveal?.block && b.type !== "tools") ? "focused" : ""}`}
                     style={{ transform: `translateY(${item.start}px)` }}
                   >
@@ -781,6 +799,26 @@ function childSummary(children: SessionRow[]): string {
   return [part(branches, "branch", "branches"), part(subs, "subagent", "subagents"), part(forks, "fork", "forks")]
     .filter(Boolean)
     .join(", ");
+}
+
+/** Moves a row's + to the middle of the first line of text its block
+ * shows, whatever the block's margins, padding and fonts. */
+function centerOnFirstLine(row: HTMLElement) {
+  const button = row.querySelector<HTMLElement>(":scope > .annotate-btn");
+  const block = row.firstElementChild;
+  if (!button || !block) return;
+  const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT, {
+    // Carets are drawn smaller than the text they sit beside.
+    acceptNode: (n) => (n.textContent?.trim() && !n.parentElement?.closest(".caret") ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT),
+  });
+  const text = walker.nextNode();
+  if (!text) return;
+  const range = document.createRange();
+  range.selectNodeContents(text);
+  const line = range.getClientRects()[0];
+  if (!line) return;
+  const top = line.top + line.height / 2 - row.getBoundingClientRect().top - button.offsetHeight / 2;
+  button.style.top = `${top}px`;
 }
 
 const forkNoun = (s: SessionRow) => (s.branch_of ? "Branch" : s.is_subagent ? "Subagent" : "Fork");
@@ -883,6 +921,8 @@ const BlockView = memo(function BlockView({
       return <Compaction ev={b.ev} reveal={reveal?.n} />;
     case "reference":
       return <Reference ev={b.ev} reveal={reveal?.n} />;
+    case "context":
+      return <ContextBlock ev={b.ev} reveal={reveal?.n} />;
     case "orphan_result":
       return (
         <section className="b-tools">
@@ -923,6 +963,40 @@ function Compaction({ ev, reveal }: { ev: SessionEvent; reveal?: number }) {
         <span className="rule" />
       </button>
       {open && <Markdown text={ev.text} className="compaction-md" />}
+    </section>
+  );
+}
+
+// Instruction files go unlabelled (their names say what they are); the rest say what they are.
+const CONTEXT_LABEL = { instructions: null, skill: "Skill", agent: "Agent", mcp: "MCP" };
+
+/** What the harness gave the agent to follow (a CLAUDE.md, a skill…), folded
+ * where it arrived. A later unchanged copy says so. */
+function ContextBlock({ ev, reveal }: { ev: SessionEvent; reveal?: number }) {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (reveal) setOpen(true);
+  }, [reveal]);
+  const c = ev.context;
+  const name = c?.name ?? "";
+  // A path shows its file name, except a skill's SKILL.md, which shows its folder's name.
+  const parts = name.replace(/\/+$/, "").split("/");
+  const short = parts.length > 1 ? (parts.at(-1) === "SKILL.md" ? parts.at(-2)! : parts.at(-1)!) : name;
+  return (
+    <section className={`b-context ${c?.repeat ? "repeat" : ""}`}>
+      <button onClick={() => setOpen((o) => !o)} aria-expanded={open} title={name}>
+        <span className="caret">{open ? "▾" : "▸"}</span>
+        {c && CONTEXT_LABEL[c.kind] && <span className="b-context-kind">{CONTEXT_LABEL[c.kind]}</span>}
+        <span className="b-context-name">{short}</span>
+        {c?.scope && <span className="b-context-scope">{c.scope}</span>}
+        {c?.repeat && <span className="b-context-scope">sent again, unchanged</span>}
+      </button>
+      {open && (
+        <>
+          {short !== name && <div className="b-context-path">{name}</div>}
+          <Markdown text={ev.text} className="context-md" />
+        </>
+      )}
     </section>
   );
 }

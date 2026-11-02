@@ -1,4 +1,4 @@
-# Session bundle format, version 1
+# Session bundle format, version 2
 
 A session bundle is one session, plus the subagents the sender chose, in a single file that another Session Player can import and replay. The importer doesn't need the agent's JSONL log, the agent installed, or any of the sender's directories. The file extension is `.spsession`, and the format is implemented in `src-tauri/src/bundle.rs`.
 
@@ -7,7 +7,7 @@ The file is one UTF-8 JSON object:
 ```json
 {
   "format": "session-player.bundle",
-  "version": 1,
+  "version": 2,
   "exported_at": 1767261600000,
   "exporter": "Session Player 0.7.0",
   "sessions": [ /* session objects; the first is the one exported */ ],
@@ -39,9 +39,11 @@ Timestamps are milliseconds since the Unix epoch, in UTC.
 
 ### Events
 
-Events use the same normalized model the app builds from every agent's log: `kind` (`user`, `assistant`, `thinking`, `tool_call`, `tool_result`, `command`, `system`, `compaction`), `ts`, `text`, and the optional fields `tool_name`, `call_id`, `is_error`, `exit_code`, `failed_exit`, `model`, `images`, `sidechain`, `entry`.
+Events use the same normalized model the app builds from every agent's log: `kind` (`user`, `assistant`, `thinking`, `tool_call`, `tool_result`, `command`, `system`, `compaction`, `context`), `ts`, `text`, and the optional fields `tool_name`, `call_id`, `is_error`, `exit_code`, `failed_exit`, `model`, `images`, `sidechain`, `entry`.
 
-Each event also has an `anchor`, `e<n>`, where `n` is the event's position in the transcript at export time. Anchors are unique within a session, and import never changes them, so a later note or comment can refer to an event across export and import. Anchors are scoped to the bundle; they aren't positions in the sender's log.
+A `context` event is something the harness put in the agent's prompt, with its text in `text` and a `context` field `{kind, name, repeat, scope}`. The `scope` is `user`, `repo`, `local` or `managed`, or absent when the document isn't a file. The `kind` is `instructions` (CLAUDE.md, CLAUDE.local.md, AGENTS.md…), `skill`, `agent` (a subagent's definition) or `mcp` (an MCP server's instructions). The `name` is the file's path, or the skill, agent or server's name. `repeat` marks a document sent again unchanged later in the session. These documents travel in full, so the export sheet lists them for review.
+
+Each event also has an `anchor`: `e<n>` for the conversation's events, counted in order, and `c<n>` for context documents, counted apart so that context doesn't renumber the conversation. Anchors are unique within a session, and import never changes them, so a later note or comment can refer to an event across export and import. Anchors are scoped to the bundle; they aren't positions in the sender's log.
 
 An image in `images` is a reference, `attachment:<attachment id>`, not the image itself.
 
@@ -58,7 +60,7 @@ Each annotation marks a moment in the session; how the session went as a whole i
 | Field | Meaning |
 |---|---|
 | `id` | Unique, kept through export and import, so a re-import updates the same annotation |
-| `kind` | `tool_error`, `human_intervention`, `agent_stuck`, `human_frustration`, `wrong_assumption`, `wasted_work`, `environment`, `missing_context`, `automatable`, `key_decision` or `other` |
+| `kind` | `tool_error`, `human_intervention`, `agent_stuck`, `human_frustration`, `wrong_assumption`, `wasted_work`, `environment`, `missing_context`, `automatable`, `key_decision`, `ignored_instruction` or `other` |
 | `note` | Free text |
 | `anchors` | The events it is about, at least one, each `{anchor, kind, ts, entry}`, where `entry` is set for pi |
 | `author` | `{type: "person", name}` (`name` may be null) or `{type: "model", model}` |
@@ -116,5 +118,8 @@ When a session ID is already in the library:
 An imported session and a local session with the same ID are different copies. Both are listed, and each nests only under a parent of its own kind.
 
 ## Versioning
+
+Version 2 added `context` events and the `ignored_instruction` annotation kind. A version 1 reader rejects a version 2 bundle with a message to update, instead of failing on the new values.
+
 
 `version` changes when a reader for an older version can no longer read the file correctly. New optional fields don't need a new version. A reader rejects versions newer than it knows. It should keep reading older versions.

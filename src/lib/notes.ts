@@ -18,6 +18,7 @@ export const KIND_LABEL: Record<AnnotationKind, string> = {
   missing_context: "Missing context",
   automatable: "Worth automating",
   key_decision: "Key decision",
+  ignored_instruction: "Ignored instruction",
   other: "Other",
 };
 
@@ -30,7 +31,7 @@ export const OUTCOME_LABEL: Record<Outcome, string> = {
   failed: "Failed",
 };
 
-export const ref = (e: SessionEvent): EventRef => ({ anchor: e.anchor ?? "", kind: e.kind, ts: e.ts, entry: e.entry });
+export const ref = (e: SessionEvent): EventRef => ({ anchor: e.anchor ?? "", kind: e.kind, ts: e.ts, entry: e.entry, name: e.context?.name });
 
 /** The events a block shows, which an annotation on the block points at. */
 export function blockEvents(b: Block): SessionEvent[] {

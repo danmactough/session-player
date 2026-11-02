@@ -12,11 +12,12 @@ use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use crate::annotations::{self, Annotation, EventRef, SessionMeta};
-use crate::model::{Event, EventKind, Parsed, Source, Tokens};
+use crate::model::{ContextSource, Event, EventKind, Parsed, Source, Tokens};
 use crate::parse;
 
 pub const FORMAT: &str = "session-player.bundle";
-pub const VERSION: u32 = 1;
+/// 2: events can be `context`, and annotations `ignored_instruction`.
+pub const VERSION: u32 = 2;
 pub const EXTENSION: &str = "spsession";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -438,7 +439,7 @@ fn image_attachment(id: String, session: &str, anchor: &str, image: &str) -> Att
 
 /// The events the transcript renders as Markdown (prompts are plain text).
 fn renders_markdown(kind: EventKind) -> bool {
-    matches!(kind, EventKind::Assistant | EventKind::Thinking | EventKind::Compaction)
+    matches!(kind, EventKind::Assistant | EventKind::Thinking | EventKind::Compaction | EventKind::Context)
 }
 
 fn is_remote(url: &str) -> bool {
@@ -985,6 +986,9 @@ pub struct SessionSummary {
     pub events: usize,
     pub has_details: bool,
     pub annotations: usize,
+    /// The instruction files, skills, agent definitions and MCP server
+    /// instructions in the transcript, each once.
+    pub context: Vec<ContextSource>,
 }
 
 pub fn summarize(bundle: &Bundle) -> Summary {
@@ -1013,6 +1017,13 @@ pub fn summarize(bundle: &Bundle) -> Summary {
                 events: s.events.len(),
                 has_details: s.meta.is_some(),
                 annotations: s.annotations.len(),
+                // A document edited mid-session is listed once.
+                context: s.events.iter().filter_map(|e| e.context.clone()).fold(Vec::new(), |mut list: Vec<ContextSource>, c| {
+                    if !list.iter().any(|x| x.kind == c.kind && x.name == c.name) {
+                        list.push(ContextSource { repeat: false, ..c });
+                    }
+                    list
+                }),
             })
             .collect(),
         omitted: bundle.sessions.iter().flat_map(|s| s.omitted.iter().cloned()).collect(),

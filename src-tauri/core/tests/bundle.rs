@@ -2,8 +2,8 @@
 // files deleted before the recipient replays them.
 use std::path::{Path, PathBuf};
 
-use session_player_lib::test_support::bundle::{self, ExportRequest};
-use session_player_lib::test_support::index;
+use session_player_core::test_support::bundle::{self, ExportRequest};
+use session_player_core::test_support::index;
 
 /// A sender's machine: agent folders laid out the way each agent writes them,
 /// indexed into their own database.
@@ -25,6 +25,7 @@ impl Sender {
         std::fs::copy(fx.join("claude-subagent.jsonl"), claude.join("abc/subagents/agent-a1.jsonl")).unwrap();
         std::fs::copy(fx.join("claude-attach.jsonl"), claude.join("att.jsonl")).unwrap();
         std::fs::copy(fx.join("claude-ide.jsonl"), claude.join("ide.jsonl")).unwrap();
+        std::fs::copy(fx.join("claude-context.jsonl"), claude.join("ctx.jsonl")).unwrap();
         let pi = root.join("pi/--work-pi--");
         std::fs::create_dir_all(&pi).unwrap();
         std::fs::copy(fx.join("pi.jsonl"), pi.join("2026-01-01_01a-pi.jsonl")).unwrap();
@@ -74,7 +75,7 @@ impl Recipient {
         Recipient { library: base.join("library"), base, conn }
     }
 
-    fn reindex(&mut self) -> Vec<session_player_lib::test_support::Row> {
+    fn reindex(&mut self) -> Vec<session_player_core::test_support::Row> {
         index::run(&mut self.conn, false, Some(&self.library), &|_, _| {}).unwrap();
         index::list(&self.conn).unwrap()
     }
@@ -170,7 +171,8 @@ fn a_pi_branch_exports_its_whole_path_and_lists_the_others() {
     assert_eq!(s.title, "Retry: stress test my caching plan");
     // The shared history before the split comes along so the branch reads on its own.
     let texts: Vec<_> = s.events.iter().map(|e| e.text.as_str()).collect();
-    assert_eq!(texts, ["/skill:grill-me", "stress test my caching plan", "abandoned branch"]);
+    // The skill the prompt invoked comes along as context.
+    assert_eq!(texts, ["/skill:grill-me", "long skill body", "stress test my caching plan", "abandoned branch"]);
     let omitted: Vec<_> = s.omitted.iter().map(|r| (r.relation, r.id.as_str(), r.title.as_str())).collect();
     assert_eq!(omitted, [(bundle::Relation::Branch, "pi:01a-pi", "Caching plan review")]);
 
@@ -185,7 +187,7 @@ fn a_pi_branch_exports_its_whole_path_and_lists_the_others() {
     let rows = recipient.reindex();
     assert_eq!(rows[0].title, "Retry: stress test my caching plan");
     // Its notes are kept apart from those of an imported copy of the active branch.
-    assert_eq!(session_player_lib::test_support::annotations::session_key(&rows[0]), "bundle:pi:01a-pi@a3");
+    assert_eq!(session_player_core::test_support::annotations::session_key(&rows[0]), "bundle:pi:01a-pi@a3");
     // Other branches stay with the sender.
     assert!(rows[0].branches.is_empty());
     assert_eq!(bundle::load_events(Path::new(&rows[0].path)).unwrap(), s.events);
@@ -242,7 +244,7 @@ fn invalid_bundles_are_rejected_with_a_reason_and_nothing_is_imported() {
     let recipient = Recipient::new("invalid");
     let cases: Vec<(&str, Box<dyn FnOnce(&mut serde_json::Value)>, &str)> = vec![
         ("format", Box::new(|v| v["format"] = "something-else".into()), "isn't a Session Player session bundle"),
-        ("newer", Box::new(|v| v["version"] = 2.into()), "newer version of Session Player"),
+        ("newer", Box::new(|v| v["version"] = 3.into()), "newer version of Session Player"),
         ("unversioned", Box::new(|v| v.as_object_mut().unwrap().remove("version").map(|_| ()).unwrap()), "no version"),
         ("empty", Box::new(|v| v["sessions"] = serde_json::json!([])), "no sessions"),
         ("missing-field", Box::new(|v| v["sessions"][0].as_object_mut().unwrap().remove("events").map(|_| ()).unwrap()), "missing field `events`"),
@@ -529,18 +531,18 @@ fn nothing_is_imported_when_the_exported_session_is_empty() {
     assert!(!recipient.library.exists() || std::fs::read_dir(&recipient.library).unwrap().count() == 0);
 }
 
-fn event_ref(anchor: &str, kind: &str, ts: i64) -> session_player_lib::test_support::annotations::EventRef {
+fn event_ref(anchor: &str, kind: &str, ts: i64) -> session_player_core::test_support::annotations::EventRef {
     serde_json::from_value(serde_json::json!({ "anchor": anchor, "kind": kind, "ts": ts })).unwrap()
 }
 
 /// The prompt in claude.jsonl.
-fn prompt_ref() -> session_player_lib::test_support::annotations::EventRef {
+fn prompt_ref() -> session_player_core::test_support::annotations::EventRef {
     event_ref("e1", "user", 1767261602000)
 }
 
 #[test]
 fn details_and_annotations_travel_with_the_session() {
-    use session_player_lib::test_support::annotations as notes;
+    use session_player_core::test_support::annotations as notes;
     let sender = Sender::new("notes");
     let meta = notes::SessionMeta { key: "local:claude:abc".into(), outcome_note: Some("Fixed the login test".into()), components: vec!["packages/auth".into()], ..Default::default() };
     notes::save_meta(&sender.conn, &meta).unwrap();
@@ -551,9 +553,9 @@ fn details_and_annotations_travel_with_the_session() {
     )
     .unwrap();
     let sub_path = sender.root.join("claude/-work-repo/abc/subagents/agent-a1.jsonl");
-    let sub_events = session_player_lib::test_support::parse::parse_file(&sub_path, session_player_lib::test_support::parse::detect(&sub_path).unwrap()).unwrap().events;
+    let sub_events = session_player_core::test_support::parse::parse_file(&sub_path, session_player_core::test_support::parse::detect(&sub_path).unwrap()).unwrap().events;
     let mut suggestion = notes::Annotation::new("local:claude:agent-a1", notes::Kind::KeyDecision, "read the login code", vec![event_ref("e0", "user", 1767261606000)], notes::Author::Model { model: "claude-haiku-5-5".into() });
-    suggestion.revision = Some(session_player_lib::test_support::generate::revision(&sub_events));
+    suggestion.revision = Some(session_player_core::test_support::generate::revision(&sub_events));
     notes::save_annotation(&sender.conn, suggestion).unwrap();
 
     let exported = sender.export("claude/-work-repo/abc.jsonl", None, None);
@@ -561,7 +563,7 @@ fn details_and_annotations_travel_with_the_session() {
     assert_eq!(exported.sessions[0].annotations.len(), 1);
     assert_eq!(exported.sessions[1].annotations[0].author, notes::Author::Model { model: "claude-haiku-5-5".into() });
     // Still current against the transcript as bundled, whose text export rewrites.
-    assert_eq!(exported.sessions[1].annotations[0].revision, Some(session_player_lib::test_support::generate::revision(&exported.sessions[1].events)));
+    assert_eq!(exported.sessions[1].annotations[0].revision, Some(session_player_core::test_support::generate::revision(&exported.sessions[1].events)));
     let preview = bundle::summarize(&exported);
     assert_eq!((preview.sessions[0].annotations, preview.sessions[0].has_details), (1, true));
     let file = sender.save(&exported, "abc.spsession");
@@ -593,7 +595,7 @@ fn details_and_annotations_travel_with_the_session() {
 
 #[test]
 fn imported_annotations_never_take_over_another_sessions() {
-    use session_player_lib::test_support::annotations as notes;
+    use session_player_core::test_support::annotations as notes;
     let sender = Sender::new("steal");
     let mine = notes::save_annotation(&sender.conn, notes::Annotation::new("local:claude:abc", notes::Kind::Other, "on my local copy", vec![prompt_ref()], notes::Author::Person { name: None })).unwrap();
     // Importing your own export: the bundle's annotation has the same id as the local one.
@@ -610,7 +612,7 @@ fn imported_annotations_never_take_over_another_sessions() {
 
 #[test]
 fn replacing_keeps_annotations_the_recipient_edited() {
-    use session_player_lib::test_support::annotations as notes;
+    use session_player_core::test_support::annotations as notes;
     let sender = Sender::new("replace-edits");
     let theirs = notes::save_annotation(&sender.conn, notes::Annotation::new("local:claude:abc", notes::Kind::Other, "first", vec![prompt_ref()], notes::Author::Person { name: None })).unwrap();
     notes::save_meta(&sender.conn, &notes::SessionMeta { key: "local:claude:abc".into(), components: vec!["sender".into()], ..Default::default() }).unwrap();
@@ -636,4 +638,36 @@ fn replacing_keeps_annotations_the_recipient_edited() {
     assert_eq!(notes::meta(&recipient.conn, key).unwrap().unwrap().components, ["recipient"]);
     assert_eq!(report.kept_notes, 2);
     let _ = theirs;
+}
+
+#[test]
+fn the_preview_lists_the_context_documents_going_into_the_file() {
+    let sender = Sender::new("context");
+    let exported = sender.export("claude/-work-repo/ctx.jsonl", None, None);
+    let preview = bundle::summarize(&exported);
+    let context: Vec<_> = preview.sessions[0].context.iter().map(|c| (serde_json::to_value(c.kind).unwrap().as_str().unwrap().to_string(), c.name.clone())).collect();
+    // Each document once, though the session was given CLAUDE.md twice.
+    assert_eq!(
+        context,
+        [
+            ("instructions".to_string(), "/home/u/.claude/CLAUDE.md".to_string()),
+            ("instructions".to_string(), "/work/repo/CLAUDE.local.md".to_string()),
+            ("mcp".to_string(), "docs".to_string()),
+            ("skill".to_string(), "/home/u/.claude/skills/deploy".to_string()),
+        ]
+    );
+    assert!(exported.sessions[0].events.iter().filter(|e| e.context.is_some()).count() == 5, "every copy is in the file itself");
+}
+
+#[test]
+fn bundles_are_version_2_and_a_changed_document_is_listed_once() {
+    let sender = Sender::new("v2");
+    let mut exported = sender.export("claude/-work-repo/ctx.jsonl", None, None);
+    assert_eq!(exported.version, 2);
+    // CLAUDE.md edited mid-session: a different text under the same name.
+    let again = exported.sessions[0].events.iter_mut().filter(|e| e.context.as_ref().is_some_and(|c| c.repeat)).next().unwrap();
+    again.text = "# Rules\nUse spaces.".into();
+    again.context.as_mut().unwrap().repeat = false;
+    let names: Vec<_> = bundle::summarize(&exported).sessions[0].context.iter().map(|c| c.name.clone()).collect();
+    assert_eq!(names.iter().filter(|n| n.ends_with("CLAUDE.md")).count(), 1, "{names:?}");
 }

@@ -53,6 +53,33 @@ pub struct SessionMeta {
     pub tags: Vec<String>,
     pub links: Vec<Link>,
     pub updated_at: i64,
+    /// Fields ("title", "goal", "context", "outcome", "tags") holding a
+    /// model's suggestion that no one has edited or accepted yet.
+    pub generated: Vec<String>,
+    pub generated_by: Option<Generation>,
+}
+
+/// Which model made the suggestions, when, and from which transcript.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Generation {
+    pub model: String,
+    pub at: i64,
+    /// `generate::revision` of the transcript; a different one now means the
+    /// suggestions are out of date.
+    pub revision: String,
+}
+
+/// The value of one of the fields `SessionMeta::generated` can name. The
+/// outcome's explanation goes with the outcome.
+pub fn meta_field(meta: &SessionMeta, name: &str) -> serde_json::Value {
+    match name {
+        "title" => serde_json::json!(meta.title),
+        "goal" => serde_json::json!(meta.goal),
+        "context" => serde_json::json!(meta.context),
+        "outcome" => serde_json::json!([meta.outcome, meta.outcome_note]),
+        "tags" => serde_json::json!(meta.tags),
+        _ => serde_json::Value::Null,
+    }
 }
 
 impl SessionMeta {
@@ -89,9 +116,24 @@ pub fn meta(conn: &Connection, key: &str) -> anyhow::Result<Option<SessionMeta>>
     Ok(json.map(|j| serde_json::from_str(&j)).transpose()?)
 }
 
-/// Saves the metadata for `meta.key`. Metadata with nothing filled in is
-/// removed rather than stored.
+/// Saves metadata a person edited. A field stays marked as a suggestion
+/// only if `meta.generated` still lists it and its value didn't change, so
+/// editing a suggestion, or leaving it out of `generated`, accepts it.
 pub fn save_meta(conn: &Connection, meta: &SessionMeta) -> anyhow::Result<()> {
+    let existing = self::meta(conn, &meta.key)?;
+    let mut meta = meta.clone();
+    let edited = meta.clone();
+    meta.generated.retain(|name| {
+        existing
+            .as_ref()
+            .is_some_and(|old| old.generated.contains(name) && meta_field(old, name) == meta_field(&edited, name))
+    });
+    store_meta(conn, &meta)
+}
+
+/// Writes the metadata as given. Metadata with nothing filled in is
+/// removed rather than stored.
+pub fn store_meta(conn: &Connection, meta: &SessionMeta) -> anyhow::Result<()> {
     // Links are shown as clickable; only web addresses open in the browser.
     if let Some(bad) = meta.links.iter().find(|l| !(l.url.starts_with("https://") || l.url.starts_with("http://"))) {
         anyhow::bail!("{} isn't a web address (http:// or https://)", bad.url);
@@ -172,11 +214,36 @@ pub struct Annotation {
     pub author: Author,
     pub created_at: i64,
     pub updated_at: i64,
+    /// For a model's annotation: someone accepted or edited it, so
+    /// regenerating keeps it.
+    #[serde(default)]
+    pub accepted: bool,
+    /// For a model's annotation: why it was made, and how sure the model was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rationale: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<String>,
+    /// For a model's annotation: the transcript revision it was made from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
 }
 
 impl Annotation {
     pub fn new(key: &str, kind: Kind, note: &str, anchors: Vec<EventRef>, author: Author) -> Annotation {
-        Annotation { id: String::new(), key: key.into(), kind, note: note.into(), anchors, author, created_at: 0, updated_at: 0 }
+        Annotation {
+            id: String::new(),
+            key: key.into(),
+            kind,
+            note: note.into(),
+            anchors,
+            author,
+            created_at: 0,
+            updated_at: 0,
+            accepted: false,
+            rationale: None,
+            confidence: None,
+            revision: None,
+        }
     }
 }
 
@@ -189,7 +256,8 @@ fn new_id() -> String {
 }
 
 /// Creates the annotation (when `id` is empty) or updates the saved one,
-/// returning it as stored.
+/// returning it as stored. Saving a model's annotation again means a person
+/// edited or accepted it.
 pub fn save_annotation(conn: &Connection, mut a: Annotation) -> anyhow::Result<Annotation> {
     if a.note.trim().is_empty() && a.anchors.is_empty() {
         anyhow::bail!("An annotation needs a note or an event to point at");
@@ -205,6 +273,8 @@ pub fn save_annotation(conn: &Connection, mut a: Annotation) -> anyhow::Result<A
         let existing: Annotation = serde_json::from_str(&existing)?;
         a.created_at = existing.created_at;
         a.key = existing.key;
+        a.author = existing.author;
+        a.accepted = matches!(a.author, Author::Model { .. });
         a.updated_at = now().max(a.created_at);
     }
     for r in &mut a.anchors {

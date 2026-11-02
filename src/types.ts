@@ -159,6 +159,65 @@ export interface LibraryError {
   error: string;
 }
 
+export type Outcome = "unknown" | "succeeded" | "partial" | "failed";
+
+/** What a person has written about a session; the transcript's own details stay on SessionRow. */
+export interface SessionMeta {
+  key: string;
+  title: string | null;
+  goal: string | null;
+  context: string | null;
+  outcome: Outcome;
+  outcome_note: string | null;
+  tags: string[];
+  links: { url: string; label: string | null }[];
+  updated_at: number;
+}
+
+export type AnnotationKind =
+  | "tool_error"
+  | "human_intervention"
+  | "agent_stuck"
+  | "human_frustration"
+  | "wrong_assumption"
+  | "wasted_work"
+  | "environment"
+  | "missing_context"
+  | "automatable"
+  | "key_decision"
+  | "other";
+
+export interface EventRef {
+  anchor: string;
+  kind: EventKind;
+  ts: number | null;
+  /** Whether the event is in the transcript as loaded. */
+  found?: boolean;
+}
+
+export type Author = { type: "person"; name: string | null } | { type: "model"; model: string };
+
+export interface Annotation {
+  /** Empty until saved. */
+  id: string;
+  key: string;
+  kind: AnnotationKind;
+  note: string;
+  /** None means the annotation is about the whole session. */
+  anchors: EventRef[];
+  author: Author;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface NoteSummary {
+  key: string;
+  title: string | null;
+  outcome: Outcome;
+  tags: string[];
+  kinds: AnnotationKind[];
+}
+
 export interface OpenTarget {
   id: string;
   label: string;

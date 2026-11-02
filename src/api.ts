@@ -3,6 +3,9 @@ import type {
   ExportPreview,
   ImportReport,
   LibraryError,
+  Annotation,
+  NoteSummary,
+  SessionMeta,
   OnConflict,
   OpenTarget,
   RootInfo,
@@ -48,4 +51,11 @@ export const api = {
     invoke<ImportReport>("import_bundle", { path, onConflict: onConflict ?? null }),
   removeImported: (path: string) => invoke<void>("remove_imported", { path }),
   libraryErrors: () => invoke<LibraryError[]>("library_errors"),
+  sessionNotes: (key: string, path: string, branch?: string) =>
+    invoke<{ meta: SessionMeta | null; annotations: Annotation[] }>("session_notes", { key, path, branch: branch ?? null }),
+  /** Resolves to the metadata as saved, or null when every field was empty. */
+  saveMeta: (meta: SessionMeta) => invoke<SessionMeta | null>("save_meta", { meta }),
+  saveAnnotation: (annotation: Annotation) => invoke<Annotation>("save_annotation", { annotation }),
+  deleteAnnotation: (id: string) => invoke<void>("delete_annotation", { id }),
+  noteSummaries: () => invoke<NoteSummary[]>("note_summaries"),
 };

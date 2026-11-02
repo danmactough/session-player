@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { api } from "./api";
-import type { IndexStats, OnConflict, SearchHit, SessionRow, SortKey, Source } from "./types";
+import type { IndexStats, NoteSummary, OnConflict, SearchHit, SessionRow, SortKey, Source } from "./types";
+import { KIND_LABEL, OUTCOME_LABEL, sessionKey } from "./lib/notes";
 import { basename, relTime, setHome, SOURCE_LABEL, tildify } from "./lib/format";
 import { SessionList } from "./components/SessionList";
 import { Transcript } from "./components/Transcript";
@@ -10,7 +11,7 @@ import { SettingsSheet } from "./components/SettingsSheet";
 import { ShortcutsSheet } from "./components/ShortcutsSheet";
 import { ExportSheet } from "./components/ExportSheet";
 import { ImportSheet, type ImportState } from "./components/ImportSheet";
-import { Menu } from "./components/Menu";
+import { Menu, type MenuOption } from "./components/Menu";
 import { SourceIcon } from "./components/AppIcon";
 import { applyTheme, storedTheme, type Theme } from "./lib/theme";
 import { ProjectNav, type ProjectSummary } from "./components/ProjectNav";
@@ -53,6 +54,10 @@ interface Prefs {
    * "copy" (the default), or an app such as "claude". Kept per agent, so
    * choosing ChatGPT for a Codex session doesn't change Claude Code sessions. */
   openWith: Partial<Record<Source, string>>;
+  /** Keeps only sessions with this outcome, tag or annotation kind: "outcome:<o>", "tag:<t>", "kind:<k>", or "" for all. */
+  noteFilter: string;
+  /** Shown as the author of annotations. */
+  authorName: string;
 }
 const DEFAULT_PREFS: Prefs = {
   projects: [],
@@ -67,6 +72,8 @@ const DEFAULT_PREFS: Prefs = {
   countExits: false,
   theme: storedTheme(),
   openWith: {},
+  noteFilter: "",
+  authorName: "",
 };
 
 export default function App() {
@@ -112,7 +119,17 @@ export default function App() {
     if (typeof path === "string") await importBundle(path);
   }, [importBundle]);
 
+  // Titles, outcomes, tags and annotation kinds people have added, by session key.
+  const [notes, setNotes] = useState<Map<string, NoteSummary>>(() => new Map());
+  const reloadNotes = useCallback(() => {
+    api
+      .noteSummaries()
+      .then((list) => setNotes(new Map(list.map((n) => [n.key, n]))))
+      .catch((e) => api.log("error", `note_summaries failed: ${e}`));
+  }, []);
+
   const reload = useCallback(() => {
+    reloadNotes();
     api
       .listSessions()
       .then((rows) => {
@@ -123,7 +140,7 @@ export default function App() {
         api.log("error", `list_sessions failed: ${e}`);
       });
     setVersion((v) => v + 1);
-  }, []);
+  }, [reloadNotes]);
 
   useEffect(() => {
     api.homeDir().then(setHome);
@@ -204,6 +221,23 @@ export default function App() {
 
   const hiddenSet = useMemo(() => new Set(p.hiddenProjects), [p.hiddenProjects]);
 
+  // A session passes the note filter when it, or one of its pi branches, has the outcome, tag or kind.
+  const passesNoteFilter = useCallback(
+    (s: SessionRow) => {
+      const [what, value] = p.noteFilter.split(/:(.*)/s);
+      if (!value) return true;
+      const keys = [sessionKey(s), ...(s.branches ?? []).map((b) => `${sessionKey(s)}@${b.leaf}`)];
+      return keys.some((k) => {
+        const n = notes.get(k);
+        if (!n) return what === "outcome" && value === "unknown";
+        if (what === "outcome") return n.outcome === value;
+        if (what === "tag") return n.tags.includes(value);
+        return (n.kinds as string[]).includes(value);
+      });
+    },
+    [p.noteFilter, notes],
+  );
+
   const base = useMemo(
     () =>
       (sessions ?? []).filter(
@@ -211,9 +245,10 @@ export default function App() {
           !hiddenSet.has(s.project) &&
           p.sources.includes(s.source) &&
           (p.showSub || !s.is_subagent) &&
-          (!p.errorsOnly || s.error_count > 0),
+          (!p.errorsOnly || s.error_count > 0) &&
+          passesNoteFilter(s),
       ),
-    [sessions, hiddenSet, p.sources, p.showSub, p.errorsOnly],
+    [sessions, hiddenSet, p.sources, p.showSub, p.errorsOnly, passesNoteFilter],
   );
 
   const projects = useMemo(() => {
@@ -299,10 +334,11 @@ export default function App() {
     const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
     return (s: SessionRow) => {
       if (hits?.has(s.path)) return true;
-      const hay = `${s.title} ${s.first_prompt ?? ""} ${s.cwd ?? ""} ${s.git_branch ?? ""} ${s.native_id}`.toLowerCase();
+      const n = notes.get(sessionKey(s));
+      const hay = `${s.title} ${n?.title ?? ""} ${n?.tags.join(" ") ?? ""} ${s.first_prompt ?? ""} ${s.cwd ?? ""} ${s.git_branch ?? ""} ${s.native_id}`.toLowerCase();
       return terms.every((t) => hay.includes(t));
     };
-  }, [query, hits]);
+  }, [query, hits, notes]);
 
   const matchCounts = useMemo(() => {
     if (!searching) return { project: 0, all: 0 };
@@ -323,7 +359,7 @@ export default function App() {
       const terms = q.split(/\s+/);
       out = out.filter(matchesQuery);
       const rank = (s: SessionRow) => {
-        const title = s.title.toLowerCase();
+        const title = (notes.get(sessionKey(s))?.title ?? s.title).toLowerCase();
         const inTitle = terms.every((t) => title.includes(t)) ? -1000 : 0;
         return inTitle + (hits?.get(s.path)?.rank ?? 0);
       };
@@ -345,7 +381,7 @@ export default function App() {
         break;
     }
     return sorted;
-  }, [base, filtered, scoped, inSelection, p.sort, query, hits, matchesQuery]);
+  }, [base, filtered, scoped, inSelection, p.sort, query, hits, matchesQuery, notes]);
 
   // Search results stay flat; browsing nests children under their session.
   const rows = useMemo<ListRow[]>(
@@ -473,19 +509,41 @@ export default function App() {
     [sessions, hiddenSet, p.sources, p.showSub],
   );
 
+  // Only outcomes, tags and kinds that some session has are offered.
+  const noteFilterOptions = useMemo(() => {
+    const all = [...notes.values()];
+    const tags = [...new Set(all.flatMap((n) => n.tags))].sort((a, b) => a.localeCompare(b));
+    const kinds = (Object.keys(KIND_LABEL) as (keyof typeof KIND_LABEL)[]).filter((k) => all.some((n) => n.kinds.includes(k)));
+    const options: MenuOption<string>[] = [{ key: "", label: "All sessions" }];
+    if (all.some((n) => n.outcome !== "unknown")) {
+      options.push({
+        key: "outcome",
+        label: "Outcome",
+        submenu: (Object.keys(OUTCOME_LABEL) as (keyof typeof OUTCOME_LABEL)[]).map((o) => ({ key: `outcome:${o}`, label: OUTCOME_LABEL[o] })),
+      });
+    }
+    if (tags.length) options.push({ key: "tag", label: "Tag", submenu: tags.map((t) => ({ key: `tag:${t}`, label: t })) });
+    if (kinds.length) options.push({ key: "kind", label: "Annotation", submenu: kinds.map((k) => ({ key: `kind:${k}`, label: KIND_LABEL[k] })) });
+    // A saved filter whose value no longer exists stays visible so it can be cleared.
+    if (p.noteFilter && !options.some((o) => o.submenu?.some((c) => c.key === p.noteFilter))) {
+      options.push({ key: p.noteFilter, label: p.noteFilter.replace(":", ": ") });
+    }
+    return options;
+  }, [notes, p.noteFilter]);
+
   // Changing what a list shows starts it at the top; changes that happen
   // under the user (expanding a row, new sessions arriving, hiding or dragging
   // a project) keep the scroll position. A new object marks a reset.
   const projectListKey = useMemo(
     () => ({}),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [filterText, p.sources, p.errorsOnly, p.showSub, p.countExits, p.projectSort],
+    [filterText, p.sources, p.errorsOnly, p.showSub, p.countExits, p.projectSort, p.noteFilter],
   );
   // Search results are ranked, so new full-text hits re-rank them from the top too.
   const sessionListKey = useMemo(
     () => ({}),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [p.projects, filterText, p.sources, p.errorsOnly, p.showSub, p.countExits, p.sort, query, searchAll, hits],
+    [p.projects, filterText, p.sources, p.errorsOnly, p.showSub, p.countExits, p.sort, query, searchAll, hits, p.noteFilter],
   );
 
   const empty = sessions !== null && sessions.length === 0;
@@ -638,6 +696,15 @@ export default function App() {
               {!searching && (
                 <Menu className="caps-sort" label="Sort sessions" value={p.sort} options={SORTS} onChange={(sort) => update({ sort })} />
               )}
+              {noteFilterOptions.length > 1 && (
+                <Menu
+                  className="caps-sort"
+                  label="Filter sessions"
+                  value={p.noteFilter}
+                  options={noteFilterOptions}
+                  onChange={(noteFilter) => update({ noteFilter: noteFilter.includes(":") ? noteFilter : "" })}
+                />
+              )}
             </div>
           </div>
           {searching && (
@@ -696,6 +763,7 @@ export default function App() {
             onToggle={toggleExpanded}
             hits={hits}
             showProject={!(scoped && p.projects.length === 1)}
+            notes={notes}
             groupByDay={!query && (p.sort === "recent" || p.sort === "oldest")}
             resetKey={sessionListKey}
           />
@@ -716,6 +784,8 @@ export default function App() {
             countExits={p.countExits}
             openWith={p.openWith[selected.source]}
             onOpenWith={(choice) => update({ openWith: { ...p.openWith, [selected.source]: choice } })}
+            authorName={p.authorName.trim() || null}
+            onNotesChanged={reloadNotes}
             onExport={() => setExporting(selected)}
           />
         ) : (
@@ -752,6 +822,8 @@ export default function App() {
           onCountExits={(countExits) => update({ countExits })}
           theme={p.theme}
           onTheme={(theme) => update({ theme })}
+          authorName={p.authorName}
+          onAuthorName={(authorName) => update({ authorName })}
           hideSubagents={!p.showSub}
           onHideSubagents={(hide) => update({ showSub: !hide })}
         />

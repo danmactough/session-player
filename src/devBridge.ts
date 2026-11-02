@@ -1,7 +1,7 @@
 // Dev-only stand-in for the Tauri backend so the UI can be previewed in a
 // plain browser (`npm run dev`, then open http://localhost:1420). All data
 // here is synthetic. Loaded from main.tsx only when not running inside Tauri.
-import type { SessionEvent, SessionRow, Source } from "./types";
+import type { Annotation, SessionEvent, SessionMeta, SessionRow, Source } from "./types";
 
 const HOME = "/Users/demo";
 const now = Date.now();
@@ -141,6 +141,9 @@ function transcript(s: SessionRow, prefix = "e", turns = s.user_turns, setup = t
   return ev;
 }
 
+const devMeta = new Map<string, SessionMeta>();
+let devNotes: Annotation[] = [];
+
 type Handler = (args: Record<string, unknown>) => unknown;
 const handlers: Record<string, Handler> = {
   list_sessions: () => sessions,
@@ -150,7 +153,7 @@ const handlers: Record<string, Handler> = {
       .map((s) => ({ path: s.path, snippet: `… the \u0001${query}\u0002 path in ${s.title} …`, rank: -1 })),
   load_session: ({ path, branch }) => {
     const s = sessions.find((x) => x.path === path)!;
-    if (!branch) return transcript(s);
+    if (!branch) return transcript(s).map((e, i) => ({ ...e, anchor: `e${i}` }));
     const b = s.branches.find((x) => x.leaf === branch)!;
     return transcript({ ...s, first_prompt: b.label }, `${branch}e`, Math.max(1, b.user_turns), false);
   },
@@ -193,6 +196,29 @@ const handlers: Record<string, Handler> = {
   export_save: ({ dest }) => dest,
   export_cancel: () => null,
   remove_imported: () => null,
+  session_notes: ({ key }) => ({ meta: devMeta.get(String(key)) ?? null, annotations: devNotes.filter((a) => a.key === key).map((a) => ({ ...a, anchors: a.anchors.map((r) => ({ ...r, found: true })) })) }),
+  save_meta: ({ meta }) => {
+    const m = { ...(meta as SessionMeta), updated_at: Date.now() };
+    devMeta.set(m.key, m);
+    return m;
+  },
+  save_annotation: ({ annotation }) => {
+    const a = annotation as Annotation;
+    const saved = a.id ? { ...a, updated_at: Date.now() } : { ...a, id: `dev-${Date.now()}`, created_at: Date.now(), updated_at: Date.now() };
+    devNotes = [...devNotes.filter((x) => x.id !== saved.id), saved];
+    return saved;
+  },
+  delete_annotation: ({ id }) => {
+    devNotes = devNotes.filter((x) => x.id !== id);
+    return null;
+  },
+  note_summaries: () => [...new Set([...devMeta.keys(), ...devNotes.map((a) => a.key)])].map((key) => ({
+    key,
+    title: devMeta.get(key)?.title ?? null,
+    outcome: devMeta.get(key)?.outcome ?? "unknown",
+    tags: devMeta.get(key)?.tags ?? [],
+    kinds: [...new Set(devNotes.filter((a) => a.key === key).map((a) => a.kind))],
+  })),
   library_errors: () => [{ path: `${HOME}/Library/Application Support/com.danmactough.sessionplayer/library/Y2xhdWRlOmRlbW8.spsession`, error: "Y2xhdWRlOmRlbW8.spsession is damaged: bundle is malformed" }],
   import_bundle: () => ({ imported: ["claude:demo"], unchanged: [], kept: [], conflicts: [], empty: [] }),
   terminal_apps: () => [

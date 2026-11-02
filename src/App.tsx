@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { api } from "./api";
-import type { IndexStats, SearchHit, SessionRow, SortKey, Source } from "./types";
+import type { IndexStats, OnConflict, SearchHit, SessionRow, SortKey, Source } from "./types";
 import { basename, relTime, setHome, SOURCE_LABEL, tildify } from "./lib/format";
 import { SessionList } from "./components/SessionList";
 import { Transcript } from "./components/Transcript";
 import { SettingsSheet } from "./components/SettingsSheet";
 import { ShortcutsSheet } from "./components/ShortcutsSheet";
+import { ExportSheet } from "./components/ExportSheet";
+import { ImportSheet, type ImportState } from "./components/ImportSheet";
 import { Menu } from "./components/Menu";
 import { SourceIcon } from "./components/AppIcon";
 import { applyTheme, storedTheme, type Theme } from "./lib/theme";
@@ -79,12 +82,35 @@ export default function App() {
   const [indexError, setIndexError] = useState<string | null>(null);
   const [sheet, setSheet] = useState(false);
   const [help, setHelp] = useState(false);
+  const [exporting, setExporting] = useState<SessionRow | null>(null);
+  const [importing, setImporting] = useState<{ path: string; state: ImportState } | null>(null);
+  const overlay = sheet || help || !!exporting || !!importing;
   const [version, setVersion] = useState(0);
   const [projectFilter, setProjectFilter] = useState("");
   const projectFilterRef = useRef<HTMLInputElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   // Sessions whose subagents, forks and branches are shown in the list.
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+
+  const importBundle = useCallback(async (path: string, onConflict?: OnConflict) => {
+    const file = basename(path);
+    setImporting({ path, state: { status: "working" } });
+    try {
+      setImporting({ path, state: { status: "done", file, report: await api.importBundle(path, onConflict) } });
+    } catch (e) {
+      setImporting({ path, state: { status: "failed", file, error: String(e) } });
+    }
+  }, []);
+
+  const chooseBundle = useCallback(async () => {
+    const path = await openDialog({
+      title: "Import session",
+      multiple: false,
+      directory: false,
+      filters: [{ name: "Session bundle", extensions: ["spsession"] }],
+    });
+    if (typeof path === "string") await importBundle(path);
+  }, [importBundle]);
 
   const reload = useCallback(() => {
     api
@@ -124,6 +150,7 @@ export default function App() {
         // scanned === 0 is the synthetic event sent after a folder is removed.
         if (s.updated || s.removed || s.scanned === 0) reload();
       }),
+      listen("import-session", () => void chooseBundle()),
       // Settings… in the app menu (⌘,).
       listen("open-settings", () => {
         setHelp(false);
@@ -135,7 +162,7 @@ export default function App() {
       }),
     ];
     return () => un.forEach((p) => p.then((f) => f()));
-  }, [reload]);
+  }, [reload, chooseBundle]);
 
   const update = useCallback((patch: Partial<Prefs>) => {
     setPrefs((p) => {
@@ -359,13 +386,10 @@ export default function App() {
         children: branchChildren(selected, byPath.get(selected.branch_of)),
       };
     }
-    const parent = selected.parent_id
-      ? sessions.find((s) => s.source === selected.source && s.native_id === selected.parent_id && s.path !== selected.path)
-      : undefined;
-    const children = [
-      ...branchChildren(selected, undefined),
-      ...sessions.filter((s) => s.source === selected.source && s.parent_id === selected.native_id && s.path !== selected.path),
-    ];
+    // An imported copy is related only to sessions imported with it, not to the local original.
+    const kin = (s: SessionRow) => s.source === selected.source && s.from_bundle === selected.from_bundle && s.path !== selected.path;
+    const parent = selected.parent_id ? sessions.find((s) => kin(s) && s.native_id === selected.parent_id) : undefined;
+    const children = [...branchChildren(selected, undefined), ...sessions.filter((s) => kin(s) && s.parent_id === selected.native_id)];
     return { parent, children };
   }, [selected, sessions, byPath]);
 
@@ -399,7 +423,7 @@ export default function App() {
         return;
       }
       // The open sheet handles its own keys; nothing behind it should react.
-      if (sheet || help) return;
+      if (overlay) return;
       const typing = (e.target as HTMLElement)?.tagName === "INPUT";
       if (e.key === "?" && !typing) {
         e.preventDefault();
@@ -426,7 +450,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [rows, p.selected, select, sheet, help]);
+  }, [rows, p.selected, select, overlay]);
 
   const toggleSource = (s: Source) => {
     const has = p.sources.includes(s);
@@ -576,6 +600,9 @@ export default function App() {
               <circle cx="12" cy="12" r="3" />
             </svg>
           </button>
+          <button className="ghost import-button" title="Import a shared session (⌘⇧I)" onClick={() => void chooseBundle()}>
+            Import…
+          </button>
           <button className="ghost help-button" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts" onClick={() => setHelp(true)}>
             ?
           </button>
@@ -685,10 +712,11 @@ export default function App() {
             highlight={query.trim()}
             onOpen={open}
             focus={focus}
-            keyboard={!sheet && !help}
+            keyboard={!overlay}
             countExits={p.countExits}
             openWith={p.openWith[selected.source]}
             onOpenWith={(choice) => update({ openWith: { ...p.openWith, [selected.source]: choice } })}
+            onExport={() => setExporting(selected)}
           />
         ) : (
           <div className="placeholder" data-tauri-drag-region>
@@ -704,6 +732,14 @@ export default function App() {
       </main>
 
       {help && <ShortcutsSheet onClose={() => setHelp(false)} />}
+      {exporting && <ExportSheet session={exporting} onClose={() => setExporting(null)} />}
+      {importing && (
+        <ImportSheet
+          state={importing.state}
+          onResolve={(choice) => void importBundle(importing.path, choice)}
+          onClose={() => setImporting(null)}
+        />
+      )}
       {sheet && (
         <SettingsSheet
           onClose={() => setSheet(false)}

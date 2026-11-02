@@ -181,6 +181,7 @@ const Row = memo(function Row({
           </span>
         )}
         {!depth && s.is_subagent && <span className="tag">sub</span>}
+        {s.from_bundle && <span className="tag">imported</span>}
       </div>
       {row.childCount > 0 && (
         <button

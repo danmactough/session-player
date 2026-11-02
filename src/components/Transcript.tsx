@@ -1,6 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { SessionEvent, SessionRow } from "../types";
+import { ask, message } from "@tauri-apps/plugin-dialog";
 import { api } from "../api";
 import { buildBlocks, blockText, type Block, type ToolStep } from "../lib/blocks";
 import {
@@ -16,6 +17,7 @@ import {
   toolSummary,
 } from "../lib/format";
 import { Markdown } from "./Markdown";
+import { RemoteImages } from "../lib/remoteImages";
 import { BranchIcon } from "./BranchIcon";
 import { OpenButton } from "./OpenButton";
 import { SourceIcon } from "./AppIcon";
@@ -36,6 +38,7 @@ interface Props {
   /** The chosen resume/open action (see OpenButton). */
   openWith: string | undefined;
   onOpenWith: (id: string) => void;
+  onExport: () => void;
 }
 
 export function Transcript({
@@ -49,6 +52,7 @@ export function Transcript({
   countExits,
   openWith,
   onOpenWith,
+  onExport,
 }: Props) {
   const [events, setEvents] = useState<SessionEvent[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -293,200 +297,213 @@ export function Transcript({
   const totalIn = session.input_tokens + session.cache_read_tokens;
 
   return (
-    <div className="transcript">
-      <header className="t-head" data-tauri-drag-region>
-        <div className="t-eyebrow">
-          <span className={`src src-${session.source}`}>
-            <SourceIcon source={session.source} />
-            {SOURCE_LABEL[session.source]}
-          </span>
-          <span className="sep">/</span>
-          <span title={session.project}>{basename(session.project)}</span>
-          {session.git_branch && (
-            <>
-              <span className="sep">/</span>
-              <span className="branch">{session.git_branch}</span>
-            </>
+    <RemoteImages.Provider value={!session.from_bundle}>
+      <div className="transcript">
+        <header className="t-head" data-tauri-drag-region>
+          <div className="t-eyebrow">
+            <span className={`src src-${session.source}`}>
+              <SourceIcon source={session.source} />
+              {SOURCE_LABEL[session.source]}
+            </span>
+            <span className="sep">/</span>
+            <span title={session.project}>{basename(session.project)}</span>
+            {session.git_branch && (
+              <>
+                <span className="sep">/</span>
+                <span className="branch">{session.git_branch}</span>
+              </>
+            )}
+            {session.is_subagent && <span className="tag">subagent</span>}
+            {session.branch_of && <span className="tag">branch</span>}
+            {session.imported_from && <span className="tag">imported from {session.imported_from}</span>}
+            {session.from_bundle && <span className="tag">imported bundle</span>}
+          </div>
+          <h1 className="t-title">{session.title}</h1>
+          {session.title_source !== "prompt" && session.first_prompt && (
+            <p className="t-prompt">{session.first_prompt.split("\n").find((l) => l.trim()) ?? ""}</p>
           )}
-          {session.is_subagent && <span className="tag">subagent</span>}
-          {session.branch_of && <span className="tag">branch</span>}
-          {session.imported_from && <span className="tag">imported from {session.imported_from}</span>}
-        </div>
-        <h1 className="t-title">{session.title}</h1>
-        {session.title_source !== "prompt" && session.first_prompt && (
-          <p className="t-prompt">{session.first_prompt.split("\n").find((l) => l.trim()) ?? ""}</p>
-        )}
-        <dl className="t-meta">
-          <div>
-            <dt>Started</dt>
-            <dd>{fullDate(session.started_at)}</dd>
-          </div>
-          <div>
-            <dt>Span</dt>
-            <dd>{duration(elapsed)}</dd>
-          </div>
-          <div>
-            <dt>Turns</dt>
-            <dd>
-              {session.user_turns} <span className="dim">/ {session.tool_calls} tools</span>
-              {session.error_count > 0 && (
-                <span className="err-count">
-                  {" "}
-                  · {session.error_count} {session.error_count === 1 ? "error" : "errors"}
-                </span>
-              )}
-            </dd>
-          </div>
-          {/* Token totals belong to the whole file; a branch has none of its own. */}
-          {!session.branch_of && (
+          <dl className="t-meta">
             <div>
-              <dt>Tokens</dt>
-              <dd title={`${session.input_tokens.toLocaleString()} input · ${session.cache_read_tokens.toLocaleString()} cache read · ${session.output_tokens.toLocaleString()} output`}>
-                {compact(totalIn)} <span className="dim">in</span> · {compact(session.output_tokens)} <span className="dim">out</span>
+              <dt>Started</dt>
+              <dd>{fullDate(session.started_at)}</dd>
+            </div>
+            <div>
+              <dt>Span</dt>
+              <dd>{duration(elapsed)}</dd>
+            </div>
+            <div>
+              <dt>Turns</dt>
+              <dd>
+                {session.user_turns} <span className="dim">/ {session.tool_calls} tools</span>
+                {session.error_count > 0 && (
+                  <span className="err-count">
+                    {" "}
+                    · {session.error_count} {session.error_count === 1 ? "error" : "errors"}
+                  </span>
+                )}
               </dd>
             </div>
-          )}
-          {session.models.length > 0 ? (
-            <div>
-              <dt>Model</dt>
-              <dd>{session.models.join(", ")}</dd>
-            </div>
-          ) : (
-            session.imported_from && (
+            {/* Token totals belong to the whole file; a branch has none of its own. */}
+            {!session.branch_of && (
               <div>
-                <dt>Model</dt>
-                <dd title={`Codex imported this session from ${session.imported_from} without recording the model`}>
-                  <span className="dim">not recorded</span>
+                <dt>Tokens</dt>
+                <dd title={`${session.input_tokens.toLocaleString()} input · ${session.cache_read_tokens.toLocaleString()} cache read · ${session.output_tokens.toLocaleString()} output`}>
+                  {compact(totalIn)} <span className="dim">in</span> · {compact(session.output_tokens)} <span className="dim">out</span>
                 </dd>
               </div>
-            )
-          )}
-        </dl>
-        <div className="t-actions">
-          <OpenButton session={session} choice={openWith} onChoice={onOpenWith} keyboard={keyboard} />
-          <button onClick={() => api.reveal(session.path)}>Reveal file</button>
-          <button onClick={() => copy("path", session.path)}>{copied === "path" ? "Copied" : "Copy path"}</button>
-          <span className="t-file" title={session.path}>
-            {tildify(session.cwd)} · {bytes(session.size)}
-          </span>
-        </div>
-        {(parent || children.length > 0) && (
-          <div className="t-family">
-            {parent && (
-              <button className="link" onClick={() => onOpen(parent.path)}>
-                ↖ {session.branch_of ? "Branched from" : session.fork_entry ? "Forked from" : "Parent"}: {parent.title}
-              </button>
             )}
-            {children.length > 0 && (
-              <span className="kids">
-                {childSummary(children)}:
-                {children.slice(0, 8).map((c) => (
-                  <button key={c.path} className="link" onClick={() => onOpen(c.path)}>
-                    {c.branch_of && <BranchIcon className="inline" />}
-                    {c.title}
-                  </button>
-                ))}
-                {children.length > 8 && <span className="dim">and {children.length - 8} more in the list</span>}
+            {session.models.length > 0 ? (
+              <div>
+                <dt>Model</dt>
+                <dd>{session.models.join(", ")}</dd>
+              </div>
+            ) : (
+              session.imported_from && (
+                <div>
+                  <dt>Model</dt>
+                  <dd title={`Codex imported this session from ${session.imported_from} without recording the model`}>
+                    <span className="dim">not recorded</span>
+                  </dd>
+                </div>
+              )
+            )}
+          </dl>
+          <div className="t-actions">
+            {session.from_bundle ? (
+              <button disabled title="Imported sessions have no agent files on this Mac to resume or open">
+                Can&rsquo;t resume an imported session
+              </button>
+            ) : (
+              <OpenButton session={session} choice={openWith} onChoice={onOpenWith} keyboard={keyboard} />
+            )}
+            <button onClick={onExport}>Export…</button>
+          {session.from_bundle && (
+            <button onClick={() => void removeImported(session, children)}>Remove…</button>
+          )}
+            <button onClick={() => api.reveal(session.path)}>Reveal file</button>
+            <button onClick={() => copy("path", session.path)}>{copied === "path" ? "Copied" : "Copy path"}</button>
+            <span className="t-file" title={session.path}>
+              {tildify(session.cwd)} · {bytes(session.size)}
+            </span>
+          </div>
+          {(parent || children.length > 0) && (
+            <div className="t-family">
+              {parent && (
+                <button className="link" onClick={() => onOpen(parent.path)}>
+                  ↖ {session.branch_of ? "Branched from" : session.fork_entry ? "Forked from" : "Parent"}: {parent.title}
+                </button>
+              )}
+              {children.length > 0 && (
+                <span className="kids">
+                  {childSummary(children)}:
+                  {children.slice(0, 8).map((c) => (
+                    <button key={c.path} className="link" onClick={() => onOpen(c.path)}>
+                      {c.branch_of && <BranchIcon className="inline" />}
+                      {c.title}
+                    </button>
+                  ))}
+                  {children.length > 8 && <span className="dim">and {children.length - 8} more in the list</span>}
+                </span>
+              )}
+            </div>
+          )}
+        </header>
+
+        <div className="t-toolbar">
+          <label className="toggle">
+            <input type="checkbox" checked={showTools} onChange={(e) => setShowTools(e.target.checked)} />
+            Tool calls
+          </label>
+          <label className="toggle">
+            <input type="checkbox" checked={showThinking} onChange={(e) => setShowThinking(e.target.checked)} />
+            Reasoning
+          </label>
+          {errorStops.length > 0 && (
+            <div className="err-nav" title="Jump between failed tool calls and errors">
+              <span className="err-dot" />
+              <span className="err-label">
+                {errIdx === null ? errorStops.length : `${errIdx + 1}/${errorStops.length}`}{" "}
+                {errorStops.length === 1 ? "error" : "errors"}
+              </span>
+              <button aria-label="Previous error" onClick={() => stepError(-1)}>
+                ↑
+              </button>
+              <button aria-label="Next error" onClick={() => stepError(1)}>
+                ↓
+              </button>
+            </div>
+          )}
+          <div className={`t-find ${findOpen || find ? "open" : ""}`}>
+            <input
+              ref={findRef}
+              placeholder="Find in session  ⌘F"
+              value={find}
+              onChange={(e) => {
+                setFind(e.target.value);
+                setFindIdx(0);
+              }}
+              onFocus={() => setFindOpen(true)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && matches.length) {
+                  setFindIdx((i) => (e.shiftKey ? (i - 1 + matches.length) % matches.length : (i + 1) % matches.length));
+                }
+                if (e.key === "Escape") {
+                  setFind("");
+                  setFindOpen(false);
+                  (e.target as HTMLInputElement).blur();
+                }
+              }}
+            />
+            {find && (
+              <span className="count">
+                {matches.length ? `${(findIdx % matches.length) + 1}/${matches.length}` : "0"}
               </span>
             )}
           </div>
-        )}
-      </header>
+        </div>
 
-      <div className="t-toolbar">
-        <label className="toggle">
-          <input type="checkbox" checked={showTools} onChange={(e) => setShowTools(e.target.checked)} />
-          Tool calls
-        </label>
-        <label className="toggle">
-          <input type="checkbox" checked={showThinking} onChange={(e) => setShowThinking(e.target.checked)} />
-          Reasoning
-        </label>
-        {errorStops.length > 0 && (
-          <div className="err-nav" title="Jump between failed tool calls and errors">
-            <span className="err-dot" />
-            <span className="err-label">
-              {errIdx === null ? errorStops.length : `${errIdx + 1}/${errorStops.length}`}{" "}
-              {errorStops.length === 1 ? "error" : "errors"}
-            </span>
-            <button aria-label="Previous error" onClick={() => stepError(-1)}>
-              ↑
-            </button>
-            <button aria-label="Next error" onClick={() => stepError(1)}>
-              ↓
-            </button>
+        <div className="t-body">
+          <div className="t-scroll" ref={scrollRef} tabIndex={-1}>
+            {error && <div className="empty">Could not read this session: {error}</div>}
+            {!events && !error && <div className="empty pulse">Reading session…</div>}
+            {events && blocks.length === 0 && <div className="empty">Nothing to show.</div>}
+            <div className="t-stream" style={{ height: virt.getTotalSize() }}>
+              {virt.getVirtualItems().map((item) => {
+                const b = blocks[item.index];
+                const isCurrent = matches.length > 0 && matches[findIdx % matches.length] === item.index;
+                return (
+                  <div
+                    key={item.key}
+                    data-index={item.index}
+                    ref={virt.measureElement}
+                    className={`row ${matchSet.has(item.index) ? "hit" : ""} ${isCurrent ? "hit-current" : ""} ${item.index === focusIndex || (item.index === errorTarget?.block && b.type !== "tools") ? "focused" : ""}`}
+                    style={{ transform: `translateY(${item.start}px)` }}
+                  >
+                    <BlockView
+                      block={b}
+                      onOpen={onOpen}
+                      openErrors={item.index === errorTarget?.block}
+                      errorStep={item.index === errorTarget?.block ? errorTarget.step : undefined}
+                    />
+                  </div>
+                );
+              })}
+            </div>
           </div>
-        )}
-        <div className={`t-find ${findOpen || find ? "open" : ""}`}>
-          <input
-            ref={findRef}
-            placeholder="Find in session  ⌘F"
-            value={find}
-            onChange={(e) => {
-              setFind(e.target.value);
-              setFindIdx(0);
-            }}
-            onFocus={() => setFindOpen(true)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && matches.length) {
-                setFindIdx((i) => (e.shiftKey ? (i - 1 + matches.length) % matches.length : (i + 1) % matches.length));
-              }
-              if (e.key === "Escape") {
-                setFind("");
-                setFindOpen(false);
-                (e.target as HTMLInputElement).blur();
-              }
-            }}
-          />
-          {find && (
-            <span className="count">
-              {matches.length ? `${(findIdx % matches.length) + 1}/${matches.length}` : "0"}
-            </span>
+          {outline.length > 1 && (
+            <nav className="t-outline">
+              <div className="o-head">Prompts</div>
+              {outline.map(({ b, i }) => (
+                <button key={i} onClick={() => virt.scrollToIndex(i, { align: "start" })} title={b.ev.text.slice(0, 400)}>
+                  <span className="o-n">{b.turn}</span>
+                  <span className="o-t">{b.ev.text.replace(FILE_TAG, "").trim().slice(0, 90) || "(image)"}</span>
+                </button>
+              ))}
+            </nav>
           )}
         </div>
       </div>
-
-      <div className="t-body">
-        <div className="t-scroll" ref={scrollRef} tabIndex={-1}>
-          {error && <div className="empty">Could not read this session: {error}</div>}
-          {!events && !error && <div className="empty pulse">Reading session…</div>}
-          {events && blocks.length === 0 && <div className="empty">Nothing to show.</div>}
-          <div className="t-stream" style={{ height: virt.getTotalSize() }}>
-            {virt.getVirtualItems().map((item) => {
-              const b = blocks[item.index];
-              const isCurrent = matches.length > 0 && matches[findIdx % matches.length] === item.index;
-              return (
-                <div
-                  key={item.key}
-                  data-index={item.index}
-                  ref={virt.measureElement}
-                  className={`row ${matchSet.has(item.index) ? "hit" : ""} ${isCurrent ? "hit-current" : ""} ${item.index === focusIndex || (item.index === errorTarget?.block && b.type !== "tools") ? "focused" : ""}`}
-                  style={{ transform: `translateY(${item.start}px)` }}
-                >
-                  <BlockView
-                    block={b}
-                    onOpen={onOpen}
-                    openErrors={item.index === errorTarget?.block}
-                    errorStep={item.index === errorTarget?.block ? errorTarget.step : undefined}
-                  />
-                </div>
-              );
-            })}
-          </div>
-        </div>
-        {outline.length > 1 && (
-          <nav className="t-outline">
-            <div className="o-head">Prompts</div>
-            {outline.map(({ b, i }) => (
-              <button key={i} onClick={() => virt.scrollToIndex(i, { align: "start" })} title={b.ev.text.slice(0, 400)}>
-                <span className="o-n">{b.turn}</span>
-                <span className="o-t">{b.ev.text.replace(FILE_TAG, "").trim().slice(0, 90) || "(image)"}</span>
-              </button>
-            ))}
-          </nav>
-        )}
-      </div>
-    </div>
+    </RemoteImages.Provider>
   );
 }
 
@@ -886,6 +903,18 @@ function Clamp({ lines, max, render }: { lines: number; max: number; render: (n:
   );
 }
 
+async function removeImported(session: SessionRow, children: SessionRow[]) {
+  const subagents = children.filter((c) => c.from_bundle && c.is_subagent).length;
+  const ok = await ask(
+    `“${session.title}”${subagents ? ` and its ${subagents === 1 ? "subagent" : `${subagents} subagents`}` : ""} will be deleted from your library. The original sender's copy isn't affected.`,
+    { title: "Remove imported session?", kind: "warning", okLabel: "Remove", cancelLabel: "Cancel" },
+  );
+  if (!ok) return;
+  await api
+    .removeImported(session.path)
+    .catch((e) => message(String(e), { title: "Couldn't remove the session", kind: "error" }));
+}
+
 function Images({ images }: { images?: string[] }) {
   const [zoom, setZoom] = useState<string | null>(null);
   if (!images?.length) return null;
@@ -893,7 +922,9 @@ function Images({ images }: { images?: string[] }) {
     <div className="imgs">
       {images.map((src, i) =>
         src.startsWith("omitted") ? (
-          <span key={i} className="img-omitted">image omitted (too large)</span>
+          <span key={i} className="img-omitted">
+            {src === "omitted:remote" ? "remote image not included" : "image omitted (too large)"}
+          </span>
         ) : (
           <img
             key={i}

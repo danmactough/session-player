@@ -57,6 +57,7 @@ const sessions: SessionRow[] = TITLES.map(([source, title_source, title], i) => 
     input_tokens: 12_000 * turns,
     output_tokens: 1_900 * turns,
     cache_read_tokens: 90_000 * turns,
+    from_bundle: i === 5,
     models: i === 11 ? [] : [source === "claude" ? "claude-opus-5-5" : source === "codex" ? "gpt-5.4" : "glm-5.3-flash"],
     git_branch: i % 3 ? "main" : "feature/cookies",
     is_subagent: i === 17,
@@ -172,6 +173,28 @@ const handlers: Record<string, Handler> = {
     { id: "t3", label: "Open in T3 Code", url: `t3code://threads/demo/${nativeId}` },
   ],
   open_in_app: ({ url }) => console.log("open", url),
+  export_preview: ({ path }) => {
+    const s = sessions.find((x) => x.path === path)!;
+    return {
+      token: 1,
+      summary: {
+        bytes: 48_213,
+        file_name: `${s.title}.spsession`,
+        sessions: [{ id: `${s.source}:${s.native_id}`, title: s.title, is_subagent: false, prompts: s.user_turns, events: s.user_turns * 9 }],
+        omitted: [],
+        attachments: [
+          { id: "a0", session: `${s.source}:${s.native_id}`, anchor: "e3", kind: "image", name: null, mime: "image/png", bytes: 182_331, status: "included", reason: null },
+          { id: "a1", session: `${s.source}:${s.native_id}`, anchor: "e7", kind: "file", name: `${s.cwd}/package.json`, mime: null, bytes: null, status: "omitted", reason: "the agent recorded only the path, not the contents" },
+        ],
+      },
+      subagents: [],
+    };
+  },
+  export_save: ({ dest }) => dest,
+  export_cancel: () => null,
+  remove_imported: () => null,
+  library_errors: () => [{ path: `${HOME}/Library/Application Support/com.danmactough.sessionplayer/library/Y2xhdWRlOmRlbW8.spsession`, error: "Y2xhdWRlOmRlbW8.spsession is damaged: bundle is malformed" }],
+  import_bundle: () => ({ imported: ["claude:demo"], unchanged: [], kept: [], conflicts: [], empty: [] }),
   terminal_apps: () => [
     { id: "terminal", label: "Terminal" },
     { id: "iterm", label: "iTerm" },

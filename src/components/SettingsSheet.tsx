@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { api } from "../api";
-import type { IndexStats, RootInfo } from "../types";
-import { tildify } from "../lib/format";
+import type { IndexStats, LibraryError, RootInfo } from "../types";
+import { basename, tildify } from "../lib/format";
 import type { Theme } from "../lib/theme";
 
 const THEMES: { key: Theme; label: string }[] = [
@@ -42,11 +42,13 @@ export function SettingsSheet({
 }: Props) {
   const [roots, setRoots] = useState<RootInfo[]>([]);
   const [suggested, setSuggested] = useState<string[]>([]);
+  const [damaged, setDamaged] = useState<LibraryError[]>([]);
   const [err, setErr] = useState<string | null>(null);
 
   const refresh = () => {
     api.getRoots().then(setRoots).catch((e) => setErr(String(e)));
     api.suggestedRoots().then(setSuggested).catch(() => {});
+    api.libraryErrors().then(setDamaged).catch(() => {});
   };
   useEffect(refresh, [version]);
 
@@ -156,6 +158,32 @@ export function SettingsSheet({
             </span>
           </span>
         </label>
+
+        <h3 className="settings-head">Imported sessions</h3>
+        <p className="sheet-note">
+          To remove an imported session, open it and click Remove… in its header. Files in the library that can&rsquo;t
+          be read are listed here.
+        </p>
+        <ul className="roots">
+          {damaged.map((d) => (
+            <li key={d.path} className="missing">
+              <div>
+                <div className="root-path">{basename(d.path)}</div>
+                <div className="root-meta">{d.error}</div>
+              </div>
+              <button
+                className="ghost danger"
+                onClick={async () => {
+                  await api.removeImported(d.path).catch((e) => setErr(String(e)));
+                  refresh();
+                }}
+              >
+                Remove
+              </button>
+            </li>
+          ))}
+          {damaged.length === 0 && <li className="none">No damaged files.</li>}
+        </ul>
 
         <h3 className="settings-head">Hidden projects</h3>
         <ul className="roots">

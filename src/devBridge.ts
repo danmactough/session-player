@@ -196,7 +196,10 @@ const handlers: Record<string, Handler> = {
   export_save: ({ dest }) => dest,
   export_cancel: () => null,
   remove_imported: () => null,
-  session_notes: ({ key }) => ({ meta: devMeta.get(String(key)) ?? null, annotations: devNotes.filter((a) => a.key === key).map((a) => ({ ...a, anchors: a.anchors.map((r) => ({ ...r, found: true })) })) }),
+  generate_notes: () => null,
+  cancel_generate: () => null,
+  generating: () => [],
+  session_notes: ({ key }) => ({ revision: null, meta: devMeta.get(String(key)) ?? null, annotations: devNotes.filter((a) => a.key === key).map((a) => ({ ...a, anchors: a.anchors.map((r) => ({ ...r, found: true })) })) }),
   save_meta: ({ meta }) => {
     const m = { ...(meta as SessionMeta), updated_at: Date.now() };
     devMeta.set(m.key, m);
@@ -214,13 +217,12 @@ const handlers: Record<string, Handler> = {
   },
   note_summaries: () => [...new Set([...devMeta.keys(), ...devNotes.map((a) => a.key)])].map((key) => ({
     key,
-    title: devMeta.get(key)?.title ?? null,
     outcome: devMeta.get(key)?.outcome ?? "unknown",
-    tags: devMeta.get(key)?.tags ?? [],
+    components: devMeta.get(key)?.components ?? [],
     kinds: [...new Set(devNotes.filter((a) => a.key === key).map((a) => a.kind))],
   })),
   library_errors: () => [{ path: `${HOME}/Library/Application Support/com.danmactough.sessionplayer/library/Y2xhdWRlOmRlbW8.spsession`, error: "Y2xhdWRlOmRlbW8.spsession is damaged: bundle is malformed" }],
-  import_bundle: () => ({ imported: ["claude:demo"], unchanged: [], kept: [], conflicts: [], empty: [] }),
+  import_bundle: () => ({ imported: ["claude:demo"], unchanged: [], kept: [], conflicts: [], empty: [], kept_notes: 0 }),
   terminal_apps: () => [
     { id: "terminal", label: "Terminal" },
     { id: "iterm", label: "iTerm" },

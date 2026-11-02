@@ -165,7 +165,7 @@ const Row = memo(function Row({
     >
       <div className="srow-title">
         {kind === "branch" ? <BranchIcon className="branch-glyph" /> : <span className={`sdot src-${s.source}`} title={s.source} />}
-        <span className="t">{note?.title || s.title}</span>
+        <span className="t">{s.title}</span>
         {note && note.outcome !== "unknown" && <span className={`outcome outcome-${note.outcome}`}>{OUTCOME_LABEL[note.outcome]}</span>}
       </div>
       {hit && <Snippet text={hit.snippet} />}

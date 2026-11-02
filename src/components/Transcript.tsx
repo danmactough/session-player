@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Annotation, AnnotationKind, EventRef, SessionEvent, SessionMeta, SessionRow } from "../types";
 import { ask, message } from "@tauri-apps/plugin-dialog";
+import { listen } from "@tauri-apps/api/event";
 import { api } from "../api";
 import { buildBlocks, blockText, type Block, type ToolStep } from "../lib/blocks";
 import {
@@ -17,7 +18,7 @@ import {
   toolSummary,
 } from "../lib/format";
 import { Markdown } from "./Markdown";
-import { AnnotationEditor, AnnotationItem, AnnotationsPanel, SessionDetails } from "./Notes";
+import { Analysis, AnnotationEditor, AnnotationItem } from "./Notes";
 import { blockEvents, ref, sessionKey } from "../lib/notes";
 import { RemoteImages } from "../lib/remoteImages";
 import { BranchIcon } from "./BranchIcon";
@@ -45,6 +46,11 @@ interface Props {
   authorName: string | null;
   /** Metadata or annotations changed, so the list's titles and filters should refresh. */
   onNotesChanged: () => void;
+  /** Asks, the first time, whether sending a transcript to Anthropic is all right. */
+  confirmGenerate: () => Promise<boolean>;
+  /** The summary under the title (first prompt, analysis, stats) is hidden. */
+  collapsed: boolean;
+  onCollapse: (collapsed: boolean) => void;
 }
 
 export function Transcript({
@@ -61,6 +67,9 @@ export function Transcript({
   onExport,
   authorName,
   onNotesChanged,
+  confirmGenerate,
+  collapsed,
+  onCollapse,
 }: Props) {
   const [events, setEvents] = useState<SessionEvent[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -154,8 +163,11 @@ export function Transcript({
   // Metadata and annotations. Anchors are checked against the transcript on
   // the backend, so they are fetched again whenever the events reload.
   const key = useMemo(() => sessionKey(session), [session]);
-  const [notes, setNotes] = useState<{ meta: SessionMeta | null; annotations: Annotation[] }>({ meta: null, annotations: [] });
-  const [panel, setPanel] = useState(false);
+  const [notes, setNotes] = useState<{ meta: SessionMeta | null; annotations: Annotation[]; revision: string | null }>({
+    meta: null,
+    annotations: [],
+    revision: null,
+  });
   const [composing, setComposing] = useState<{ block: number; refs: EventRef[] } | null>(null);
   // `n` changes with every jump, so a block collapsed since the last one opens again.
   const [reveal, setReveal] = useState<{ block: number; step?: number; n: number } | null>(null);
@@ -172,6 +184,55 @@ export function Transcript({
   useEffect(() => {
     if (events) void loadNotes();
   }, [events, loadNotes]);
+
+  // Analyzing with Claude runs in the backend; progress arrives as events.
+  const [gen, setGen] = useState<{ done: number; total: number } | null>(null);
+  const [genMessage, setGenMessage] = useState<string | null>(null);
+  const loadNotesRef = useRef(loadNotes);
+  loadNotesRef.current = loadNotes;
+  useEffect(() => {
+    let live = true;
+    // An event that arrives first is newer than what generating() reports.
+    let heard = false;
+    void api.generating().then((keys) => live && !heard && keys.includes(key) && setGen({ done: 0, total: 0 }));
+    const un = [
+      listen<{ key: string; done: number; total: number }>("generate-progress", (e) => {
+        if (e.payload.key !== key) return;
+        heard = true;
+        setGen({ done: e.payload.done, total: e.payload.total });
+      }),
+      listen<{ key: string; error: string | null; cancelled: boolean; rejected: number }>("generate-done", (e) => {
+        if (e.payload.key !== key) return;
+        heard = true;
+        setGen(null);
+        const { error, cancelled, rejected } = e.payload;
+        if (error) setGenMessage(`Couldn't analyze this session: ${error}`);
+        else if (cancelled) setGenMessage("Analysis was cancelled.");
+        else {
+          setGenMessage(
+            rejected
+              ? `Left out ${rejected} generated ${rejected === 1 ? "annotation that pointed" : "annotations that pointed"} at events this transcript doesn't have.`
+              : null,
+          );
+          // The list refreshes itself (App listens too); this transcript reloads its notes.
+          void loadNotesRef.current();
+        }
+      }),
+    ];
+    return () => {
+      live = false;
+      un.forEach((p) => p.then((f) => f()));
+    };
+  }, [key]);
+  const generate = async () => {
+    if (!(await confirmGenerate())) return;
+    setGenMessage(null);
+    setGen({ done: 0, total: 0 });
+    await api.generateNotes(key, session.branch_of ?? session.path, session.branch_leaf).catch((e) => {
+      setGen(null);
+      setGenMessage(String(e));
+    });
+  };
 
   const saveMeta = async (meta: SessionMeta) => {
     const saved = await api.saveMeta(meta);
@@ -223,6 +284,26 @@ export function Transcript({
     const step = b.type === "tools" ? b.steps.findIndex((s) => s.call.anchor === r.anchor || s.result?.anchor === r.anchor) : undefined;
     setReveal((prev) => ({ block: i, step, n: (prev?.n ?? 0) + 1 }));
     virt.scrollToIndex(i, { align: "center" });
+  };
+  // The annotation navigator steps through annotations in transcript order.
+  const anchorNumber = (a: Annotation) => Math.min(...a.anchors.filter((r) => r.found).map((r) => Number(r.anchor.slice(1)) || 0));
+  const noteStops = useMemo(
+    () => notes.annotations.filter((a) => a.anchors.some((r) => r.found)).sort((x, y) => anchorNumber(x) - anchorNumber(y)),
+    [notes.annotations],
+  );
+  const [noteIdx, setNoteIdx] = useState<number | null>(null);
+  const stepNote = (dir: 1 | -1) => {
+    if (!noteStops.length) return;
+    const n = noteStops.length;
+    const next = noteIdx === null || noteIdx >= n ? (dir === 1 ? 0 : n - 1) : (noteIdx + dir + n) % n;
+    setNoteIdx(next);
+    jumpTo(noteStops[next]);
+  };
+  // Show in the summary moves the navigator to that annotation too.
+  const showNote = (a: Annotation) => {
+    const i = noteStops.findIndex((x) => x.id === a.id);
+    setNoteIdx(i >= 0 ? i : null);
+    jumpTo(a);
   };
   const jumpRef = useRef(jumpTo);
   jumpRef.current = jumpTo;
@@ -410,82 +491,123 @@ export function Transcript({
             {session.imported_from && <span className="tag">imported from {session.imported_from}</span>}
             {session.from_bundle && <span className="tag">imported bundle</span>}
           </div>
-            {/* A pi branch keeps its own label; the details belong to the whole session. */}
-          <h1 className="t-title">{(!session.branch_of && notes.meta?.title) || session.title}</h1>
-          {session.title_source !== "prompt" && session.first_prompt && (
-            <p className="t-prompt">{session.first_prompt.split("\n").find((l) => l.trim()) ?? ""}</p>
-          )}
-          <SessionDetails
-            session={session}
-            sessionKey={key}
-            meta={notes.meta}
-            original={!session.branch_of && notes.meta?.title ? session.title : undefined}
-            onSave={saveMeta}
-          />
-          <dl className="t-meta">
-            <div>
-              <dt>Started</dt>
-              <dd>{fullDate(session.started_at)}</dd>
-            </div>
-            <div>
-              <dt>Span</dt>
-              <dd>{duration(elapsed)}</dd>
-            </div>
-            <div>
-              <dt>Turns</dt>
-              <dd>
-                {session.user_turns} <span className="dim">/ {session.tool_calls} tools</span>
-                {session.error_count > 0 && (
-                  <span className="err-count">
-                    {" "}
-                    · {session.error_count} {session.error_count === 1 ? "error" : "errors"}
-                  </span>
+          <h1 className="t-title">{session.title}</h1>
+          {/* The toggle sits in the margin beside whatever comes first: the summary, or the buttons when it's hidden. */}
+          <div className={`t-fold ${collapsed ? "collapsed" : ""}`}>
+            <button
+              className="collapse-toggle"
+              aria-expanded={!collapsed}
+              aria-label={collapsed ? "Show the summary" : "Hide the summary"}
+              title={collapsed ? "Show the summary" : "Hide the summary"}
+              onClick={() => onCollapse(!collapsed)}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                {collapsed ? (
+                  <>
+                    <path d="m7 15 5 5 5-5" />
+                    <path d="m7 9 5-5 5 5" />
+                  </>
+                ) : (
+                  <>
+                    <path d="m7 20 5-5 5 5" />
+                    <path d="m7 4 5 5 5-5" />
+                  </>
                 )}
-              </dd>
+              </svg>
+            </button>
+            {!collapsed && (
+              <div className="t-summary">
+                {session.title_source !== "prompt" && session.first_prompt && (
+                  <p className="t-prompt">{session.first_prompt.split("\n").find((l) => l.trim()) ?? ""}</p>
+                )}
+                <Analysis
+                  sessionKey={key}
+                  meta={notes.meta}
+                  revision={notes.revision}
+                  annotations={notes.annotations}
+                  onSaveMeta={saveMeta}
+                  onSaveAnnotation={saveAnnotation}
+                  onDeleteAnnotation={deleteAnnotation}
+                  onJump={showNote}
+                />
+                <dl className="t-meta">
+                  <div>
+                    <dt>Started</dt>
+                    <dd>{fullDate(session.started_at)}</dd>
+                  </div>
+                  <div>
+                    <dt>Span</dt>
+                    <dd>{duration(elapsed)}</dd>
+                  </div>
+                  <div>
+                    <dt>Turns</dt>
+                    <dd>
+                      {session.user_turns} <span className="dim">/ {session.tool_calls} tools</span>
+                      {session.error_count > 0 && (
+                        <span className="err-count">
+                          {" "}
+                          · {session.error_count} {session.error_count === 1 ? "error" : "errors"}
+                        </span>
+                      )}
+                    </dd>
+                  </div>
+                  {/* Token totals belong to the whole file; a branch has none of its own. */}
+                  {!session.branch_of && (
+                    <div>
+                      <dt>Tokens</dt>
+                      <dd title={`${session.input_tokens.toLocaleString()} input · ${session.cache_read_tokens.toLocaleString()} cache read · ${session.output_tokens.toLocaleString()} output`}>
+                        {compact(totalIn)} <span className="dim">in</span> · {compact(session.output_tokens)} <span className="dim">out</span>
+                      </dd>
+                    </div>
+                  )}
+                  {session.models.length > 0 ? (
+                    <div>
+                      <dt>Model</dt>
+                      <dd>{session.models.join(", ")}</dd>
+                    </div>
+                  ) : (
+                    session.imported_from && (
+                      <div>
+                        <dt>Model</dt>
+                        <dd title={`Codex imported this session from ${session.imported_from} without recording the model`}>
+                          <span className="dim">not recorded</span>
+                        </dd>
+                      </div>
+                    )
+                  )}
+                </dl>
+              </div>
+            )}
+            <div className="t-actions">
+              {session.from_bundle ? (
+                <button disabled title="Imported sessions have no agent files on this Mac to resume or open">
+                  Can&rsquo;t resume an imported session
+                </button>
+              ) : (
+                <OpenButton session={session} choice={openWith} onChoice={onOpenWith} keyboard={keyboard} />
+              )}
+              {gen ? (
+                <span className="generating">
+                  <span className="pulse">Analyzing{gen.total > 1 ? ` · part ${Math.min(gen.done + 1, gen.total)} of ${gen.total}` : "…"}</span>
+                  <button onClick={() => void api.cancelGenerate(key)}>Cancel</button>
+                </span>
+              ) : (
+                <button onClick={() => void generate()} title="Find the outcome, components and annotations with Claude Haiku">
+                  Analyze
+                </button>
+              )}
+              <button onClick={onExport}>Export…</button>
+            {session.from_bundle && (
+              <button onClick={() => void removeImported(session, children)}>Remove…</button>
+            )}
+              <button onClick={() => api.reveal(session.path)}>Reveal file</button>
+              <button onClick={() => copy("path", session.path)}>{copied === "path" ? "Copied" : "Copy path"}</button>
+              <span className="t-file" title={session.path}>
+                {tildify(session.cwd)} · {bytes(session.size)}
+              </span>
             </div>
-            {/* Token totals belong to the whole file; a branch has none of its own. */}
-            {!session.branch_of && (
-              <div>
-                <dt>Tokens</dt>
-                <dd title={`${session.input_tokens.toLocaleString()} input · ${session.cache_read_tokens.toLocaleString()} cache read · ${session.output_tokens.toLocaleString()} output`}>
-                  {compact(totalIn)} <span className="dim">in</span> · {compact(session.output_tokens)} <span className="dim">out</span>
-                </dd>
-              </div>
-            )}
-            {session.models.length > 0 ? (
-              <div>
-                <dt>Model</dt>
-                <dd>{session.models.join(", ")}</dd>
-              </div>
-            ) : (
-              session.imported_from && (
-                <div>
-                  <dt>Model</dt>
-                  <dd title={`Codex imported this session from ${session.imported_from} without recording the model`}>
-                    <span className="dim">not recorded</span>
-                  </dd>
-                </div>
-              )
-            )}
-          </dl>
-          <div className="t-actions">
-            {session.from_bundle ? (
-              <button disabled title="Imported sessions have no agent files on this Mac to resume or open">
-                Can&rsquo;t resume an imported session
-              </button>
-            ) : (
-              <OpenButton session={session} choice={openWith} onChoice={onOpenWith} keyboard={keyboard} />
-            )}
-            <button onClick={onExport}>Export…</button>
-          {session.from_bundle && (
-            <button onClick={() => void removeImported(session, children)}>Remove…</button>
-          )}
-            <button onClick={() => api.reveal(session.path)}>Reveal file</button>
-            <button onClick={() => copy("path", session.path)}>{copied === "path" ? "Copied" : "Copy path"}</button>
-            <span className="t-file" title={session.path}>
-              {tildify(session.cwd)} · {bytes(session.size)}
-            </span>
           </div>
+          {genMessage && <p className="gen-message">{genMessage}</p>}
           {(parent || children.length > 0) && (
             <div className="t-family">
               {parent && (
@@ -518,9 +640,21 @@ export function Transcript({
             <input type="checkbox" checked={showThinking} onChange={(e) => setShowThinking(e.target.checked)} />
             Reasoning
           </label>
-          <button className={`ghost annotations-toggle ${panel ? "on" : ""}`} aria-expanded={panel} onClick={() => setPanel((o) => !o)}>
-            Annotations{notes.annotations.length ? ` · ${notes.annotations.length}` : ""}
-          </button>
+          {noteStops.length > 0 && (
+            <div className="err-nav note-nav" title="Jump between annotations">
+              <span className="err-dot" />
+              <span className="err-label">
+                {noteIdx === null ? noteStops.length : `${noteIdx + 1}/${noteStops.length}`}{" "}
+                {noteStops.length === 1 ? "annotation" : "annotations"}
+              </span>
+              <button aria-label="Previous annotation" onClick={() => stepNote(-1)}>
+                ↑
+              </button>
+              <button aria-label="Next annotation" onClick={() => stepNote(1)}>
+                ↓
+              </button>
+            </div>
+          )}
           {errorStops.length > 0 && (
             <div className="err-nav" title="Jump between failed tool calls and errors">
               <span className="err-dot" />
@@ -565,15 +699,6 @@ export function Transcript({
           </div>
         </div>
 
-        {panel && (
-          <AnnotationsPanel
-            annotations={notes.annotations}
-            onSave={saveAnnotation}
-            onDelete={deleteAnnotation}
-            onJump={jumpTo}
-            onAdd={(kind, note) => addAnnotation([], kind, note)}
-          />
-        )}
         <div className="t-body">
           <div className="t-scroll" ref={scrollRef} tabIndex={-1}>
             {error && <div className="empty">Could not read this session: {error}</div>}
@@ -613,7 +738,7 @@ export function Transcript({
                     {(notesByBlock.has(item.index) || composing?.block === item.index) && (
                       <div className="row-notes">
                         {notesByBlock.get(item.index)?.map((a) => (
-                          <AnnotationItem key={a.id} annotation={a} onSave={saveAnnotation} onDelete={deleteAnnotation} />
+                          <AnnotationItem key={a.id} annotation={a} revision={notes.revision} onSave={saveAnnotation} onDelete={deleteAnnotation} />
                         ))}
                         {composing?.block === item.index && (
                           <AnnotationEditor

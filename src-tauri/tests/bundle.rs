@@ -94,7 +94,7 @@ fn claude_session_replays_from_the_library_without_its_source_files() {
     std::fs::remove_dir_all(&sender.root).unwrap();
 
     let mut recipient = Recipient::new("tracer");
-    let report = bundle::import(&recipient.library, &file, None).unwrap();
+    let report = bundle::import(&recipient.conn, &recipient.library, &file, None).unwrap();
     assert_eq!(report.imported, vec!["claude:abc".to_string()]);
     let rows = recipient.reindex();
     assert_eq!(rows.len(), 1);
@@ -130,7 +130,7 @@ fn subagents_and_their_screenshots_travel_with_the_session() {
     let file = sender.save(&exported, "abc.spsession");
     std::fs::remove_dir_all(&sender.root).unwrap();
     let mut recipient = Recipient::new("subagents");
-    bundle::import(&recipient.library, &file, None).unwrap();
+    bundle::import(&recipient.conn, &recipient.library, &file, None).unwrap();
     let rows = recipient.reindex();
     let sub = rows.iter().find(|r| r.is_subagent).expect("subagent row");
     assert_eq!(sub.parent_id.as_deref(), Some("abc"));
@@ -181,7 +181,7 @@ fn a_pi_branch_exports_its_whole_path_and_lists_the_others() {
     let file = sender.save(&branch, "branch.spsession");
     std::fs::remove_dir_all(&sender.root).unwrap();
     let mut recipient = Recipient::new("pi");
-    bundle::import(&recipient.library, &file, None).unwrap();
+    bundle::import(&recipient.conn, &recipient.library, &file, None).unwrap();
     let rows = recipient.reindex();
     assert_eq!(rows[0].title, "Retry: stress test my caching plan");
     // Its notes are kept apart from those of an imported copy of the active branch.
@@ -200,7 +200,7 @@ fn codex_session_round_trips() {
     let file = sender.save(&exported, "codex.spsession");
     std::fs::remove_dir_all(&sender.root).unwrap();
     let mut recipient = Recipient::new("codex");
-    bundle::import(&recipient.library, &file, None).unwrap();
+    bundle::import(&recipient.conn, &recipient.library, &file, None).unwrap();
     let rows = recipient.reindex();
     let row = &rows[0];
     assert_eq!((row.source.as_str(), row.native_id.as_str()), ("codex", "019d-codex"));
@@ -234,7 +234,7 @@ fn import_edited(recipient: &Recipient, name: &str, edit: impl FnOnce(&mut serde
     edit(&mut v);
     let file = recipient.base.join(format!("{name}.spsession"));
     std::fs::write(&file, serde_json::to_vec(&v).unwrap()).unwrap();
-    bundle::import(&recipient.library, &file, None).map_err(|e| format!("{e:#}"))
+    bundle::import(&recipient.conn, &recipient.library, &file, None).map_err(|e| format!("{e:#}"))
 }
 
 #[test]
@@ -265,7 +265,7 @@ fn invalid_bundles_are_rejected_with_a_reason_and_nothing_is_imported() {
     }
     let garbage = recipient.base.join("garbage.spsession");
     std::fs::write(&garbage, "{ not json").unwrap();
-    let err = format!("{:#}", bundle::import(&recipient.library, &garbage, None).unwrap_err());
+    let err = format!("{:#}", bundle::import(&recipient.conn, &recipient.library, &garbage, None).unwrap_err());
     assert!(err.contains("isn't a Session Player session bundle"), "{err}");
     assert!(!recipient.library.exists() || std::fs::read_dir(&recipient.library).unwrap().next().is_none());
 }
@@ -296,25 +296,25 @@ fn re_importing_resolves_duplicates_by_the_chosen_policy() {
     let second = sender.save(&changed, "second.spsession");
 
     let mut recipient = Recipient::new("conflict");
-    bundle::import(&recipient.library, &first, None).unwrap();
+    bundle::import(&recipient.conn, &recipient.library, &first, None).unwrap();
 
     // The same content again is not a conflict.
-    let again = bundle::import(&recipient.library, &first, None).unwrap();
+    let again = bundle::import(&recipient.conn, &recipient.library, &first, None).unwrap();
     assert!(again.imported.is_empty());
     assert_eq!(again.unchanged, vec!["claude:abc".to_string(), "claude:agent-a1".to_string()]);
 
     // A different version of a session already in the library waits for a decision, and nothing is written.
-    let asked = bundle::import(&recipient.library, &second, None).unwrap();
+    let asked = bundle::import(&recipient.conn, &recipient.library, &second, None).unwrap();
     assert!(asked.imported.is_empty());
     assert_eq!(asked.conflicts.len(), 1);
     assert_eq!((asked.conflicts[0].id.as_str(), asked.conflicts[0].existing_title.as_str(), asked.conflicts[0].incoming_title.as_str()), ("claude:abc", "Flaky login test", "Renamed by the sender"));
     assert!(recipient.reindex().iter().any(|r| r.title == "Flaky login test"));
 
-    let kept = bundle::import(&recipient.library, &second, Some(OnConflict::Keep)).unwrap();
+    let kept = bundle::import(&recipient.conn, &recipient.library, &second, Some(OnConflict::Keep)).unwrap();
     assert_eq!(kept.kept, vec!["claude:abc".to_string()]);
     assert!(recipient.reindex().iter().any(|r| r.title == "Flaky login test"));
 
-    let replaced = bundle::import(&recipient.library, &second, Some(OnConflict::Replace)).unwrap();
+    let replaced = bundle::import(&recipient.conn, &recipient.library, &second, Some(OnConflict::Replace)).unwrap();
     assert_eq!(replaced.imported, vec!["claude:abc".to_string()]);
     assert_eq!(replaced.unchanged, vec!["claude:agent-a1".to_string()]);
     let rows = recipient.reindex();
@@ -328,7 +328,7 @@ fn an_imported_session_can_be_exported_again_unchanged() {
     let original = sender.export("claude/-work-repo/abc.jsonl", None, None);
     let file = sender.save(&original, "abc.spsession");
     let mut recipient = Recipient::new("forward");
-    bundle::import(&recipient.library, &file, None).unwrap();
+    bundle::import(&recipient.conn, &recipient.library, &file, None).unwrap();
     let rows = recipient.reindex();
     let primary = rows.iter().find(|r| !r.is_subagent).unwrap();
     let request = bundle::ExportRequest { path: &primary.path, branch: None, subagents: None };
@@ -364,8 +364,8 @@ fn a_subagent_imported_alone_matches_the_same_subagent_in_its_parents_bundle() {
     let alone = sender.save(&sender.export("claude/-work-repo/abc/subagents/agent-a1.jsonl", None, None), "alone.spsession");
     let family = sender.save(&sender.export("claude/-work-repo/abc.jsonl", None, None), "family.spsession");
     let recipient = Recipient::new("renumber");
-    bundle::import(&recipient.library, &alone, None).unwrap();
-    let report = bundle::import(&recipient.library, &family, None).unwrap();
+    bundle::import(&recipient.conn, &recipient.library, &alone, None).unwrap();
+    let report = bundle::import(&recipient.conn, &recipient.library, &family, None).unwrap();
     assert!(report.conflicts.is_empty(), "{:?}", report.conflicts);
     assert_eq!(report.unchanged, vec!["claude:agent-a1".to_string()]);
 }
@@ -465,7 +465,7 @@ fn remote_images_in_the_transcript_are_downloaded_into_the_bundle() {
 
     let file = sender.save(&exported, "remote.spsession");
     let mut recipient = Recipient::new("remote");
-    bundle::import(&recipient.library, &file, None).unwrap();
+    bundle::import(&recipient.conn, &recipient.library, &file, None).unwrap();
     let rows = recipient.reindex();
     let events = bundle::load_events(Path::new(&rows[0].path)).unwrap();
     assert!(events[1].text.contains("![login](data:image/png;base64,aGVsbG8=)"), "{}", events[1].text);
@@ -476,7 +476,7 @@ fn removing_an_imported_session_removes_the_subagents_imported_with_it() {
     let sender = Sender::new("remove");
     let file = sender.save(&sender.export("claude/-work-repo/abc.jsonl", None, None), "abc.spsession");
     let mut recipient = Recipient::new("remove");
-    bundle::import(&recipient.library, &file, None).unwrap();
+    bundle::import(&recipient.conn, &recipient.library, &file, None).unwrap();
     let rows = recipient.reindex();
     let primary = rows.iter().find(|r| !r.is_subagent).unwrap();
     let removed = bundle::remove(&recipient.conn, &recipient.library, Path::new(&primary.path)).unwrap();
@@ -500,7 +500,7 @@ fn a_damaged_library_file_is_reported_and_can_be_removed() {
     let sender = Sender::new("damaged");
     let file = sender.save(&sender.export("claude/-work-repo/abc.jsonl", None, Some(vec![])), "abc.spsession");
     let mut recipient = Recipient::new("damaged");
-    bundle::import(&recipient.library, &file, None).unwrap();
+    bundle::import(&recipient.conn, &recipient.library, &file, None).unwrap();
     let copy = std::fs::read_dir(&recipient.library).unwrap().next().unwrap().unwrap().path();
     std::fs::write(&copy, "{ damaged").unwrap();
     assert!(recipient.reindex().is_empty());
@@ -508,11 +508,11 @@ fn a_damaged_library_file_is_reported_and_can_be_removed() {
     let problems = index::library_errors(&recipient.conn, &recipient.library).unwrap();
     assert_eq!(problems.len(), 1);
     assert_eq!(problems[0].path, copy.to_string_lossy());
-    let err = format!("{:#}", bundle::import(&recipient.library, &file, None).unwrap_err());
+    let err = format!("{:#}", bundle::import(&recipient.conn, &recipient.library, &file, None).unwrap_err());
     assert!(err.contains("Your library's copy of claude:abc is damaged"), "{err}");
 
     bundle::remove(&recipient.conn, &recipient.library, &copy).unwrap();
-    assert!(bundle::import(&recipient.library, &file, None).unwrap().imported == vec!["claude:abc".to_string()]);
+    assert!(bundle::import(&recipient.conn, &recipient.library, &file, None).unwrap().imported == vec!["claude:abc".to_string()]);
     assert_eq!(recipient.reindex().len(), 1);
     assert!(index::library_errors(&recipient.conn, &recipient.library).unwrap().is_empty());
 }
@@ -527,4 +527,113 @@ fn nothing_is_imported_when_the_exported_session_is_empty() {
     assert!(report.imported.is_empty());
     assert_eq!(report.empty, vec!["claude:abc".to_string()]);
     assert!(!recipient.library.exists() || std::fs::read_dir(&recipient.library).unwrap().count() == 0);
+}
+
+fn event_ref(anchor: &str, kind: &str, ts: i64) -> session_player_lib::test_support::annotations::EventRef {
+    serde_json::from_value(serde_json::json!({ "anchor": anchor, "kind": kind, "ts": ts })).unwrap()
+}
+
+/// The prompt in claude.jsonl.
+fn prompt_ref() -> session_player_lib::test_support::annotations::EventRef {
+    event_ref("e1", "user", 1767261602000)
+}
+
+#[test]
+fn details_and_annotations_travel_with_the_session() {
+    use session_player_lib::test_support::annotations as notes;
+    let sender = Sender::new("notes");
+    let meta = notes::SessionMeta { key: "local:claude:abc".into(), outcome_note: Some("Fixed the login test".into()), components: vec!["packages/auth".into()], ..Default::default() };
+    notes::save_meta(&sender.conn, &meta).unwrap();
+    let event = |anchor: &str, kind: &str| -> notes::EventRef { serde_json::from_value(serde_json::json!({ "anchor": anchor, "kind": kind, "ts": 1767261605000i64 })).unwrap() };
+    let theirs = notes::save_annotation(
+        &sender.conn,
+        notes::Annotation::new("local:claude:abc", notes::Kind::ToolError, "npm test failed", vec![event("e4", "tool_result")], notes::Author::Person { name: Some("Sam".into()) }),
+    )
+    .unwrap();
+    let sub_path = sender.root.join("claude/-work-repo/abc/subagents/agent-a1.jsonl");
+    let sub_events = session_player_lib::test_support::parse::parse_file(&sub_path, session_player_lib::test_support::parse::detect(&sub_path).unwrap()).unwrap().events;
+    let mut suggestion = notes::Annotation::new("local:claude:agent-a1", notes::Kind::KeyDecision, "read the login code", vec![event_ref("e0", "user", 1767261606000)], notes::Author::Model { model: "claude-haiku-5-5".into() });
+    suggestion.revision = Some(session_player_lib::test_support::generate::revision(&sub_events));
+    notes::save_annotation(&sender.conn, suggestion).unwrap();
+
+    let exported = sender.export("claude/-work-repo/abc.jsonl", None, None);
+    assert_eq!(exported.sessions[0].meta.as_ref().unwrap().outcome_note.as_deref(), Some("Fixed the login test"));
+    assert_eq!(exported.sessions[0].annotations.len(), 1);
+    assert_eq!(exported.sessions[1].annotations[0].author, notes::Author::Model { model: "claude-haiku-5-5".into() });
+    // Still current against the transcript as bundled, whose text export rewrites.
+    assert_eq!(exported.sessions[1].annotations[0].revision, Some(session_player_lib::test_support::generate::revision(&exported.sessions[1].events)));
+    let preview = bundle::summarize(&exported);
+    assert_eq!((preview.sessions[0].annotations, preview.sessions[0].has_details), (1, true));
+    let file = sender.save(&exported, "abc.spsession");
+
+    let recipient = Recipient::new("notes");
+    bundle::import(&recipient.conn, &recipient.library, &file, None).unwrap();
+    let key = "bundle:claude:abc";
+    assert_eq!(notes::meta(&recipient.conn, key).unwrap().unwrap().components, ["packages/auth"]);
+    let imported = notes::annotations(&recipient.conn, key).unwrap();
+    assert_eq!((imported[0].id.as_str(), imported[0].author.clone()), (theirs.id.as_str(), notes::Author::Person { name: Some("Sam".into()) }));
+    assert_eq!(notes::annotations(&recipient.conn, "bundle:claude:agent-a1").unwrap().len(), 1);
+
+    // The recipient adds a note of their own, then the sender sends an updated bundle.
+    notes::save_annotation(&recipient.conn, notes::Annotation::new(key, notes::Kind::Other, "mine", vec![prompt_ref()], notes::Author::Person { name: None })).unwrap();
+    let again = bundle::import(&recipient.conn, &recipient.library, &file, None).unwrap();
+    assert!(again.imported.is_empty());
+    assert_eq!(notes::annotations(&recipient.conn, key).unwrap().len(), 2, "nothing duplicated");
+
+    let mut updated = exported.clone();
+    updated.sessions[0].annotations[0].note = "npm test failed on login.spec".into();
+    let updated_file = sender.save(&updated, "abc-2.spsession");
+    let asked = bundle::import(&recipient.conn, &recipient.library, &updated_file, None).unwrap();
+    assert_eq!(asked.conflicts.len(), 1);
+    assert_eq!(notes::annotations(&recipient.conn, key).unwrap()[0].note, "npm test failed", "nothing changes before a decision");
+    bundle::import(&recipient.conn, &recipient.library, &updated_file, Some(bundle::OnConflict::Replace)).unwrap();
+    let after: Vec<_> = notes::annotations(&recipient.conn, key).unwrap().into_iter().map(|a| a.note).collect();
+    assert_eq!(after, ["npm test failed on login.spec", "mine"]);
+}
+
+#[test]
+fn imported_annotations_never_take_over_another_sessions() {
+    use session_player_lib::test_support::annotations as notes;
+    let sender = Sender::new("steal");
+    let mine = notes::save_annotation(&sender.conn, notes::Annotation::new("local:claude:abc", notes::Kind::Other, "on my local copy", vec![prompt_ref()], notes::Author::Person { name: None })).unwrap();
+    // Importing your own export: the bundle's annotation has the same id as the local one.
+    let file = sender.save(&sender.export("claude/-work-repo/abc.jsonl", None, Some(vec![])), "own.spsession");
+    let library = sender.base.join("library");
+    bundle::import(&sender.conn, &library, &file, None).unwrap();
+    let local = notes::annotations(&sender.conn, "local:claude:abc").unwrap();
+    assert_eq!(local.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), [mine.id.as_str()]);
+    let imported = notes::annotations(&sender.conn, "bundle:claude:abc").unwrap();
+    assert_eq!(imported.len(), 1);
+    assert_ne!(imported[0].id, mine.id);
+    assert_eq!(imported[0].note, "on my local copy");
+}
+
+#[test]
+fn replacing_keeps_annotations_the_recipient_edited() {
+    use session_player_lib::test_support::annotations as notes;
+    let sender = Sender::new("replace-edits");
+    let theirs = notes::save_annotation(&sender.conn, notes::Annotation::new("local:claude:abc", notes::Kind::Other, "first", vec![prompt_ref()], notes::Author::Person { name: None })).unwrap();
+    notes::save_meta(&sender.conn, &notes::SessionMeta { key: "local:claude:abc".into(), components: vec!["sender".into()], ..Default::default() }).unwrap();
+    let first = sender.export("claude/-work-repo/abc.jsonl", None, Some(vec![]));
+    let file = sender.save(&first, "one.spsession");
+    let recipient = Recipient::new("replace-edits");
+    bundle::import(&recipient.conn, &recipient.library, &file, None).unwrap();
+    let key = "bundle:claude:abc";
+    let mut edited = notes::annotations(&recipient.conn, key).unwrap()[0].clone();
+    edited.note = "recipient's edit".into();
+    notes::save_annotation(&recipient.conn, edited).unwrap();
+    let mut meta = notes::meta(&recipient.conn, key).unwrap().unwrap();
+    meta.components = vec!["recipient".into()];
+    notes::save_meta(&recipient.conn, &meta).unwrap();
+
+    let mut second = first.clone();
+    second.sessions[0].annotations[0].note = "sender's update".into();
+    second.sessions[0].meta.as_mut().unwrap().components = vec!["sender's update".into()];
+    let file = sender.save(&second, "two.spsession");
+    let report = bundle::import(&recipient.conn, &recipient.library, &file, Some(bundle::OnConflict::Replace)).unwrap();
+    assert_eq!(report.imported, vec!["claude:abc".to_string()]);
+    assert_eq!(notes::annotations(&recipient.conn, key).unwrap()[0].note, "recipient's edit");
+    assert_eq!(notes::meta(&recipient.conn, key).unwrap().unwrap().components, ["recipient"]);
+    assert_eq!(report.kept_notes, 2);
+    let _ = theirs;
 }

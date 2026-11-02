@@ -1,137 +1,154 @@
 import { useState } from "react";
 import { ask } from "@tauri-apps/plugin-dialog";
-import type { Annotation, AnnotationKind, Outcome, SessionMeta, SessionRow } from "../types";
+import type { Annotation, AnnotationKind, Outcome, SessionMeta } from "../types";
 import { KINDS, KIND_LABEL, OUTCOME_LABEL } from "../lib/notes";
 import { fullDate } from "../lib/format";
 import { Menu } from "./Menu";
+import { MultiMenu } from "./MultiMenu";
 
 const OUTCOMES = Object.keys(OUTCOME_LABEL) as Outcome[];
 
 const blank = (key: string): SessionMeta => ({
   key,
-  title: null,
-  goal: null,
-  context: null,
   outcome: "unknown",
   outcome_note: null,
-  tags: [],
-  links: [],
+  components: [],
   updated_at: 0,
+  generated: [],
+  generated_by: null,
+  cleared: [],
 });
 
-const text = (s: string) => (s.trim() ? s.trim() : null);
-
 /**
- * The metadata people write about a session: what it was for, how it went,
- * tags and related issues or pull requests. Shown under the title, with a
- * form to edit it.
+ * The analysis of a session: how it turned out, the parts of the repository
+ * it worked on, and its annotations, each of which jumps to its event.
  */
-export function SessionDetails({
-  session,
+export function Analysis({
   sessionKey,
   meta,
-  original,
-  onSave,
+  revision,
+  annotations,
+  onSaveMeta,
+  onSaveAnnotation,
+  onDeleteAnnotation,
+  onJump,
 }: {
-  session: SessionRow;
   sessionKey: string;
   meta: SessionMeta | null;
-  /** The transcript's own title, when the heading shows the one from `meta`. */
-  original?: string;
-  onSave: (meta: SessionMeta) => Promise<void>;
+  /** The transcript's current revision, to tell whether generated results are out of date. */
+  revision: string | null;
+  annotations: Annotation[];
+  onSaveMeta: (meta: SessionMeta) => Promise<void>;
+  onSaveAnnotation: (a: Annotation) => Promise<void>;
+  onDeleteAnnotation: (a: Annotation) => Promise<void>;
+  onJump: (a: Annotation) => void;
 }) {
   const [editing, setEditing] = useState(false);
-  const has = !!meta;
+  const [kinds, setKinds] = useState<AnnotationKind[]>([]);
+  const present = KINDS.filter((k) => annotations.some((a) => a.kind === k));
+  // A kind whose last annotation was deleted stops filtering.
+  const active = kinds.filter((k) => present.includes(k));
+  const shown = active.length ? annotations.filter((a) => active.includes(a.kind)) : annotations;
+  const m = meta ?? blank(sessionKey);
+  const hasOutcome = m.outcome !== "unknown" || !!m.outcome_note;
+  // "." (the repository root) was generated before it was ruled out; it names nothing.
+  const components = m.components.filter((c) => c !== ".");
+  const stale = !!(m.generated_by && revision && m.generated_by.revision !== revision);
+
   return (
-    <div className="t-details">
-      {original && <p className="t-original">Transcript title: {original}</p>}
-      {has && !editing && (
-        <dl className="details-view">
-          {meta.goal && (
-            <div>
-              <dt>Goal</dt>
-              <dd>{meta.goal}</dd>
-            </div>
-          )}
-          {meta.context && (
-            <div>
-              <dt>Context</dt>
-              <dd>{meta.context}</dd>
-            </div>
-          )}
-          {(meta.outcome !== "unknown" || meta.outcome_note) && (
-            <div>
-              <dt>Outcome</dt>
-              <dd>
-                <span className={`outcome outcome-${meta.outcome}`}>{OUTCOME_LABEL[meta.outcome]}</span>
-                {meta.outcome_note && <span> {meta.outcome_note}</span>}
-              </dd>
-            </div>
-          )}
-          {meta.tags.length > 0 && (
-            <div>
-              <dt>Tags</dt>
-              <dd className="tags">
-                {meta.tags.map((t) => (
-                  <span key={t} className="tag">
-                    {t}
-                  </span>
-                ))}
-              </dd>
-            </div>
-          )}
-          {meta.links.length > 0 && (
-            <div>
-              <dt>Links</dt>
-              <dd className="links">
-                {meta.links.map((l, i) => (
-                  <a key={i} className="link" href={l.url} title={l.url}>
-                    {l.label || l.url}
-                  </a>
-                ))}
-              </dd>
-            </div>
-          )}
-        </dl>
-      )}
+    <section className="analysis">
       {editing ? (
-        <DetailsForm
-          session={session}
-          initial={meta ?? blank(sessionKey)}
+        <AnalysisForm
+          initial={m}
           onCancel={() => setEditing(false)}
-          onSave={async (m) => {
-            await onSave(m);
+          onSave={async (next) => {
+            await onSaveMeta(next);
             setEditing(false);
           }}
         />
       ) : (
-        <button className="link details-edit" onClick={() => setEditing(true)}>
-          {has ? "Edit details" : "Add details"}
-        </button>
+        <dl className="details-view">
+          <div>
+            {/* The status sits under its label so the explanation lines up with the other values. */}
+            <dt>
+              Outcome
+              {hasOutcome && <span className={`outcome outcome-${m.outcome}`}>{OUTCOME_LABEL[m.outcome]}</span>}
+            </dt>
+            <dd>{hasOutcome ? m.outcome_note : <span className="dim">Not set</span>}</dd>
+          </div>
+          <div>
+            <dt>Components</dt>
+            <dd className="tags">
+              {components.length ? (
+                components.map((c) => (
+                  <span key={c} className="component">
+                    {c}
+                  </span>
+                ))
+              ) : (
+                <span className="dim">Not set</span>
+              )}
+            </dd>
+          </div>
+          <div>
+            <dt />
+            <dd className="details-links">
+              <button className="link" onClick={() => setEditing(true)}>
+                Edit
+              </button>
+              {stale && m.generated.length > 0 && (
+                <span className="stale">Generated from an earlier version of this transcript.</span>
+              )}
+            </dd>
+          </div>
+        </dl>
       )}
-    </div>
+
+      <div className="analysis-annotations">
+        <div className="analysis-annotations-head">
+          <span className="analysis-label">Annotations</span>
+          {present.length > 1 && (
+            <MultiMenu
+              label="Annotation type"
+              options={present.map((k) => ({ key: k, label: KIND_LABEL[k] }))}
+              value={active}
+              onChange={setKinds}
+            />
+          )}
+        </div>
+        {annotations.length === 0 && (
+          <p className="dim">None yet. Hover a message and click + in the margin, or open a tool call and click Annotate this call.</p>
+        )}
+        {/* Only the list scrolls, so the kind menu above it isn't cut off. */}
+        <div className="analysis-annotations-list">
+          {shown.map((a) => (
+            <AnnotationItem
+              key={a.id}
+              annotation={a}
+              revision={revision}
+              onSave={onSaveAnnotation}
+              onDelete={onDeleteAnnotation}
+              onJump={onJump}
+            />
+          ))}
+        </div>
+      </div>
+    </section>
   );
 }
 
-function DetailsForm({
-  session,
+function AnalysisForm({
   initial,
   onSave,
   onCancel,
 }: {
-  session: SessionRow;
   initial: SessionMeta;
   onSave: (meta: SessionMeta) => Promise<void>;
   onCancel: () => void;
 }) {
-  const [title, setTitle] = useState(initial.title ?? "");
-  const [goal, setGoal] = useState(initial.goal ?? "");
-  const [context, setContext] = useState(initial.context ?? "");
   const [outcome, setOutcome] = useState<Outcome>(initial.outcome);
   const [outcomeNote, setOutcomeNote] = useState(initial.outcome_note ?? "");
-  const [tags, setTags] = useState(initial.tags.join(", "));
-  // One link per line: the address, then an optional label.
-  const [links, setLinks] = useState(initial.links.map((l) => (l.label ? `${l.url} ${l.label}` : l.url)).join("\n"));
+  const [components, setComponents] = useState(initial.components.join(", "));
   const [err, setErr] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -141,20 +158,9 @@ function DetailsForm({
     try {
       await onSave({
         ...initial,
-        title: text(title),
-        goal: text(goal),
-        context: text(context),
         outcome,
-        outcome_note: text(outcomeNote),
-        tags: [...new Set(tags.split(",").map((t) => t.trim()).filter(Boolean))],
-        links: links
-          .split("\n")
-          .map((l) => l.trim())
-          .filter(Boolean)
-          .map((l) => {
-            const [url, ...label] = l.split(/\s+/);
-            return { url, label: label.join(" ") || null };
-          }),
+        outcome_note: outcomeNote.trim() || null,
+        components: [...new Set(components.split(",").map((c) => c.trim()).filter(Boolean))],
       });
     } catch (e) {
       setErr(String(e));
@@ -175,18 +181,6 @@ function DetailsForm({
         if (e.key === "Escape") onCancel();
       }}
     >
-      <label>
-        Title
-        <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder={session.title} autoFocus />
-      </label>
-      <label>
-        Goal
-        <textarea rows={2} value={goal} onChange={(e) => setGoal(e.target.value)} placeholder="The problem the session set out to solve" />
-      </label>
-      <label>
-        Context
-        <textarea rows={2} value={context} onChange={(e) => setContext(e.target.value)} placeholder="Background a reader needs" />
-      </label>
       <div className="details-row">
         <span className="details-label">Outcome</span>
         <div className="segmented" role="radiogroup" aria-label="Outcome">
@@ -198,16 +192,12 @@ function DetailsForm({
         </div>
       </div>
       <label>
-        What happened
-        <input value={outcomeNote} onChange={(e) => setOutcomeNote(e.target.value)} placeholder="Why it succeeded or didn't" />
+        Why
+        <input value={outcomeNote} onChange={(e) => setOutcomeNote(e.target.value)} placeholder="Why it succeeded or didn't" autoFocus />
       </label>
       <label>
-        Tags
-        <input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="Comma-separated" />
-      </label>
-      <label>
-        Issues and pull requests
-        <textarea rows={2} value={links} onChange={(e) => setLinks(e.target.value)} placeholder="One per line: https://… then an optional label" />
+        Components
+        <input value={components} onChange={(e) => setComponents(e.target.value)} placeholder="Paths or packages, comma-separated: packages/api, apps/web" />
       </label>
       {err && <div className="sheet-err">{err}</div>}
       <div className="details-actions">
@@ -284,18 +274,22 @@ const byLine = (a: Annotation) =>
 /** One annotation, with edit and delete. */
 export function AnnotationItem({
   annotation: a,
+  revision,
   onSave,
   onDelete,
   onJump,
 }: {
   annotation: Annotation;
+  /** The transcript's current revision, to tell whether a model's annotation is out of date. */
+  revision: string | null;
   onSave: (a: Annotation) => Promise<void>;
   onDelete: (a: Annotation) => Promise<void>;
   /** Shown in the panel: scrolls to the annotated event. */
   onJump?: (a: Annotation) => void;
 }) {
   const [editing, setEditing] = useState(false);
-  const unanchored = a.anchors.length > 0 && !a.anchors.some((r) => r.found);
+  const unanchored = !a.anchors.some((r) => r.found);
+  const stale = !!(a.revision && revision && a.revision !== revision);
   if (editing) {
     return (
       <AnnotationEditor
@@ -312,11 +306,11 @@ export function AnnotationItem({
     <div className={`annotation kind-${a.kind}`}>
       <div className="annotation-head">
         <span className="annotation-kind">{KIND_LABEL[a.kind]}</span>
-        {a.author.type === "model" && <span className="tag">generated</span>}
-        {onJump && a.anchors.length === 0 && <span className="dim">whole session</span>}
+        {a.confidence && <span className="dim">{a.confidence} confidence</span>}
+        {stale && <span className="stale" title="The transcript has changed since this was generated">out of date</span>}
         {unanchored && <span className="annotation-lost" title="The event it pointed at isn't in this transcript any more">event not found</span>}
         <span className="annotation-by">{byLine(a)}</span>
-        {onJump && !unanchored && a.anchors.length > 0 && (
+        {onJump && !unanchored && (
           <button className="link" onClick={() => onJump(a)}>
             Show
           </button>
@@ -334,60 +328,8 @@ export function AnnotationItem({
         </button>
       </div>
       {a.note && <p className="annotation-note">{a.note}</p>}
+      {a.rationale && <p className="annotation-rationale">Why: {a.rationale}</p>}
     </div>
   );
 }
 
-/** Every annotation on the session, filterable by kind, with a way to add a note about the whole session. */
-export function AnnotationsPanel({
-  annotations,
-  onSave,
-  onDelete,
-  onJump,
-  onAdd,
-}: {
-  annotations: Annotation[];
-  onSave: (a: Annotation) => Promise<void>;
-  onDelete: (a: Annotation) => Promise<void>;
-  onJump: (a: Annotation) => void;
-  onAdd: (kind: AnnotationKind, note: string) => Promise<void>;
-}) {
-  const [kind, setKind] = useState<AnnotationKind | "all">("all");
-  const [adding, setAdding] = useState(false);
-  const present = KINDS.filter((k) => annotations.some((a) => a.kind === k));
-  // Deleting the last annotation of the chosen kind shows them all again.
-  const active = kind !== "all" && !present.includes(kind) ? "all" : kind;
-  const shown = active === "all" ? annotations : annotations.filter((a) => a.kind === active);
-  return (
-    <section className="annotations-panel">
-      <div className="annotations-panel-head">
-        {present.length > 1 && (
-          <Menu
-            label="Filter annotations"
-            value={active}
-            options={[{ key: "all" as const, label: "All kinds" }, ...present.map((k) => ({ key: k, label: KIND_LABEL[k] }))]}
-            onChange={setKind}
-          />
-        )}
-        <button className="link" onClick={() => setAdding(true)}>
-          Add a note about the whole session
-        </button>
-      </div>
-      {adding && (
-        <AnnotationEditor
-          onCancel={() => setAdding(false)}
-          onSave={async (k, note) => {
-            await onAdd(k, note);
-            setAdding(false);
-          }}
-        />
-      )}
-      {shown.length === 0 && !adding && (
-        <p className="dim">No annotations yet. Hover a message and click + in the margin, or open a tool call and click Annotate this call.</p>
-      )}
-      {shown.map((a) => (
-        <AnnotationItem key={a.id} annotation={a} onSave={onSave} onDelete={onDelete} onJump={onJump} />
-      ))}
-    </section>
-  );
-}

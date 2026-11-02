@@ -136,7 +136,7 @@ export interface ExportPreview {
   summary: {
     bytes: number;
     file_name: string;
-    sessions: { id: string; title: string; is_subagent: boolean; prompts: number; events: number }[];
+    sessions: { id: string; title: string; is_subagent: boolean; prompts: number; events: number; has_details: boolean; annotations: number }[];
     omitted: RelatedSession[];
     attachments: BundleAttachment[];
   };
@@ -152,6 +152,8 @@ export interface ImportReport {
   conflicts: { id: string; existing_title: string; incoming_title: string }[];
   /** Sessions with no conversation, which were not imported. */
   empty: string[];
+  /** Details and annotations you changed since an earlier import, kept rather than replaced. */
+  kept_notes: number;
 }
 
 export interface LibraryError {
@@ -161,17 +163,20 @@ export interface LibraryError {
 
 export type Outcome = "unknown" | "succeeded" | "partial" | "failed";
 
-/** What a person has written about a session; the transcript's own details stay on SessionRow. */
+/** The analysis of a session: how it turned out and the parts of the repository it worked on. */
 export interface SessionMeta {
   key: string;
-  title: string | null;
-  goal: string | null;
-  context: string | null;
   outcome: Outcome;
+  /** Why it succeeded or didn't. */
   outcome_note: string | null;
-  tags: string[];
-  links: { url: string; label: string | null }[];
+  /** Repository paths or packages worked on, such as "packages/api". */
+  components: string[];
   updated_at: number;
+  /** Fields ("outcome", "components") still holding what a model generated; regenerating may replace them. */
+  generated: string[];
+  generated_by: { model: string; at: number; revision: string } | null;
+  /** Fields a person emptied on purpose; generating leaves them empty. */
+  cleared: string[];
 }
 
 export type AnnotationKind =
@@ -207,18 +212,23 @@ export interface Annotation {
   key: string;
   kind: AnnotationKind;
   note: string;
-  /** None means the annotation is about the whole session. */
+  /** The events it is about; at least one. */
   anchors: EventRef[];
   author: Author;
   created_at: number;
   updated_at: number;
+  /** A model's annotation someone edited; regenerating keeps it. */
+  edited?: boolean;
+  rationale?: string;
+  confidence?: string;
+  /** The transcript revision a model's annotation was made from. */
+  revision?: string;
 }
 
 export interface NoteSummary {
   key: string;
-  title: string | null;
   outcome: Outcome;
-  tags: string[];
+  components: string[];
   kinds: AnnotationKind[];
 }
 

@@ -34,6 +34,8 @@ Timestamps are milliseconds since the Unix epoch, in UTC.
 | `source_file` | File name of the session log it was read from. The bundle never stores the full path. |
 | `omitted` | Related sessions that are **not** in the bundle: `{relation, id, title}`, where `relation` is `parent`, `subagent` or `branch` |
 | `events` | The normalized transcript (see below) |
+| `meta` | Optional. The session's analysis: `outcome` (`unknown`, `succeeded`, `partial` or `failed`), `outcome_note` (why), `components` (repository paths or packages worked on, such as `packages/api`), `generated` (the fields still holding what a model generated, which regenerating may replace), `generated_by` (`{model, at, revision}`) and `cleared` (the fields a person emptied on purpose, which generating leaves empty). |
+| `annotations` | Optional. Annotations on the session (see below). |
 
 ### Events
 
@@ -48,6 +50,25 @@ An image in `images` is a reference, `attachment:<attachment id>`, not the image
 - **The selected session.** A pi fork file is exported with the history it copied from its parent, so the transcript starts at the session root. For a pi session with branches, the bundle holds the selected branch from the session root to its last entry, including the history it shares with the branch it split from. Every other branch, including the active branch when another is selected, is listed in `omitted` with `relation: "branch"`.
 - **Subagents.** Subagents of the selected session are included unless the sender unticks them in the export sheet. A subagent left out is listed in `omitted` with `relation: "subagent"`. A pi branch has no subagents of its own.
 - **Never included.** The parent of a subagent or fork (listed in `omitted` with `relation: "parent"`), forks of the session, and any other session. Every session in `sessions` after the first must be a subagent of the first; import rejects a bundle that holds anything else.
+
+## Annotations
+
+Each annotation marks a moment in the session; how the session went as a whole is its `meta`.
+
+| Field | Meaning |
+|---|---|
+| `id` | Unique, kept through export and import, so a re-import updates the same annotation |
+| `kind` | `tool_error`, `human_intervention`, `agent_stuck`, `human_frustration`, `wrong_assumption`, `wasted_work`, `environment`, `missing_context`, `automatable`, `key_decision` or `other` |
+| `note` | Free text |
+| `anchors` | The events it is about, at least one, each `{anchor, kind, ts, entry}`, where `entry` is set for pi |
+| `author` | `{type: "person", name}` (`name` may be null) or `{type: "model", model}` |
+| `created_at`, `updated_at` | Milliseconds |
+| `edited` | For a model's annotation: someone changed it, so regenerating keeps it |
+| `rationale`, `confidence`, `revision` | For a model's annotation: why it was made, how sure the model was (`low`, `medium`, `high`), and the transcript it was made from |
+
+`key` is empty in a bundle; import files metadata and annotations under the imported session. A pi branch exports only the annotations about events on that branch. Import rejects a bundle with an annotation that points at no event.
+
+On import, a new session's metadata and annotations are added. When a session is replaced after a conflict, the bundle's metadata replaces the library's, and each annotation replaces the one with the same `id`; annotations the recipient added stay. Keeping the library's copy, or re-importing unchanged content, leaves the recipient's notes as they are. Readers of an older version of this format ignore `meta` and `annotations`, so the format version is unchanged.
 
 ## Attachments
 

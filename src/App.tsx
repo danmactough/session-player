@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { ask, open as openDialog } from "@tauri-apps/plugin-dialog";
 import { api } from "./api";
-import type { IndexStats, NoteSummary, OnConflict, SearchHit, SessionRow, SortKey, Source } from "./types";
-import { KIND_LABEL, OUTCOME_LABEL, sessionKey } from "./lib/notes";
+import type { AnnotationKind, IndexStats, NoteSummary, OnConflict, Outcome, SearchHit, SessionRow, SortKey, Source } from "./types";
+import { KINDS, KIND_LABEL, OUTCOME_LABEL, sessionKey } from "./lib/notes";
+import { MultiMenu } from "./components/MultiMenu";
+
+const OUTCOMES = Object.keys(OUTCOME_LABEL) as Outcome[];
 import { basename, relTime, setHome, SOURCE_LABEL, tildify } from "./lib/format";
 import { SessionList } from "./components/SessionList";
 import { Transcript } from "./components/Transcript";
@@ -11,7 +14,7 @@ import { SettingsSheet } from "./components/SettingsSheet";
 import { ShortcutsSheet } from "./components/ShortcutsSheet";
 import { ExportSheet } from "./components/ExportSheet";
 import { ImportSheet, type ImportState } from "./components/ImportSheet";
-import { Menu, type MenuOption } from "./components/Menu";
+import { Menu } from "./components/Menu";
 import { SourceIcon } from "./components/AppIcon";
 import { applyTheme, storedTheme, type Theme } from "./lib/theme";
 import { ProjectNav, type ProjectSummary } from "./components/ProjectNav";
@@ -54,10 +57,16 @@ interface Prefs {
    * "copy" (the default), or an app such as "claude". Kept per agent, so
    * choosing ChatGPT for a Codex session doesn't change Claude Code sessions. */
   openWith: Partial<Record<Source, string>>;
-  /** Keeps only sessions with this outcome, tag or annotation kind: "outcome:<o>", "tag:<t>", "kind:<k>", or "" for all. */
-  noteFilter: string;
+  /** Keeps only sessions with one of these outcomes; empty keeps all. */
+  outcomeFilter: Outcome[];
+  /** Keeps only sessions with an annotation of one of these kinds; empty keeps all. */
+  kindFilter: AnnotationKind[];
   /** Shown as the author of annotations. */
   authorName: string;
+  /** The user agreed that Analyze sends the transcript to Anthropic. */
+  generateConsent: boolean;
+  /** The summary under a transcript's title is hidden. */
+  summaryCollapsed: boolean;
 }
 const DEFAULT_PREFS: Prefs = {
   projects: [],
@@ -72,8 +81,11 @@ const DEFAULT_PREFS: Prefs = {
   countExits: false,
   theme: storedTheme(),
   openWith: {},
-  noteFilter: "",
+  outcomeFilter: [],
+  kindFilter: [],
   authorName: "",
+  generateConsent: false,
+  summaryCollapsed: false,
 };
 
 export default function App() {
@@ -168,6 +180,11 @@ export default function App() {
         if (s.updated || s.removed || s.scanned === 0) reload();
       }),
       listen("import-session", () => void chooseBundle()),
+      // Generated notes change titles, outcomes and search hits, even for a session no longer open.
+      listen("generate-done", () => {
+        reloadNotes();
+        setVersion((v) => v + 1);
+      }),
       // Settings… in the app menu (⌘,).
       listen("open-settings", () => {
         setHelp(false);
@@ -179,7 +196,7 @@ export default function App() {
       }),
     ];
     return () => un.forEach((p) => p.then((f) => f()));
-  }, [reload, chooseBundle]);
+  }, [reload, chooseBundle, reloadNotes]);
 
   const update = useCallback((patch: Partial<Prefs>) => {
     setPrefs((p) => {
@@ -221,17 +238,15 @@ export default function App() {
 
   const hiddenSet = useMemo(() => new Set(p.hiddenProjects), [p.hiddenProjects]);
 
+  // Choices within a filter are alternatives; the two filters both apply.
   const passesNoteFilter = useCallback(
     (s: SessionRow) => {
-      const [what, value] = p.noteFilter.split(/:(.*)/s);
-      if (!value) return true;
       const n = notes.get(sessionKey(s));
-      if (!n) return what === "outcome" && value === "unknown";
-      if (what === "outcome") return n.outcome === value;
-      if (what === "tag") return n.tags.includes(value);
-      return (n.kinds as string[]).includes(value);
+      if (p.outcomeFilter.length && !p.outcomeFilter.includes(n?.outcome ?? "unknown")) return false;
+      if (p.kindFilter.length && !p.kindFilter.some((k) => n?.kinds.includes(k))) return false;
+      return true;
     },
-    [p.noteFilter, notes],
+    [p.outcomeFilter, p.kindFilter, notes],
   );
 
   const base = useMemo(
@@ -331,7 +346,7 @@ export default function App() {
     return (s: SessionRow) => {
       if (hits?.has(s.path)) return true;
       const n = notes.get(sessionKey(s));
-      const hay = `${s.title} ${n?.title ?? ""} ${n?.tags.join(" ") ?? ""} ${s.first_prompt ?? ""} ${s.cwd ?? ""} ${s.git_branch ?? ""} ${s.native_id}`.toLowerCase();
+      const hay = `${s.title} ${n?.components.join(" ") ?? ""} ${s.first_prompt ?? ""} ${s.cwd ?? ""} ${s.git_branch ?? ""} ${s.native_id}`.toLowerCase();
       return terms.every((t) => hay.includes(t));
     };
   }, [query, hits, notes]);
@@ -355,7 +370,7 @@ export default function App() {
       const terms = q.split(/\s+/);
       out = out.filter(matchesQuery);
       const rank = (s: SessionRow) => {
-        const title = (notes.get(sessionKey(s))?.title ?? s.title).toLowerCase();
+        const title = s.title.toLowerCase();
         const inTitle = terms.every((t) => title.includes(t)) ? -1000 : 0;
         return inTitle + (hits?.get(s.path)?.rank ?? 0);
       };
@@ -377,7 +392,7 @@ export default function App() {
         break;
     }
     return sorted;
-  }, [base, filtered, scoped, inSelection, p.sort, query, hits, matchesQuery, notes]);
+  }, [base, filtered, scoped, inSelection, p.sort, query, hits, matchesQuery]);
 
   // Search results stay flat; browsing nests children under their session.
   const rows = useMemo<ListRow[]>(
@@ -505,27 +520,16 @@ export default function App() {
     [sessions, hiddenSet, p.sources, p.showSub],
   );
 
-  // Only outcomes, tags and kinds that some session has are offered.
-  const noteFilterOptions = useMemo(() => {
-    const all = [...notes.values()];
-    const tags = [...new Set(all.flatMap((n) => n.tags))].sort((a, b) => a.localeCompare(b));
-    const kinds = (Object.keys(KIND_LABEL) as (keyof typeof KIND_LABEL)[]).filter((k) => all.some((n) => n.kinds.includes(k)));
-    const options: MenuOption<string>[] = [{ key: "", label: "All sessions" }];
-    if (all.some((n) => n.outcome !== "unknown")) {
-      options.push({
-        key: "outcome",
-        label: "Outcome",
-        submenu: (Object.keys(OUTCOME_LABEL) as (keyof typeof OUTCOME_LABEL)[]).map((o) => ({ key: `outcome:${o}`, label: OUTCOME_LABEL[o] })),
-      });
-    }
-    if (tags.length) options.push({ key: "tag", label: "Tag", submenu: tags.map((t) => ({ key: `tag:${t}`, label: t })) });
-    if (kinds.length) options.push({ key: "kind", label: "Annotation", submenu: kinds.map((k) => ({ key: `kind:${k}`, label: KIND_LABEL[k] })) });
-    // A saved filter whose value no longer exists stays visible so it can be cleared.
-    if (p.noteFilter && !options.some((o) => o.submenu?.some((c) => c.key === p.noteFilter))) {
-      options.push({ key: p.noteFilter, label: p.noteFilter.replace(":", ": ") });
-    }
-    return options;
-  }, [notes, p.noteFilter]);
+  // Only kinds some session has are offered (and any still chosen, so they can be cleared).
+  const kindOptions = useMemo(
+    () =>
+      KINDS.filter((k) => p.kindFilter.includes(k) || [...notes.values()].some((n) => n.kinds.includes(k))).map((k) => ({
+        key: k,
+        label: KIND_LABEL[k],
+      })),
+    [notes, p.kindFilter],
+  );
+  const showNoteFilters = notes.size > 0 || p.outcomeFilter.length > 0 || p.kindFilter.length > 0;
 
   // Changing what a list shows starts it at the top; changes that happen
   // under the user (expanding a row, new sessions arriving, hiding or dragging
@@ -533,13 +537,13 @@ export default function App() {
   const projectListKey = useMemo(
     () => ({}),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [filterText, p.sources, p.errorsOnly, p.showSub, p.countExits, p.projectSort, p.noteFilter],
+    [filterText, p.sources, p.errorsOnly, p.showSub, p.countExits, p.projectSort, p.outcomeFilter, p.kindFilter],
   );
   // Search results are ranked, so new full-text hits re-rank them from the top too.
   const sessionListKey = useMemo(
     () => ({}),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [p.projects, filterText, p.sources, p.errorsOnly, p.showSub, p.countExits, p.sort, query, searchAll, hits, p.noteFilter],
+    [p.projects, filterText, p.sources, p.errorsOnly, p.showSub, p.countExits, p.sort, query, searchAll, hits, p.outcomeFilter, p.kindFilter],
   );
 
   const empty = sessions !== null && sessions.length === 0;
@@ -692,16 +696,25 @@ export default function App() {
               {!searching && (
                 <Menu className="caps-sort" label="Sort sessions" value={p.sort} options={SORTS} onChange={(sort) => update({ sort })} />
               )}
-              {noteFilterOptions.length > 1 && (
-                <Menu
-                  className="caps-sort"
-                  label="Filter sessions"
-                  value={p.noteFilter}
-                  options={noteFilterOptions}
-                  onChange={(noteFilter) => update({ noteFilter: noteFilter.includes(":") ? noteFilter : "" })}
-                />
-              )}
             </div>
+            {showNoteFilters && (
+              <div className="mid-filters">
+                <MultiMenu
+                  label="Outcome"
+                  options={OUTCOMES.map((o) => ({ key: o, label: OUTCOME_LABEL[o] }))}
+                  value={p.outcomeFilter}
+                  onChange={(outcomeFilter) => update({ outcomeFilter })}
+                />
+                {kindOptions.length > 0 && (
+                  <MultiMenu
+                    label="Annotation type"
+                    options={kindOptions}
+                    value={p.kindFilter}
+                    onChange={(kindFilter) => update({ kindFilter })}
+                  />
+                )}
+              </div>
+            )}
           </div>
           {searching && (
             <div className="mid-controls">
@@ -781,6 +794,17 @@ export default function App() {
             openWith={p.openWith[selected.source]}
             onOpenWith={(choice) => update({ openWith: { ...p.openWith, [selected.source]: choice } })}
             authorName={p.authorName.trim() || null}
+            collapsed={p.summaryCollapsed}
+            onCollapse={(summaryCollapsed) => update({ summaryCollapsed })}
+            confirmGenerate={async () => {
+              if (p.generateConsent) return true;
+              const ok = await ask(
+                "Analyze sends this session's transcript to Anthropic, through the claude command and your Claude Code sign-in, so Claude Haiku can find the outcome, components and annotations. Nothing is sent until you analyze a session.",
+                { title: "Send this transcript to Anthropic?", kind: "info", okLabel: "Analyze", cancelLabel: "Cancel" },
+              );
+              if (ok) update({ generateConsent: true });
+              return ok;
+            }}
             onNotesChanged={() => {
               reloadNotes();
               // Re-runs the full-text search, which covers notes.

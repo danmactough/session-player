@@ -33,47 +33,68 @@ pub enum Outcome {
     Failed,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Link {
-    pub url: String,
-    pub label: Option<String>,
-}
-
-/// What a person has written about a session. Every field is optional; the
-/// transcript's own title and details stay on the session row.
+/// The analysis of a session: how it turned out and which parts of the
+/// repository it worked on. Every field is optional.
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SessionMeta {
     pub key: String,
-    pub title: Option<String>,
-    pub goal: Option<String>,
-    pub context: Option<String>,
     pub outcome: Outcome,
+    /// Why the session succeeded or didn't, in a sentence.
     pub outcome_note: Option<String>,
-    pub tags: Vec<String>,
-    pub links: Vec<Link>,
+    /// Repository paths or packages worked on, such as "packages/api".
+    pub components: Vec<String>,
     pub updated_at: i64,
+    /// Fields ("outcome", "components") holding a model's suggestion that
+    /// no one has edited yet.
+    pub generated: Vec<String>,
+    pub generated_by: Option<Generation>,
+    /// Fields a person emptied on purpose; generating leaves them empty
+    /// until someone fills them in again.
+    pub cleared: Vec<String>,
+}
+
+/// Which model made the suggestions, when, and from which transcript.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Generation {
+    pub model: String,
+    pub at: i64,
+    /// `generate::revision` of the transcript; a different one now means the
+    /// suggestions are out of date.
+    pub revision: String,
+}
+
+/// The fields `SessionMeta::generated` and `cleared` can name, in display order.
+pub const META_FIELDS: [&str; 2] = ["outcome", "components"];
+
+pub fn field_is_empty(meta: &SessionMeta, name: &str) -> bool {
+    match name {
+        "outcome" => meta.outcome == Outcome::Unknown && meta.outcome_note.as_deref().is_none_or(|s| s.trim().is_empty()),
+        "components" => meta.components.iter().all(|c| c.trim().is_empty()),
+        _ => true,
+    }
+}
+
+/// The value of one of the fields `SessionMeta::generated` can name. The
+/// outcome's explanation goes with the outcome.
+pub fn meta_field(meta: &SessionMeta, name: &str) -> serde_json::Value {
+    match name {
+        "outcome" => serde_json::json!([meta.outcome, meta.outcome_note]),
+        "components" => serde_json::json!(meta.components),
+        _ => serde_json::Value::Null,
+    }
 }
 
 impl SessionMeta {
     fn is_empty(&self) -> bool {
-        let blank = |s: &Option<String>| s.as_deref().is_none_or(|s| s.trim().is_empty());
-        blank(&self.title)
-            && blank(&self.goal)
-            && blank(&self.context)
-            && blank(&self.outcome_note)
-            && self.outcome == Outcome::Unknown
-            && self.tags.is_empty()
-            && self.links.is_empty()
+        META_FIELDS.iter().all(|f| field_is_empty(self, f))
+            // Kept so generating doesn't refill what a person emptied.
+            && self.cleared.is_empty()
     }
 
     fn search_text(&self) -> String {
-        let mut parts: Vec<&str> = [&self.title, &self.goal, &self.context, &self.outcome_note]
-            .into_iter()
-            .filter_map(|s| s.as_deref())
-            .collect();
-        parts.extend(self.tags.iter().map(String::as_str));
-        parts.extend(self.links.iter().flat_map(|l| [Some(l.url.as_str()), l.label.as_deref()]).flatten());
+        let mut parts: Vec<&str> = self.outcome_note.as_deref().into_iter().collect();
+        parts.extend(self.components.iter().map(String::as_str));
         parts.join("\n")
     }
 }
@@ -89,15 +110,38 @@ pub fn meta(conn: &Connection, key: &str) -> anyhow::Result<Option<SessionMeta>>
     Ok(json.map(|j| serde_json::from_str(&j)).transpose()?)
 }
 
-/// Saves the metadata for `meta.key`. Metadata with nothing filled in is
-/// removed rather than stored.
+/// Saves metadata a person edited. A field stays marked as a suggestion
+/// only if `meta.generated` still lists it and its value didn't change, so
+/// editing a suggestion, or leaving it out of `generated`, accepts it.
 pub fn save_meta(conn: &Connection, meta: &SessionMeta) -> anyhow::Result<()> {
-    // Links are shown as clickable; only web addresses open in the browser.
-    if let Some(bad) = meta.links.iter().find(|l| !(l.url.starts_with("https://") || l.url.starts_with("http://"))) {
-        anyhow::bail!("{} isn't a web address (http:// or https://)", bad.url);
-    }
+    let existing = self::meta(conn, &meta.key)?;
     let mut meta = meta.clone();
-    meta.tags.retain(|t| !t.trim().is_empty());
+    let edited = meta.clone();
+    meta.generated.retain(|name| {
+        existing
+            .as_ref()
+            .is_some_and(|old| old.generated.contains(name) && meta_field(old, name) == meta_field(&edited, name))
+    });
+    // Emptying a field records that; filling it lifts it.
+    meta.cleared = existing.as_ref().map(|old| old.cleared.clone()).unwrap_or_default();
+    for name in META_FIELDS {
+        let filled = |m: &SessionMeta| !field_is_empty(m, name);
+        if filled(&meta) {
+            meta.cleared.retain(|c| c != name);
+        } else if existing.as_ref().is_some_and(filled) && !meta.cleared.iter().any(|c| c == name) {
+            meta.cleared.push(name.to_string());
+        }
+    }
+    store_meta(conn, &meta)
+}
+
+/// Writes the metadata as given. Metadata with nothing filled in is
+/// removed rather than stored.
+pub fn store_meta(conn: &Connection, meta: &SessionMeta) -> anyhow::Result<()> {
+    let mut meta = meta.clone();
+    meta.components = meta.components.iter().map(|c| c.trim().to_string()).filter(|c| !c.is_empty() && c != ".").collect();
+    meta.generated.retain(|f| META_FIELDS.contains(&f.as_str()));
+    meta.cleared.retain(|f| META_FIELDS.contains(&f.as_str()));
     let tx = conn.unchecked_transaction()?;
     tx.execute("DELETE FROM session_meta WHERE key=?1", [&meta.key])?;
     tx.execute("DELETE FROM notes_fts WHERE key=?1 AND item='meta'", [&meta.key])?;
@@ -167,32 +211,58 @@ pub struct Annotation {
     pub key: String,
     pub kind: Kind,
     pub note: String,
-    /// No anchors means the annotation is about the whole session.
+    /// The events it is about; at least one.
     pub anchors: Vec<EventRef>,
     pub author: Author,
     pub created_at: i64,
     pub updated_at: i64,
+    /// For a model's annotation: someone edited it, so regenerating keeps it.
+    #[serde(default)]
+    pub edited: bool,
+    /// For a model's annotation: why it was made, and how sure the model was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rationale: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<String>,
+    /// For a model's annotation: the transcript revision it was made from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
 }
 
 impl Annotation {
     pub fn new(key: &str, kind: Kind, note: &str, anchors: Vec<EventRef>, author: Author) -> Annotation {
-        Annotation { id: String::new(), key: key.into(), kind, note: note.into(), anchors, author, created_at: 0, updated_at: 0 }
+        Annotation {
+            id: String::new(),
+            key: key.into(),
+            kind,
+            note: note.into(),
+            anchors,
+            author,
+            created_at: 0,
+            updated_at: 0,
+            edited: false,
+            rationale: None,
+            confidence: None,
+            revision: None,
+        }
     }
 }
 
 /// Unique across machines, so annotations from different people can be
 /// merged later without clashing.
-fn new_id() -> String {
+pub fn new_id() -> String {
     use std::hash::{BuildHasher, Hasher};
     let random = std::collections::hash_map::RandomState::new().build_hasher().finish();
     format!("{:x}-{random:016x}", now())
 }
 
 /// Creates the annotation (when `id` is empty) or updates the saved one,
-/// returning it as stored.
+/// returning it as stored. Changing a model's annotation marks it as
+/// edited, so regenerating keeps it.
 pub fn save_annotation(conn: &Connection, mut a: Annotation) -> anyhow::Result<Annotation> {
-    if a.note.trim().is_empty() && a.anchors.is_empty() {
-        anyhow::bail!("An annotation needs a note or an event to point at");
+    // An annotation marks a moment; how the session as a whole went is its metadata.
+    if a.anchors.is_empty() {
+        anyhow::bail!("An annotation needs an event to point at");
     }
     let tx = conn.unchecked_transaction()?;
     if a.id.is_empty() {
@@ -204,8 +274,13 @@ pub fn save_annotation(conn: &Connection, mut a: Annotation) -> anyhow::Result<A
         let Some(existing) = existing else { anyhow::bail!("This annotation no longer exists") };
         let existing: Annotation = serde_json::from_str(&existing)?;
         a.created_at = existing.created_at;
-        a.key = existing.key;
-        a.updated_at = now().max(a.created_at);
+        a.key = existing.key.clone();
+        a.author = existing.author.clone();
+        let same_anchors = a.anchors.len() == existing.anchors.len()
+            && a.anchors.iter().zip(&existing.anchors).all(|(x, y)| x.anchor == y.anchor && x.kind == y.kind && x.ts == y.ts && x.entry == y.entry);
+        let changed = a.kind != existing.kind || a.note != existing.note || !same_anchors;
+        a.edited = existing.edited || (changed && matches!(a.author, Author::Model { .. }));
+        a.updated_at = if changed { now().max(a.created_at) } else { existing.updated_at };
     }
     for r in &mut a.anchors {
         r.found = false;
@@ -222,6 +297,11 @@ pub fn save_annotation(conn: &Connection, mut a: Annotation) -> anyhow::Result<A
     Ok(a)
 }
 
+pub fn annotation(conn: &Connection, id: &str) -> anyhow::Result<Option<Annotation>> {
+    let json: Option<String> = conn.query_row("SELECT json FROM annotations WHERE id=?1", [id], |r| r.get(0)).optional()?;
+    Ok(json.map(|j| serde_json::from_str(&j)).transpose()?)
+}
+
 /// The session's annotations, oldest first.
 pub fn annotations(conn: &Connection, key: &str) -> anyhow::Result<Vec<Annotation>> {
     let mut stmt =
@@ -231,6 +311,22 @@ pub fn annotations(conn: &Connection, key: &str) -> anyhow::Result<Vec<Annotatio
         .map(|j| Ok(serde_json::from_str::<Annotation>(&j?)?))
         .collect::<anyhow::Result<Vec<_>>>()?;
     Ok(list)
+}
+
+/// Stores an annotation as given (id, author and times included), for one
+/// that arrives in an imported bundle.
+pub fn put_annotation(conn: &Connection, a: &Annotation) -> anyhow::Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        // Never moves an annotation from one session to another.
+        "INSERT INTO annotations(id, key, json) VALUES(?1, ?2, ?3)
+         ON CONFLICT(id) DO UPDATE SET json=excluded.json WHERE annotations.key=excluded.key",
+        params![a.id, a.key, serde_json::to_string(a)?],
+    )?;
+    tx.execute("DELETE FROM notes_fts WHERE item=?1", [&a.id])?;
+    tx.execute("INSERT INTO notes_fts(key, item, text) VALUES(?1, ?2, ?3)", params![a.key, a.id, a.note])?;
+    tx.commit()?;
+    Ok(())
 }
 
 pub fn delete_annotation(conn: &Connection, id: &str) -> anyhow::Result<()> {
@@ -292,23 +388,21 @@ pub fn session_key(row: &SessionRow) -> String {
 #[derive(Debug, Serialize)]
 pub struct Summary {
     pub key: String,
-    pub title: Option<String>,
     pub outcome: Outcome,
-    pub tags: Vec<String>,
+    pub components: Vec<String>,
     /// The kinds of the session's annotations, each once.
     pub kinds: Vec<Kind>,
 }
 
 pub fn summaries(conn: &Connection) -> anyhow::Result<Vec<Summary>> {
     let mut out: HashMap<String, Summary> = HashMap::new();
-    let blank = |key: &str| Summary { key: key.to_string(), title: None, outcome: Outcome::Unknown, tags: Vec::new(), kinds: Vec::new() };
+    let blank = |key: &str| Summary { key: key.to_string(), outcome: Outcome::Unknown, components: Vec::new(), kinds: Vec::new() };
     let mut stmt = conn.prepare("SELECT json FROM session_meta")?;
     for json in stmt.query_map([], |r| r.get::<_, String>(0))? {
         let meta: SessionMeta = serde_json::from_str(&json?)?;
         let s = out.entry(meta.key.clone()).or_insert_with(|| blank(&meta.key));
-        s.title = meta.title.filter(|t| !t.trim().is_empty());
         s.outcome = meta.outcome;
-        s.tags = meta.tags;
+        s.components = meta.components;
     }
     let mut stmt = conn.prepare("SELECT json FROM annotations")?;
     for json in stmt.query_map([], |r| r.get::<_, String>(0))? {

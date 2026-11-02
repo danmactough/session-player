@@ -96,6 +96,8 @@ export function ExportSheet({ session, onClose }: { session: SessionRow; onClose
                     <div className="root-meta">
                       {s.is_subagent ? "Subagent · " : ""}
                       {s.prompts} {s.prompts === 1 ? "prompt" : "prompts"} · {s.events} events
+                      {s.has_details && " · details"}
+                      {s.annotations > 0 && ` · ${s.annotations} ${s.annotations === 1 ? "annotation" : "annotations"}`}
                     </div>
                   </div>
                 </li>

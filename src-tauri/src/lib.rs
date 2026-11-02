@@ -10,13 +10,17 @@ pub mod model;
 pub mod parse;
 #[doc(hidden)]
 pub mod annotations;
+#[doc(hidden)]
+pub mod generate;
 
 #[doc(hidden)]
 pub mod test_support {
     pub use crate::annotations;
     pub use crate::bundle;
+    pub use crate::generate;
     pub use crate::parse;
     pub use crate::index;
+    pub use crate::model;
     pub use crate::model::SessionRow as Row;
 
     /// Parses and indexes one file, returning its index row and a compact
@@ -81,6 +85,10 @@ struct AppState {
     pending_full: AtomicBool,
     watcher: Mutex<Option<Debouncer<notify::RecommendedWatcher>>>,
     export: Mutex<PendingExport>,
+    /// Sessions (by key) a model is generating notes for, with the flag that cancels each.
+    generating: Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>,
+    /// Where the `claude` command is, once found.
+    claude: Mutex<Option<PathBuf>>,
 }
 
 /// The bundle shown in the export sheet. Saving writes this exact bundle,
@@ -414,7 +422,11 @@ async fn import_bundle(
 ) -> Result<bundle::ImportReport, String> {
     let state = state.inner().clone();
     let library = library_dir(&state);
-    let report = tauri::async_runtime::spawn_blocking(move || bundle::import(&library, Path::new(&path), on_conflict))
+    let db_path = state.db_path.clone();
+    let report = tauri::async_runtime::spawn_blocking(move || {
+        let conn = index::open(&db_path)?;
+        bundle::import(&conn, &library, Path::new(&path), on_conflict)
+    })
         .await
         .map_err(err)?
         .map_err(|e| format!("{e:#}"))?;
@@ -460,6 +472,9 @@ fn session_events(path: &str, branch: Option<&str>) -> Result<Vec<Event>, String
 struct SessionNotes {
     meta: Option<annotations::SessionMeta>,
     annotations: Vec<annotations::Annotation>,
+    /// The transcript's current revision, set when anything was generated,
+    /// so the UI can mark suggestions made from an older one.
+    revision: Option<String>,
 }
 
 /// A session's metadata and annotations, with each annotation's anchors
@@ -471,8 +486,13 @@ async fn session_notes(state: State<'_, Shared>, key: String, path: String, bran
         let conn = index::open(&state.db_path).map_err(err)?;
         let meta = annotations::meta(&conn, &key).map_err(err)?;
         let mut list = annotations::annotations(&conn, &key).map_err(err)?;
-        if list.iter().any(|a| !a.anchors.is_empty()) {
+        let generated = meta.as_ref().is_some_and(|m| m.generated_by.is_some()) || list.iter().any(|a| a.revision.is_some());
+        let mut revision = None;
+        if generated || list.iter().any(|a| !a.anchors.is_empty()) {
             let events = session_events(&path, branch.as_deref())?;
+            if generated {
+                revision = Some(generate::revision(&events));
+            }
             // pi annotations made on another branch of the file are told apart from lost ones.
             let p = Path::new(&path);
             let entries = match parse::detect(p) {
@@ -481,7 +501,7 @@ async fn session_notes(state: State<'_, Shared>, key: String, path: String, bran
             };
             annotations::resolve(&mut list, &events, entries.as_ref());
         }
-        Ok(SessionNotes { meta, annotations: list })
+        Ok(SessionNotes { meta, annotations: list, revision })
     })
     .await
     .map_err(err)?
@@ -511,6 +531,115 @@ fn delete_annotation(state: State<Shared>, id: String) -> Result<(), String> {
 fn note_summaries(state: State<Shared>) -> Result<Vec<annotations::Summary>, String> {
     let conn = index::open(&state.db_path).map_err(err)?;
     annotations::summaries(&conn).map_err(err)
+}
+
+/// Where the `claude` CLI is. Apps opened from the Finder don't get the
+/// user's shell PATH, so the usual install folders are checked, then a
+/// login shell is asked.
+fn find_claude() -> Option<PathBuf> {
+    let home = dirs::home_dir().unwrap_or_default();
+    let known = [
+        home.join(".local/bin/claude"),
+        home.join(".claude/local/claude"),
+        PathBuf::from("/opt/homebrew/bin/claude"),
+        PathBuf::from("/usr/local/bin/claude"),
+    ];
+    if let Some(found) = known.into_iter().find(|p| p.is_file()) {
+        return Some(found);
+    }
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+    // Interactive too, since PATH is often set in .zshrc; a profile that
+    // prints something leaves the answer on the last line.
+    let out = std::process::Command::new(shell).args(["-ilc", "command -v claude"]).stdin(std::process::Stdio::null()).output().ok()?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let path = PathBuf::from(stdout.lines().rev().find(|l| !l.trim().is_empty())?.trim());
+    path.is_file().then_some(path)
+}
+
+#[derive(Serialize, Clone)]
+struct GenerateProgress {
+    key: String,
+    done: usize,
+    total: usize,
+}
+
+#[derive(Serialize, Clone)]
+struct GenerateDone {
+    key: String,
+    error: Option<String>,
+    cancelled: bool,
+    /// Suggested annotations dropped because they pointed at events that don't exist.
+    rejected: usize,
+}
+
+/// Starts generating metadata and annotations for a session in the
+/// background. Progress arrives as "generate-progress" events and the end as
+/// one "generate-done" event.
+#[tauri::command]
+fn generate_notes(app: AppHandle, state: State<Shared>, key: String, path: String, branch: Option<String>) -> Result<(), String> {
+    let cancel = Arc::new(AtomicBool::new(false));
+    {
+        let mut running = state.generating.lock().unwrap();
+        if running.contains_key(&key) {
+            return Err("Already generating notes for this session".into());
+        }
+        running.insert(key.clone(), cancel.clone());
+    }
+    let state = state.inner().clone();
+    std::thread::spawn(move || {
+        // Clears the session's entry even if this thread panics, so it can be generated again.
+        struct Running(Shared, String);
+        impl Drop for Running {
+            fn drop(&mut self) {
+                self.0.generating.lock().unwrap().remove(&self.1);
+            }
+        }
+        let running = Running(state.clone(), key.clone());
+        let progress_app = app.clone();
+        let progress_key = key.clone();
+        let result = (|| -> anyhow::Result<usize> {
+            // A login shell can take seconds to start, so this happens here, once.
+            let claude = {
+                let mut cached = state.claude.lock().unwrap();
+                if cached.is_none() {
+                    *cached = find_claude();
+                }
+                cached.clone()
+            };
+            let Some(claude) = claude else {
+                anyhow::bail!("Couldn't find the claude command. Install Claude Code and sign in, then try again.");
+            };
+            let events = session_events(&path, branch.as_deref()).map_err(anyhow::Error::msg)?;
+            let mut ask = |system: &str, input: &str, schema: &serde_json::Value| generate::run_claude(&claude, system, input, schema, &cancel);
+            let generated = generate::generate(&events, &mut ask, &mut |done, total| {
+                let _ = progress_app.emit("generate-progress", GenerateProgress { key: progress_key.clone(), done, total });
+            })?;
+            let conn = index::open(&state.db_path)?;
+            generate::apply(&conn, &key, &generated, &events)?;
+            Ok(generated.rejected)
+        })();
+        drop(running);
+        let done = match result {
+            Ok(rejected) => GenerateDone { key, error: None, cancelled: false, rejected },
+            Err(e) if generate::is_cancelled(&e) => GenerateDone { key, error: None, cancelled: true, rejected: 0 },
+            Err(e) => GenerateDone { key, error: Some(format!("{e:#}")), cancelled: false, rejected: 0 },
+        };
+        let _ = app.emit("generate-done", done);
+    });
+    Ok(())
+}
+
+#[tauri::command]
+fn cancel_generate(state: State<Shared>, key: String) {
+    if let Some(flag) = state.generating.lock().unwrap().get(&key) {
+        flag.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Keys of the sessions notes are being generated for.
+#[tauri::command]
+fn generating(state: State<Shared>) -> Vec<String> {
+    state.generating.lock().unwrap().keys().cloned().collect()
 }
 
 fn serve_image(state: &Shared, uri: &str) -> tauri::http::Response<Vec<u8>> {
@@ -672,6 +801,8 @@ pub fn run() {
                 pending_full: AtomicBool::new(false),
                 watcher: Mutex::new(None),
                 export: Mutex::new(PendingExport::default()),
+                generating: Mutex::new(Default::default()),
+                claude: Mutex::new(None),
             });
             app.manage(state.clone());
             let handle = app.handle().clone();
@@ -721,7 +852,10 @@ pub fn run() {
             save_meta,
             save_annotation,
             delete_annotation,
-            note_summaries
+            note_summaries,
+            generate_notes,
+            cancel_generate,
+            generating
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -782,6 +916,8 @@ mod tests {
             pending_full: AtomicBool::new(false),
             watcher: Mutex::new(None),
             export: Mutex::new(PendingExport::default()),
+            generating: Mutex::new(Default::default()),
+            claude: Mutex::new(None),
         });
         let ok = serve_image(&state, "spimg://localhost/7/1/0");
         assert_eq!(ok.status(), 200);

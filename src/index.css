@@ -408,7 +408,8 @@ mark {
 .proj-sort .menu-button:hover,
 .proj-sort.open .menu-button,
 .caps-sort .menu-button:hover,
-.caps-sort.open .menu-button {
+.caps-sort.open .menu-button,
+.caps-sort.filtering .menu-button {
   color: var(--ink);
 }
 .proj-sort .menu-list,
@@ -1853,15 +1854,10 @@ mark {
   margin: 4px 0 10px;
   font-size: 13px;
 }
-.t-original {
-  margin: 0 0 6px;
-  font-size: 12px;
-  color: var(--muted);
-}
 .details-view {
   display: grid;
-  gap: 4px;
-  margin: 0 0 6px;
+  gap: 8px;
+  margin: 0;
 }
 .details-view > div {
   display: flex;
@@ -1870,7 +1866,11 @@ mark {
 }
 .details-view dt {
   flex: none;
-  width: 64px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  width: 84px;
   font: 10.5px var(--mono);
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -1881,8 +1881,7 @@ mark {
   color: var(--ink-2);
   white-space: pre-wrap;
 }
-.details-view .tags,
-.details-view .links {
+.details-view .tags {
   display: flex;
   flex-wrap: wrap;
   gap: 6px 10px;
@@ -1961,29 +1960,6 @@ mark {
 .setting-field {
   max-width: 320px;
 }
-.annotations-toggle {
-  white-space: nowrap;
-}
-.annotations-toggle.on {
-  background: var(--hover);
-}
-.annotations-panel {
-  flex: none;
-  max-height: 38vh;
-  overflow-y: auto;
-  padding: 8px 40px 10px;
-  border-bottom: 1px solid var(--line-2);
-}
-.annotations-panel-head {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  margin-bottom: 6px;
-  font-size: 12px;
-}
-.annotations-panel > p {
-  font-size: 12.5px;
-}
 .annotation {
   max-width: 860px;
   padding: 6px 10px;
@@ -2009,25 +1985,28 @@ mark {
   flex-wrap: wrap;
   gap: 4px 10px;
   align-items: baseline;
+  font-size: 12px;
+  color: var(--muted);
 }
-.annotation-head .link {
-  font-size: 11.5px;
+.annotation-head .link,
+.annotation-head .dim,
+.annotation-head .stale {
+  font-size: 12px;
 }
 .annotation-kind {
   font-weight: 600;
   color: var(--ink);
 }
 .annotation-by {
-  font-size: 11.5px;
   color: var(--faint);
   margin-right: auto;
 }
 .annotation-lost {
-  font: 10.5px var(--mono);
   color: var(--err);
 }
 .annotation-note {
   margin: 3px 0 0;
+  font-size: 13px;
   color: var(--ink-2);
   white-space: pre-wrap;
 }
@@ -2046,6 +2025,11 @@ mark {
   color: var(--muted);
   opacity: 0;
 }
+/* A prompt box starts lower in its row (its top margin and padding), so
+   the + lines up with its "Prompt n" label instead of the row's top. */
+.t-stream > .row:has(> .b-user) > .annotate-btn {
+  top: 34px;
+}
 .t-stream > .row:hover > .annotate-btn,
 .t-stream > .row > .annotate-btn:focus-visible {
   opacity: 1;
@@ -2062,10 +2046,189 @@ mark {
 .t-stream > .row:has(.menu.open) {
   z-index: 2;
 }
+.gen-message {
+  margin: 4px 0 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.stale {
+  color: var(--warn);
+  font-size: 11.5px;
+}
+.annotation-rationale {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.generating {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
 .tool-annotate {
   display: inline-block;
   margin-top: 6px;
   font-size: 11.5px;
+}
+
+.t-fold {
+  position: relative;
+}
+/* Floats in the header's left padding, beside the first line of the summary
+   (or of the buttons while the summary is hidden). */
+.collapse-toggle {
+  position: absolute;
+  left: -30px;
+  top: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: none;
+  color: var(--muted);
+}
+/* With the summary hidden, the buttons move up to the line the toggle
+   marks, so the toggle stays put and is centered on them. */
+.t-fold.collapsed .t-actions {
+  margin-top: 6px;
+}
+/* That margin is 2px under the first prompt's, which the fold's top follows. */
+.t-fold.collapsed .collapse-toggle {
+  top: 2px;
+}
+.collapse-toggle:hover {
+  border-color: var(--line);
+  background: var(--hover);
+  color: var(--ink);
+}
+.analysis {
+  margin: 4px 0 12px;
+  font-size: 13px;
+}
+.component {
+  font: 11.5px var(--mono);
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--hover);
+  color: var(--ink-2);
+}
+.details-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  align-items: baseline;
+  font-size: 12px;
+}
+.analysis-annotations {
+  margin-top: 8px;
+}
+.analysis-annotations-list {
+  max-height: 32vh;
+  overflow-y: auto;
+}
+.analysis-annotations-head {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+/* Matches the Outcome and Components labels and their column. */
+.analysis-label {
+  flex: none;
+  width: 84px;
+  font: 10.5px var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+/* Multi-select filters: a box holding a chip per chosen value. The box is
+   no wider than its column, so the chips wrap inside it. */
+.chip-box {
+  min-width: 0;
+  max-width: 100%;
+}
+.chip-box-field {
+  box-sizing: border-box;
+  max-width: 100%;
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  min-height: 24px;
+  padding: 2px 6px 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.chip-box-field:hover,
+.chip-box.open .chip-box-field {
+  background: var(--hover);
+}
+.chip-box-label {
+  font: 10.5px var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.chip-box-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 2px 0 7px;
+  border-radius: 10px;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  font-size: 11.5px;
+  color: var(--ink);
+  white-space: nowrap;
+}
+.chip-box-chip button {
+  padding: 0 4px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--muted);
+}
+.chip-box-chip button:hover,
+.chip-box-clear:hover {
+  color: var(--ink);
+}
+.chip-box-clear {
+  font-size: 11px;
+  color: var(--muted);
+}
+.chip-box .menu-list {
+  left: 0;
+  right: auto;
+}
+.mid-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  margin-top: 8px;
+}
+.mid-filters .caps-sort .menu-list,
+.analysis-annotations-head .caps-sort .menu-list {
+  left: 0;
+  right: auto;
+}
+.analysis-annotations > p {
+  margin: 2px 0;
+  font-size: 12px;
+}
+.note-nav {
+  color: var(--accent);
+}
+.note-nav .err-dot {
+  background: var(--accent);
+}
+.note-nav + .err-nav {
+  margin-left: 12px;
 }
 
 /* ---------- scrollbars ---------- */

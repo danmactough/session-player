@@ -80,6 +80,8 @@ export function ImportSheet({
               report.imported.length && `Imported ${count(report.imported.length, "session", "sessions")}.`,
               report.unchanged.length && `${count(report.unchanged.length, "session was", "sessions were")} already in your library.`,
               report.kept.length && `Kept your library's ${count(report.kept.length, "copy", "copies")} of ${count(report.kept.length, "session", "sessions")}.`,
+              report.kept_notes > 0 &&
+                `Kept ${count(report.kept_notes, "detail or annotation", "details and annotations")} you had changed since the last import.`,
               report.empty.length &&
                 `${count(report.empty.length, "session was", "sessions were")} empty (no prompts, replies or tool calls) and ${report.empty.length === 1 ? "wasn't" : "weren't"} imported.`,
             ]

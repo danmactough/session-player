@@ -638,7 +638,7 @@ fn generate_notes(app: AppHandle, state: State<Shared>, key: String, path: Strin
                 .find(|(k, v)| k == "CLAUDE_CONFIG_DIR" && !v.is_empty())
                 .map(|(_, v)| PathBuf::from(v))
                 .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".claude"));
-            let claude = generate::Claude { env: generate::claude_env(shell_env, &config_dir)?, bin };
+            let claude = generate::Claude::new(bin, shell_env, &config_dir)?;
             let events = session_events(&path, branch.as_deref()).map_err(anyhow::Error::msg)?;
             let mut ask = |system: &str, input: &str, schema: &serde_json::Value| generate::run_claude(&claude, system, input, schema, &cancel);
             let generated = generate::generate(&events, &mut ask, &mut |done, total| {

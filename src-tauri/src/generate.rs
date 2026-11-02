@@ -47,56 +47,58 @@ pub struct ClaudeOutput {
     pub model: String,
 }
 
-/// The `claude` command and the environment to run it in.
+/// The `claude` command and how to authenticate it.
 #[derive(Debug, Clone)]
 pub struct Claude {
     pub bin: PathBuf,
-    /// Added to the app's own environment; see `claude_env`.
+    /// Added to the app's own environment; see `Claude::new`.
     pub env: Vec<(String, String)>,
+    /// The `apiKeyHelper` command from the Claude settings, passed to `claude`.
+    pub api_key_helper: Option<String>,
 }
 
-/// The environment `claude` would have in the user's terminal, which an app
-/// opened from the Finder doesn't get: `shell_env` (the login shell's), then
-/// the `env` block of the Claude settings in `config_dir`, since `claude`
-/// runs here without reading its settings (see `run_in`). An `apiKeyHelper`
-/// there is run for the key when no key is set, as `claude` would. With none
-/// of these, `claude` uses the user's Claude Code sign-in.
-pub fn claude_env(shell_env: Vec<(String, String)>, config_dir: &Path) -> anyhow::Result<Vec<(String, String)>> {
-    let mut env = shell_env;
-    let mut helper: Option<String> = None;
-    // settings.local.json overrides settings.json.
-    for file in ["settings.json", "settings.local.json"] {
-        let Ok(text) = std::fs::read_to_string(config_dir.join(file)) else { continue };
-        let settings: Value = serde_json::from_str(&text).with_context(|| format!("Couldn't read {}", config_dir.join(file).display()))?;
-        for (name, value) in settings.get("env").and_then(Value::as_object).into_iter().flatten() {
-            let value = match value {
-                Value::String(s) => s.clone(),
-                other => other.to_string(),
-            };
-            env.push((name.clone(), value));
+impl Claude {
+    /// Sets `claude` up as it is in the user's terminal, which an app opened
+    /// from the Finder doesn't get: `shell_env` (the login shell's), then the
+    /// `env` block and `apiKeyHelper` of the Claude settings in `config_dir`,
+    /// which `claude` doesn't read itself here (see `run_in`).
+    pub fn new(bin: PathBuf, shell_env: Vec<(String, String)>, config_dir: &Path) -> anyhow::Result<Claude> {
+        let mut env = shell_env;
+        let mut api_key_helper: Option<String> = None;
+        // settings.local.json overrides settings.json, and settings override the shell.
+        for file in ["settings.json", "settings.local.json"] {
+            let Ok(text) = std::fs::read_to_string(config_dir.join(file)) else { continue };
+            let settings: Value =
+                serde_json::from_str(&text).with_context(|| format!("Couldn't read {}", config_dir.join(file).display()))?;
+            for (name, value) in settings.get("env").and_then(Value::as_object).into_iter().flatten() {
+                let value = match value {
+                    Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                env.push((name.clone(), value));
+            }
+            if let Some(h) = settings.get("apiKeyHelper").and_then(Value::as_str) {
+                api_key_helper = Some(h.to_string());
+            }
         }
-        if let Some(h) = settings.get("apiKeyHelper").and_then(Value::as_str) {
-            helper = Some(h.to_string());
-        }
+        Ok(Claude { bin, env, api_key_helper })
     }
-    let set = |name: &str| env.iter().any(|(k, v)| k == name && !v.is_empty());
-    if let Some(helper) = helper
-        && !set("ANTHROPIC_API_KEY")
-        && !set("ANTHROPIC_AUTH_TOKEN")
-    {
-        let out = Command::new("/bin/sh")
-            .args(["-c", &helper])
-            .envs(env.iter().cloned())
-            .stdin(Stdio::null())
-            .output()
-            .with_context(|| format!("Couldn't run the apiKeyHelper from {}", config_dir.display()))?;
-        let key = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if !out.status.success() || key.is_empty() {
-            bail!("The apiKeyHelper in {} gave no key ({})", config_dir.display(), out.status);
-        }
-        env.push(("ANTHROPIC_API_KEY".into(), key));
+
+    /// Whether the settings or shell name credentials of their own: an API
+    /// key, a token (an LLM gateway such as LiteLLM), a key helper, or a
+    /// cloud provider. A signed-in `claude` would use its sign-in instead, so
+    /// these run it in `--bare` mode, which uses only what's configured.
+    pub fn configured_credentials(&self) -> bool {
+        let value = |name: &str| self.env.iter().rev().find(|(k, _)| k == name).map(|(_, v)| v.as_str());
+        let set = |name: &str| value(name).is_some_and(|v| !v.is_empty());
+        let on = |name: &str| value(name).is_some_and(|v| !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false"));
+        self.api_key_helper.is_some()
+            || set("ANTHROPIC_API_KEY")
+            || set("ANTHROPIC_AUTH_TOKEN")
+            || on("CLAUDE_CODE_USE_BEDROCK")
+            || on("CLAUDE_CODE_USE_VERTEX")
+            || on("CLAUDE_CODE_USE_FOUNDRY")
     }
-    Ok(env)
 }
 
 /// Runs `claude -p` once. `input` (the transcript) is written to stdin;
@@ -129,6 +131,11 @@ fn run_in(claude: &Claude, cwd: &Path, system: &str, input: &str, schema: &Value
         .args(["--tools", "", "--setting-sources", ""])
         .args(["--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence"])
         .args(["--system-prompt", system])
+        .args(if claude.configured_credentials() { vec!["--bare"] } else { vec![] })
+        .args(match &claude.api_key_helper {
+            Some(helper) => vec!["--settings".to_string(), json!({ "apiKeyHelper": helper }).to_string()],
+            None => vec![],
+        })
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

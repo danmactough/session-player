@@ -31,7 +31,7 @@ fn fake_claude(dir: &Path, reply: &str, delay_secs: u32) -> PathBuf {
 }
 
 fn claude(bin: &Path) -> generate::Claude {
-    generate::Claude { bin: bin.to_path_buf(), env: vec![("SP_TEST_ENV".into(), "passed".into())] }
+    generate::Claude { bin: bin.to_path_buf(), env: vec![("SP_TEST_ENV".into(), "passed".into())], api_key_helper: None }
 }
 
 fn reply(structured: serde_json::Value) -> String {
@@ -241,7 +241,7 @@ fn real_claude_generates_valid_notes() {
     let bin = std::env::var("CLAUDE_BIN").map(PathBuf::from).unwrap_or_else(|_| dirs::home_dir().unwrap().join(".local/bin/claude"));
     // The environment the app builds, from this process's and the user's Claude settings.
     let config = std::env::var("CLAUDE_CONFIG_DIR").map(PathBuf::from).unwrap_or_else(|_| dirs::home_dir().unwrap().join(".claude"));
-    let real = generate::Claude { env: generate::claude_env(std::env::vars().collect(), &config).unwrap(), bin };
+    let real = generate::Claude::new(bin, std::env::vars().collect(), &config).unwrap();
     let events = fixture_events();
     let cancel = Arc::new(AtomicBool::new(false));
     let mut ask = |system: &str, input: &str, schema: &serde_json::Value| generate::run_claude(&real, system, input, schema, &cancel);
@@ -322,30 +322,44 @@ fn get<'a>(env: &'a [(String, String)], name: &str) -> Option<&'a str> {
 
 #[test]
 fn claude_gets_the_shell_environment_and_the_env_from_its_settings() {
-    let shell = vec![("PATH".to_string(), std::env::var("PATH").unwrap()), ("ANTHROPIC_API_KEY".to_string(), "from-shell".to_string()), ("ONLY_SHELL".to_string(), "1".to_string())];
-    let dir = config_dir("settings-env", serde_json::json!({ "env": { "ANTHROPIC_API_KEY": "from-settings", "FROM_SETTINGS": "1" } }), Some(serde_json::json!({ "env": { "FROM_LOCAL": "2" } })));
-    let env = generate::claude_env(shell, &dir).unwrap();
-    assert_eq!(get(&env, "ANTHROPIC_API_KEY"), Some("from-settings"), "settings override the shell, as in claude");
-    assert_eq!((get(&env, "ONLY_SHELL"), get(&env, "FROM_SETTINGS"), get(&env, "FROM_LOCAL")), (Some("1"), Some("1"), Some("2")));
+    let shell = vec![("ANTHROPIC_BASE_URL".to_string(), "http://shell".to_string()), ("ONLY_SHELL".to_string(), "1".to_string())];
+    let dir = config_dir(
+        "settings-env",
+        serde_json::json!({ "env": { "ANTHROPIC_BASE_URL": "http://gateway", "ANTHROPIC_CUSTOM_HEADERS": "X-Team: platform" } }),
+        Some(serde_json::json!({ "env": { "FROM_LOCAL": "2" }, "apiKeyHelper": "echo key" })),
+    );
+    let claude = generate::Claude::new(PathBuf::from("claude"), shell, &dir).unwrap();
+    assert_eq!(get(&claude.env, "ANTHROPIC_BASE_URL"), Some("http://gateway"), "settings override the shell, as in claude");
+    assert_eq!(get(&claude.env, "ANTHROPIC_CUSTOM_HEADERS"), Some("X-Team: platform"));
+    assert_eq!((get(&claude.env, "ONLY_SHELL"), get(&claude.env, "FROM_LOCAL")), (Some("1"), Some("2")));
+    assert_eq!(claude.api_key_helper.as_deref(), Some("echo key"));
+
+    // No settings at all: just the shell.
+    let none = generate::Claude::new(PathBuf::from("claude"), vec![("A".into(), "1".into())], &scratch("no-settings")).unwrap();
+    assert_eq!((none.env.len(), none.api_key_helper), (1, None));
+}
+
+/// The arguments the fake `claude` was started with.
+fn args_for(name: &str, env: Vec<(String, String)>, api_key_helper: Option<&str>) -> Vec<String> {
+    let dir = scratch(name);
+    let bin = fake_claude(&dir, &reply(serde_json::json!({})), 0);
+    let claude = generate::Claude { bin, env, api_key_helper: api_key_helper.map(str::to_string) };
+    generate::run_claude(&claude, "S", "x", &serde_json::json!({}), &Arc::new(AtomicBool::new(false))).unwrap();
+    std::fs::read_to_string(dir.join("args.txt")).unwrap().lines().map(str::to_string).collect()
 }
 
 #[test]
-fn an_api_key_helper_supplies_the_key_when_no_key_is_set() {
-    let shell = vec![("PATH".to_string(), std::env::var("PATH").unwrap())];
-    let dir = config_dir("helper", serde_json::json!({ "apiKeyHelper": "echo from-helper" }), None);
-    let env = generate::claude_env(shell.clone(), &dir).unwrap();
-    assert_eq!(get(&env, "ANTHROPIC_API_KEY"), Some("from-helper"));
-
-    // A key already set wins over the helper, as in claude.
-    let mut with_key = shell.clone();
-    with_key.push(("ANTHROPIC_API_KEY".into(), "from-shell".into()));
-    assert_eq!(get(&generate::claude_env(with_key, &dir).unwrap(), "ANTHROPIC_API_KEY"), Some("from-shell"));
-
-    let failing = config_dir("helper-fails", serde_json::json!({ "apiKeyHelper": "exit 3" }), None);
-    let err = generate::claude_env(shell.clone(), &failing).unwrap_err().to_string();
-    assert!(err.contains("apiKeyHelper"), "{err}");
-
-    // No settings at all: the sign-in is left to claude.
-    let none = scratch("no-settings");
-    assert_eq!(get(&generate::claude_env(shell, &none).unwrap(), "ANTHROPIC_API_KEY"), None);
+fn configured_credentials_are_used_instead_of_the_sign_in() {
+    // Nothing configured: claude uses the Claude Code sign-in.
+    assert!(!args_for("signin", vec![("ANTHROPIC_BASE_URL".into(), "http://gateway".into())], None).contains(&"--bare".to_string()));
+    // A key, a gateway token, a cloud provider or a key helper: --bare, which never reads the sign-in.
+    for (name, var, value) in [("key", "ANTHROPIC_API_KEY", "sk-1"), ("token", "ANTHROPIC_AUTH_TOKEN", "sk-litellm"), ("bedrock", "CLAUDE_CODE_USE_BEDROCK", "1")] {
+        let args = args_for(name, vec![(var.into(), value.into())], None);
+        assert!(args.contains(&"--bare".to_string()), "{name}: {args:?}");
+    }
+    assert!(!args_for("bedrock-off", vec![("CLAUDE_CODE_USE_BEDROCK".into(), "0".into())], None).contains(&"--bare".to_string()));
+    let args = args_for("helper", vec![], Some("vault read -field=key secret/claude"));
+    assert!(args.contains(&"--bare".to_string()));
+    let settings = args.iter().position(|a| a == "--settings").map(|i| args[i + 1].clone()).unwrap();
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&settings).unwrap()["apiKeyHelper"], "vault read -field=key secret/claude");
 }

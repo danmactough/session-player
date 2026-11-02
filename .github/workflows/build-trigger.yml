@@ -1,0 +1,31 @@
+name: Build Trigger
+
+# A workflow started by issue_comment reports its check against the default branch, not the
+# PR head, so it can never satisfy a required check. Instead this just toggles the "build"
+# label, and build.yml (a pull_request workflow) reports on the PR commit.
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  label:
+    if: |
+      github.event.issue.pull_request != null &&
+      startsWith(github.event.comment.body, '/build') &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Re-apply the build label
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.issue.number }}
+        run: |
+          gh label create build --repo "$REPO" \
+            --description "Run the macOS build for this PR" --color FBCA04 || true
+          # Removing first makes the label fire "labeled" again on a repeat /build comment.
+          gh pr edit "$PR" --repo "$REPO" --remove-label build || true
+          gh pr edit "$PR" --repo "$REPO" --add-label build

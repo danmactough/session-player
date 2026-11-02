@@ -1,0 +1,39 @@
+name: Build
+
+# Runs only when the "build" label is added to a PR, so nothing is built automatically on
+# push. Commenting `/build` on the PR (see build-trigger.yml) adds the label.
+#
+# No `synchronize` trigger on purpose: a later push leaves the required Build check missing on
+# the new commit, which blocks the merge until someone comments `/build` again.
+on:
+  pull_request:
+    types: [labeled]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # The app is macOS-only (Info.plist, entitlements, .app bundle), so the build stays on macOS.
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'build')
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+
+      # Type-checks and builds the frontend, then compiles the release app without bundling it.
+      - run: npx tauri build --no-bundle

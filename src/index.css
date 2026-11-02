@@ -2088,7 +2088,12 @@ mark {
   background: none;
   color: var(--muted);
 }
-/* Centered on the first row of buttons. */
+/* With the summary hidden, the buttons move up to the line the toggle
+   marks, so the toggle stays put and is centered on them. */
+.t-fold.collapsed .t-actions {
+  margin-top: 6px;
+}
+/* That margin is 2px under the first prompt's, which the fold's top follows. */
 .t-fold.collapsed .collapse-toggle {
   top: 2px;
 }

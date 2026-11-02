@@ -2131,8 +2131,15 @@ mark {
   text-transform: uppercase;
   color: var(--faint);
 }
-/* Multi-select filters: a box holding a chip per chosen value. */
+/* Multi-select filters: a box holding a chip per chosen value. The box is
+   no wider than its column, so the chips wrap inside it. */
+.chip-box {
+  min-width: 0;
+  max-width: 100%;
+}
 .chip-box-field {
+  box-sizing: border-box;
+  max-width: 100%;
   display: inline-flex;
   flex-wrap: wrap;
   align-items: center;

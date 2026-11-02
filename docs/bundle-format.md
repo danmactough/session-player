@@ -34,7 +34,7 @@ Timestamps are milliseconds since the Unix epoch, in UTC.
 | `source_file` | File name of the session log it was read from. The bundle never stores the full path. |
 | `omitted` | Related sessions that are **not** in the bundle: `{relation, id, title}`, where `relation` is `parent`, `subagent` or `branch` |
 | `events` | The normalized transcript (see below) |
-| `meta` | Optional. The session's analysis: `outcome` (`unknown`, `succeeded`, `partial` or `failed`), `outcome_note` (why), `components` (repository paths or packages worked on, such as `packages/api`), `generated` (the fields holding a model's suggestion no one has edited or accepted), `generated_by` (`{model, at, revision}`) and `cleared` (the fields a person emptied on purpose, which generating leaves empty). |
+| `meta` | Optional. The session's analysis: `outcome` (`unknown`, `succeeded`, `partial` or `failed`), `outcome_note` (why), `components` (repository paths or packages worked on, such as `packages/api`), `generated` (the fields still holding what a model generated, which regenerating may replace), `generated_by` (`{model, at, revision}`) and `cleared` (the fields a person emptied on purpose, which generating leaves empty). |
 | `annotations` | Optional. Annotations on the session (see below). |
 
 ### Events
@@ -63,7 +63,7 @@ Each annotation marks a moment in the session; how the session went as a whole i
 | `anchors` | The events it is about, at least one, each `{anchor, kind, ts, entry}`, where `entry` is set for pi |
 | `author` | `{type: "person", name}` (`name` may be null) or `{type: "model", model}` |
 | `created_at`, `updated_at` | Milliseconds |
-| `accepted` | For a model's annotation: someone accepted or edited it |
+| `edited` | For a model's annotation: someone changed it, so regenerating keeps it |
 | `rationale`, `confidence`, `revision` | For a model's annotation: why it was made, how sure the model was (`low`, `medium`, `high`), and the transcript it was made from |
 
 `key` is empty in a bundle; import files metadata and annotations under the imported session. A pi branch exports only the annotations about events on that branch. Import rejects a bundle with an annotation that points at no event.

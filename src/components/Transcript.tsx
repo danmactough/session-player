@@ -211,7 +211,7 @@ export function Transcript({
         else {
           setGenMessage(
             rejected
-              ? `Left out ${rejected} suggested ${rejected === 1 ? "annotation that pointed" : "annotations that pointed"} at events this transcript doesn't have.`
+              ? `Left out ${rejected} generated ${rejected === 1 ? "annotation that pointed" : "annotations that pointed"} at events this transcript doesn't have.`
               : null,
           );
           // The list refreshes itself (App listens too); this transcript reloads its notes.
@@ -298,6 +298,12 @@ export function Transcript({
     const next = noteIdx === null || noteIdx >= n ? (dir === 1 ? 0 : n - 1) : (noteIdx + dir + n) % n;
     setNoteIdx(next);
     jumpTo(noteStops[next]);
+  };
+  // Show in the summary moves the navigator to that annotation too.
+  const showNote = (a: Annotation) => {
+    const i = noteStops.findIndex((x) => x.id === a.id);
+    setNoteIdx(i >= 0 ? i : null);
+    jumpTo(a);
   };
   const jumpRef = useRef(jumpTo);
   jumpRef.current = jumpTo;
@@ -509,7 +515,7 @@ export function Transcript({
                 onSaveMeta={saveMeta}
                 onSaveAnnotation={saveAnnotation}
                 onDeleteAnnotation={deleteAnnotation}
-                onJump={jumpTo}
+                onJump={showNote}
               />
               <dl className="t-meta">
                 <div>

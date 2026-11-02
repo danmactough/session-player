@@ -18,10 +18,6 @@ const blank = (key: string): SessionMeta => ({
   cleared: [],
 });
 
-/** Marks a field holding a model's suggestion. */
-const Suggested = ({ meta, field }: { meta: SessionMeta; field: string }) =>
-  meta.generated.includes(field) ? <span className="tag suggested">suggested</span> : null;
-
 /**
  * The analysis of a session: how it turned out, the parts of the repository
  * it worked on, and its annotations, each of which jumps to its event.
@@ -38,7 +34,7 @@ export function Analysis({
 }: {
   sessionKey: string;
   meta: SessionMeta | null;
-  /** The transcript's current revision, to tell whether suggestions are out of date. */
+  /** The transcript's current revision, to tell whether generated results are out of date. */
   revision: string | null;
   annotations: Annotation[];
   onSaveMeta: (meta: SessionMeta) => Promise<void>;
@@ -75,7 +71,7 @@ export function Analysis({
               {hasOutcome ? (
                 <>
                   <span className={`outcome outcome-${m.outcome}`}>{OUTCOME_LABEL[m.outcome]}</span>
-                  {m.outcome_note && <span> {m.outcome_note}</span>} <Suggested meta={m} field="outcome" />
+                  {m.outcome_note && <span> {m.outcome_note}</span>}
                 </>
               ) : (
                 <span className="dim">Not set</span>
@@ -94,7 +90,6 @@ export function Analysis({
               ) : (
                 <span className="dim">Not set</span>
               )}
-              <Suggested meta={m} field="components" />
             </dd>
           </div>
           <div>
@@ -103,17 +98,8 @@ export function Analysis({
               <button className="link" onClick={() => setEditing(true)}>
                 Edit
               </button>
-              {m.generated.length > 0 && (
-                <>
-                  <span className="dim">
-                    Suggested by {m.generated_by?.model ?? "a model"}
-                    {m.generated_by && ` on ${fullDate(m.generated_by.at)}`}
-                  </span>
-                  {stale && <span className="stale">The transcript has changed since.</span>}
-                  <button className="link" onClick={() => void onSaveMeta({ ...m, generated: [] })}>
-                    Accept suggestions
-                  </button>
-                </>
+              {stale && m.generated.length > 0 && (
+                <span className="stale">Generated from an earlier version of this transcript.</span>
               )}
             </dd>
           </div>
@@ -304,7 +290,6 @@ export function AnnotationItem({
 }) {
   const [editing, setEditing] = useState(false);
   const unanchored = !a.anchors.some((r) => r.found);
-  const suggestion = a.author.type === "model" && !a.accepted;
   const stale = !!(a.revision && revision && a.revision !== revision);
   if (editing) {
     return (
@@ -322,7 +307,6 @@ export function AnnotationItem({
     <div className={`annotation kind-${a.kind}`}>
       <div className="annotation-head">
         <span className="annotation-kind">{KIND_LABEL[a.kind]}</span>
-        {a.author.type === "model" && <span className={`tag ${suggestion ? "suggested" : ""}`}>{suggestion ? "suggested" : "generated"}</span>}
         {a.confidence && <span className="dim">{a.confidence} confidence</span>}
         {stale && <span className="stale" title="The transcript has changed since this was generated">out of date</span>}
         {unanchored && <span className="annotation-lost" title="The event it pointed at isn't in this transcript any more">event not found</span>}
@@ -330,11 +314,6 @@ export function AnnotationItem({
         {onJump && !unanchored && (
           <button className="link" onClick={() => onJump(a)}>
             Show
-          </button>
-        )}
-        {suggestion && (
-          <button className="link" onClick={() => void onSave(a)}>
-            Accept
           </button>
         )}
         <button className="link" onClick={() => setEditing(true)}>

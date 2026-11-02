@@ -394,7 +394,7 @@ fn suggestion(v: &Value) -> Option<Suggestion> {
 
 /// Saves suggestions for the session at `key`. A metadata field takes the
 /// suggestion only if it is empty or still holds an earlier suggestion, and
-/// only the model's annotations no one has accepted or edited are replaced.
+/// only the model's annotations no one has edited are replaced.
 pub fn apply(conn: &Connection, key: &str, g: &Generated, events: &[Event]) -> anyhow::Result<()> {
     let mut meta = annotations::meta(conn, key)?.unwrap_or_else(|| SessionMeta { key: key.to_string(), ..Default::default() });
     // A field is open to a suggestion when it holds an earlier one, or is
@@ -426,7 +426,7 @@ pub fn apply(conn: &Connection, key: &str, g: &Generated, events: &[Event]) -> a
     annotations::resolve(&mut old, events, None);
     for a in old {
         let here = a.anchors.iter().any(|r| r.found);
-        if matches!(a.author, Author::Model { .. }) && !a.accepted && here {
+        if matches!(a.author, Author::Model { .. }) && !a.edited && here {
             annotations::delete_annotation(conn, &a.id)?;
         }
     }

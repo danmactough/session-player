@@ -175,7 +175,7 @@ fn temp_db(name: &str) -> rusqlite::Connection {
 }
 
 #[test]
-fn regenerating_keeps_what_people_wrote_edited_or_accepted() {
+fn regenerating_keeps_what_people_wrote_or_edited() {
     let conn = temp_db("apply");
     let events = fixture_events();
     notes::save_meta(&conn, &notes::SessionMeta { key: KEY.into(), components: vec!["mine".into()], ..Default::default() }).unwrap();
@@ -194,15 +194,16 @@ fn regenerating_keeps_what_people_wrote_edited_or_accepted() {
     let list = notes::annotations(&conn, KEY).unwrap();
     assert_eq!(list.len(), 2);
     let tool_error = list.iter().find(|a| a.kind == notes::Kind::ToolError).unwrap().clone();
-    assert!(!tool_error.accepted);
+    assert!(!tool_error.edited);
     assert_eq!(tool_error.confidence.as_deref(), Some("high"));
 
-    // A person edits the generated outcome and accepts the tool error annotation.
+    // A person edits the generated outcome and the tool error annotation.
     let mut edited = meta.clone();
     edited.outcome_note = Some("Never got past the first run".into());
     notes::save_meta(&conn, &edited).unwrap();
-    let accepted = notes::save_annotation(&conn, tool_error).unwrap();
-    assert!(accepted.accepted);
+    let mut tool_error = tool_error;
+    tool_error.note = "npm test failed on the login spec".into();
+    assert!(notes::save_annotation(&conn, tool_error).unwrap().edited);
 
     let mut second = answer();
     second["outcome"] = "succeeded".into();
@@ -245,21 +246,23 @@ fn real_claude_generates_valid_notes() {
 }
 
 #[test]
-fn accepting_a_suggestion_is_not_an_edit() {
-    let conn = temp_db("accept");
+fn only_a_change_marks_a_generated_annotation_as_edited() {
+    let conn = temp_db("edit");
     let events = fixture_events();
     let mut calls = Vec::new();
     let g = generate::generate(&events, &mut stub(answer(), &mut calls), &mut |_, _| {}).unwrap();
     generate::apply(&conn, KEY, &g, &events).unwrap();
-    let suggestion = notes::annotations(&conn, KEY).unwrap().into_iter().find(|a| a.kind == notes::Kind::ToolError).unwrap();
+    let generated = notes::annotations(&conn, KEY).unwrap().into_iter().find(|a| a.kind == notes::Kind::ToolError).unwrap();
     std::thread::sleep(std::time::Duration::from_millis(5));
-    let accepted = notes::save_annotation(&conn, suggestion.clone()).unwrap();
-    assert!(accepted.accepted);
-    assert_eq!(accepted.updated_at, suggestion.updated_at, "accepting leaves it unedited");
-    let mut edited = accepted.clone();
-    edited.note = "changed".into();
+    let unchanged = notes::save_annotation(&conn, generated.clone()).unwrap();
+    assert!(!unchanged.edited);
+    assert_eq!(unchanged.updated_at, generated.updated_at);
+    let mut changed = unchanged.clone();
+    changed.note = "changed".into();
     std::thread::sleep(std::time::Duration::from_millis(5));
-    assert!(notes::save_annotation(&conn, edited).unwrap().updated_at > accepted.updated_at);
+    let saved = notes::save_annotation(&conn, changed).unwrap();
+    assert!(saved.edited);
+    assert!(saved.updated_at > generated.updated_at);
 }
 
 #[test]

@@ -172,7 +172,7 @@ export interface SessionMeta {
   /** Repository paths or packages worked on, such as "packages/api". */
   components: string[];
   updated_at: number;
-  /** Fields ("outcome", "components") holding a model's suggestion no one has edited or accepted. */
+  /** Fields ("outcome", "components") still holding what a model generated; regenerating may replace them. */
   generated: string[];
   generated_by: { model: string; at: number; revision: string } | null;
   /** Fields a person emptied on purpose; generating leaves them empty. */
@@ -217,8 +217,8 @@ export interface Annotation {
   author: Author;
   created_at: number;
   updated_at: number;
-  /** A model's annotation someone accepted or edited; regenerating keeps it. */
-  accepted?: boolean;
+  /** A model's annotation someone edited; regenerating keeps it. */
+  edited?: boolean;
   rationale?: string;
   confidence?: string;
   /** The transcript revision a model's annotation was made from. */

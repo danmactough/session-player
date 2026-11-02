@@ -46,7 +46,7 @@ pub struct SessionMeta {
     pub components: Vec<String>,
     pub updated_at: i64,
     /// Fields ("outcome", "components") holding a model's suggestion that
-    /// no one has edited or accepted yet.
+    /// no one has edited yet.
     pub generated: Vec<String>,
     pub generated_by: Option<Generation>,
     /// Fields a person emptied on purpose; generating leaves them empty
@@ -216,10 +216,9 @@ pub struct Annotation {
     pub author: Author,
     pub created_at: i64,
     pub updated_at: i64,
-    /// For a model's annotation: someone accepted or edited it, so
-    /// regenerating keeps it.
+    /// For a model's annotation: someone edited it, so regenerating keeps it.
     #[serde(default)]
-    pub accepted: bool,
+    pub edited: bool,
     /// For a model's annotation: why it was made, and how sure the model was.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rationale: Option<String>,
@@ -241,7 +240,7 @@ impl Annotation {
             author,
             created_at: 0,
             updated_at: 0,
-            accepted: false,
+            edited: false,
             rationale: None,
             confidence: None,
             revision: None,
@@ -258,8 +257,8 @@ pub fn new_id() -> String {
 }
 
 /// Creates the annotation (when `id` is empty) or updates the saved one,
-/// returning it as stored. Saving a model's annotation again means a person
-/// edited or accepted it.
+/// returning it as stored. Changing a model's annotation marks it as
+/// edited, so regenerating keeps it.
 pub fn save_annotation(conn: &Connection, mut a: Annotation) -> anyhow::Result<Annotation> {
     // An annotation marks a moment; how the session as a whole went is its metadata.
     if a.anchors.is_empty() {
@@ -277,11 +276,10 @@ pub fn save_annotation(conn: &Connection, mut a: Annotation) -> anyhow::Result<A
         a.created_at = existing.created_at;
         a.key = existing.key.clone();
         a.author = existing.author.clone();
-        a.accepted = matches!(a.author, Author::Model { .. });
-        // Saving it unchanged (accepting a suggestion) isn't an edit.
         let same_anchors = a.anchors.len() == existing.anchors.len()
             && a.anchors.iter().zip(&existing.anchors).all(|(x, y)| x.anchor == y.anchor && x.kind == y.kind && x.ts == y.ts && x.entry == y.entry);
         let changed = a.kind != existing.kind || a.note != existing.note || !same_anchors;
+        a.edited = existing.edited || (changed && matches!(a.author, Author::Model { .. }));
         a.updated_at = if changed { now().max(a.created_at) } else { existing.updated_at };
     }
     for r in &mut a.anchors {

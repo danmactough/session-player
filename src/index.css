@@ -2033,10 +2033,6 @@ mark {
 .t-stream > .row:has(.menu.open) {
   z-index: 2;
 }
-.tag.suggested {
-  color: var(--accent);
-  border-color: currentColor;
-}
 .gen-message {
   margin: 4px 0 8px;
   font-size: 12px;

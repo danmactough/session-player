@@ -2068,29 +2068,33 @@ mark {
   font-size: 11.5px;
 }
 
-.t-title-row {
+.t-fold {
   position: relative;
-  margin-top: 10px;
 }
-.t-title-row .t-title {
-  margin-top: 0;
-}
-/* Floats in the header's left padding, beside the title's middle. */
+/* Floats in the header's left padding, beside the first line of the summary
+   (or of the buttons while the summary is hidden). */
 .collapse-toggle {
   position: absolute;
-  left: -28px;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 20px;
-  height: 20px;
+  left: -30px;
+  top: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
   padding: 0;
-  border: none;
+  border: 1px solid transparent;
+  border-radius: 5px;
   background: none;
-  font-size: 14px;
-  line-height: 20px;
   color: var(--muted);
 }
+/* Centered on the first row of buttons. */
+.t-fold.collapsed .collapse-toggle {
+  top: 2px;
+}
 .collapse-toggle:hover {
+  border-color: var(--line);
+  background: var(--hover);
   color: var(--ink);
 }
 .analysis {

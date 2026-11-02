@@ -2057,6 +2057,11 @@ mark {
 .row-notes {
   padding: 2px 0 6px;
 }
+/* Each row is positioned with a transform, so later rows paint over an open
+   menu in an earlier one (the annotation kind picker). Lift the row that has it. */
+.t-stream > .row:has(.menu.open) {
+  z-index: 2;
+}
 .tool-annotate {
   display: inline-block;
   margin-top: 6px;

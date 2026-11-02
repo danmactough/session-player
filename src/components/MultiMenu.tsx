@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react";
 
 /**
  * A dropdown of checkboxes, styled like Menu. Choosing an option toggles it
- * and leaves the menu open; nothing chosen means no filter.
+ * and leaves the menu open; nothing chosen means no filter. The button names
+ * what is chosen, and an × beside it (or Clear in the menu) clears it all.
  */
 export function MultiMenu<K extends string>({
   label,
@@ -66,15 +67,28 @@ export function MultiMenu<K extends string>({
         className="menu-button"
         aria-haspopup="listbox"
         aria-expanded={open}
-        title={chosen.length ? chosen.map((o) => o.label).join(", ") : undefined}
+        title={chosen.length ? `${label}: ${chosen.map((o) => o.label).join(", ")}` : undefined}
         onClick={() => setOpen((o) => !o)}
       >
-        {label}
-        {chosen.length === 1 ? `: ${chosen[0].label}` : chosen.length > 1 ? `: ${chosen.length}` : ""}
+        <span className="menu-value">
+          {label}
+          {chosen.length > 0 && `: ${chosen.map((o) => o.label).join(", ")}`}
+        </span>
         <span className="caret">▾</span>
       </button>
+      {chosen.length > 0 && (
+        <button className="menu-clear" aria-label={`Clear ${label}`} title={`Clear ${label}`} onClick={() => onChange([])}>
+          ×
+        </button>
+      )}
       {open && (
         <ul className="menu-list" role="listbox" aria-multiselectable="true" aria-label={label}>
+          {chosen.length > 0 && (
+            <li className="menu-clear-row" onClick={() => onChange([])}>
+              <span className="check" />
+              Clear
+            </li>
+          )}
           {options.map((o, i) => (
             <li
               key={o.key}

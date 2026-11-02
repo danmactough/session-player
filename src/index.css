@@ -2131,6 +2131,33 @@ mark {
   text-transform: uppercase;
   color: var(--faint);
 }
+/* Multi-select filters: the chosen names, cut short when long, and an × to clear. */
+.menu .menu-value {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.menu-clear {
+  margin-left: 4px;
+  padding: 0 3px;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--muted);
+}
+.menu-clear:hover {
+  color: var(--ink);
+}
+.menu-list li.menu-clear-row {
+  color: var(--muted);
+  border-bottom: 1px solid var(--line-2);
+  border-radius: 5px 5px 0 0;
+  margin-bottom: 2px;
+}
+.menu-list li.menu-clear-row:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
 .mid-filters {
   display: flex;
   gap: 16px;

@@ -589,11 +589,33 @@ mark {
   gap: 10px;
   padding: 10px 12px 12px;
   border-top: 1px solid var(--line);
+  position: relative;
 }
-.rail-foot .status {
+/* Floats over the bottom of the project list, then fades, like a browser's link preview. */
+.rail-status {
+  position: absolute;
+  left: 0;
+  bottom: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 3px 8px;
   font: 10.5px var(--mono);
-  color: var(--faint);
-  margin-left: auto;
+  color: var(--muted);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 0;
+  border-bottom: 0;
+  border-top-right-radius: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s;
+}
+.rail-status.on {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 /* ---------- buttons ---------- */

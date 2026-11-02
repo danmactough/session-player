@@ -247,14 +247,24 @@ const handlers: Record<string, Handler> = {
   ],
   open_in_terminal: ({ app }) => console.log("open in", app),
   log_frontend: ({ level, message }) => console.log(`[${level}]`, message),
-  "plugin:event|listen": () => 1,
+  "plugin:event|listen": ({ event, handler }) => {
+    (listeners[event as string] ??= []).push(handler as number);
+    return handler;
+  },
   "plugin:event|unlisten": () => null,
 };
 
 let cb = 0;
+const callbacks: Record<number, (e: unknown) => void> = {};
+const listeners: Record<string, number[]> = {};
 Object.assign(window, {
+  // Fires an app event from the console, e.g. __emit("index-done", { elapsed_ms: 391, … }).
+  __emit: (event: string, payload: unknown) => listeners[event]?.forEach((id) => callbacks[id]?.({ event, id, payload })),
   __TAURI_INTERNALS__: {
-    transformCallback: () => ++cb,
+    transformCallback: (f: (e: unknown) => void) => {
+      callbacks[++cb] = f;
+      return cb;
+    },
     invoke: async (cmd: string, args: Record<string, unknown> = {}) => {
       const h = handlers[cmd];
       if (!h) throw new Error(`devBridge: no handler for ${cmd}`);

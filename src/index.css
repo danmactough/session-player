@@ -2031,6 +2031,10 @@ mark {
 .t-stream > .row:has(> .b-user) > .annotate-btn {
   top: 34px;
 }
+/* Context blocks start below their top margin; center the + on their line. */
+.t-stream > .row:has(> .b-context) > .annotate-btn {
+  top: 8.5px;
+}
 .t-stream > .row:hover > .annotate-btn,
 .t-stream > .row > .annotate-btn:focus-visible {
   opacity: 1;

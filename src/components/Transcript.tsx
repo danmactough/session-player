@@ -636,75 +636,84 @@ export function Transcript({
         </header>
 
         <div className="t-toolbar">
-          <label className="toggle">
-            <input type="checkbox" checked={showTools} onChange={(e) => setShowTools(e.target.checked)} />
-            Tool calls
-          </label>
-          <label className="toggle">
-            <input type="checkbox" checked={showThinking} onChange={(e) => setShowThinking(e.target.checked)} />
-            Reasoning
-          </label>
-          <label className="toggle" title="Instruction files, skills and agent definitions the agent was given">
-            <input type="checkbox" checked={showContext} onChange={(e) => setShowContext(e.target.checked)} />
-            Instructions
-          </label>
-          {noteStops.length > 0 && (
-            <div className="err-nav note-nav" title="Jump between annotations">
-              <span className="err-dot" />
-              <span className="err-label">
-                {noteIdx === null ? noteStops.length : `${noteIdx + 1}/${noteStops.length}`}{" "}
-                {noteStops.length === 1 ? "annotation" : "annotations"}
-              </span>
-              <button aria-label="Previous annotation" onClick={() => stepNote(-1)}>
-                ↑
-              </button>
-              <button aria-label="Next annotation" onClick={() => stepNote(1)}>
-                ↓
-              </button>
+          {/* Two rows so nothing wraps: find and the view toggles, then the navigators. */}
+          <div className="t-toolbar-row">
+            <div className={`t-find ${findOpen || find ? "open" : ""}`}>
+              <input
+                ref={findRef}
+                placeholder="Find in session  ⌘F"
+                value={find}
+                onChange={(e) => {
+                  setFind(e.target.value);
+                  setFindIdx(0);
+                }}
+                onFocus={() => setFindOpen(true)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && matches.length) {
+                    setFindIdx((i) => (e.shiftKey ? (i - 1 + matches.length) % matches.length : (i + 1) % matches.length));
+                  }
+                  if (e.key === "Escape") {
+                    setFind("");
+                    setFindOpen(false);
+                    (e.target as HTMLInputElement).blur();
+                  }
+                }}
+              />
+              {find && (
+                <span className="count">
+                  {matches.length ? `${(findIdx % matches.length) + 1}/${matches.length}` : "0"}
+                </span>
+              )}
             </div>
-          )}
-          {errorStops.length > 0 && (
-            <div className="err-nav" title="Jump between failed tool calls and errors">
-              <span className="err-dot" />
-              <span className="err-label">
-                {errIdx === null ? errorStops.length : `${errIdx + 1}/${errorStops.length}`}{" "}
-                {errorStops.length === 1 ? "error" : "errors"}
-              </span>
-              <button aria-label="Previous error" onClick={() => stepError(-1)}>
-                ↑
-              </button>
-              <button aria-label="Next error" onClick={() => stepError(1)}>
-                ↓
-              </button>
+            <div className="t-toggles">
+              <label className="toggle">
+                <input type="checkbox" checked={showTools} onChange={(e) => setShowTools(e.target.checked)} />
+                Tool calls
+              </label>
+              <label className="toggle">
+                <input type="checkbox" checked={showThinking} onChange={(e) => setShowThinking(e.target.checked)} />
+                Reasoning
+              </label>
+              <label className="toggle" title="Instruction files, skills and agent definitions the agent was given">
+                <input type="checkbox" checked={showContext} onChange={(e) => setShowContext(e.target.checked)} />
+                Instructions
+              </label>
             </div>
-          )}
-          <div className={`t-find ${findOpen || find ? "open" : ""}`}>
-            <input
-              ref={findRef}
-              placeholder="Find in session  ⌘F"
-              value={find}
-              onChange={(e) => {
-                setFind(e.target.value);
-                setFindIdx(0);
-              }}
-              onFocus={() => setFindOpen(true)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && matches.length) {
-                  setFindIdx((i) => (e.shiftKey ? (i - 1 + matches.length) % matches.length : (i + 1) % matches.length));
-                }
-                if (e.key === "Escape") {
-                  setFind("");
-                  setFindOpen(false);
-                  (e.target as HTMLInputElement).blur();
-                }
-              }}
-            />
-            {find && (
-              <span className="count">
-                {matches.length ? `${(findIdx % matches.length) + 1}/${matches.length}` : "0"}
-              </span>
-            )}
           </div>
+          {(noteStops.length > 0 || errorStops.length > 0) && (
+            <div className="t-toolbar-row t-navs">
+              {noteStops.length > 0 && (
+                <div className="err-nav note-nav" title="Jump between annotations">
+                  <span className="err-dot" />
+                  <span className="err-label">
+                    {noteIdx === null ? noteStops.length : `${noteIdx + 1}/${noteStops.length}`}{" "}
+                    {noteStops.length === 1 ? "annotation" : "annotations"}
+                  </span>
+                  <button aria-label="Previous annotation" onClick={() => stepNote(-1)}>
+                    ↑
+                  </button>
+                  <button aria-label="Next annotation" onClick={() => stepNote(1)}>
+                    ↓
+                  </button>
+                </div>
+              )}
+              {errorStops.length > 0 && (
+                <div className="err-nav" title="Jump between failed tool calls and errors">
+                  <span className="err-dot" />
+                  <span className="err-label">
+                    {errIdx === null ? errorStops.length : `${errIdx + 1}/${errorStops.length}`}{" "}
+                    {errorStops.length === 1 ? "error" : "errors"}
+                  </span>
+                  <button aria-label="Previous error" onClick={() => stepError(-1)}>
+                    ↑
+                  </button>
+                  <button aria-label="Next error" onClick={() => stepError(1)}>
+                    ↓
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="t-body">

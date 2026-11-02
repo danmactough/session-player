@@ -163,18 +163,16 @@ export interface LibraryError {
 
 export type Outcome = "unknown" | "succeeded" | "partial" | "failed";
 
-/** What a person has written about a session; the transcript's own details stay on SessionRow. */
+/** The analysis of a session: how it turned out and the parts of the repository it worked on. */
 export interface SessionMeta {
   key: string;
-  title: string | null;
-  goal: string | null;
-  context: string | null;
   outcome: Outcome;
+  /** Why it succeeded or didn't. */
   outcome_note: string | null;
-  tags: string[];
-  links: { url: string; label: string | null }[];
+  /** Repository paths or packages worked on, such as "packages/api". */
+  components: string[];
   updated_at: number;
-  /** Fields ("title", "goal", "context", "outcome", "tags") holding a model's suggestion no one has edited or accepted. */
+  /** Fields ("outcome", "components") holding a model's suggestion no one has edited or accepted. */
   generated: string[];
   generated_by: { model: string; at: number; revision: string } | null;
   /** Fields a person emptied on purpose; generating leaves them empty. */
@@ -214,7 +212,7 @@ export interface Annotation {
   key: string;
   kind: AnnotationKind;
   note: string;
-  /** None means the annotation is about the whole session. */
+  /** The events it is about; at least one. */
   anchors: EventRef[];
   author: Author;
   created_at: number;
@@ -229,9 +227,8 @@ export interface Annotation {
 
 export interface NoteSummary {
   key: string;
-  title: string | null;
   outcome: Outcome;
-  tags: string[];
+  components: string[];
   kinds: AnnotationKind[];
 }
 

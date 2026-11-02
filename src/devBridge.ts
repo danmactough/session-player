@@ -217,9 +217,8 @@ const handlers: Record<string, Handler> = {
   },
   note_summaries: () => [...new Set([...devMeta.keys(), ...devNotes.map((a) => a.key)])].map((key) => ({
     key,
-    title: devMeta.get(key)?.title ?? null,
     outcome: devMeta.get(key)?.outcome ?? "unknown",
-    tags: devMeta.get(key)?.tags ?? [],
+    components: devMeta.get(key)?.components ?? [],
     kinds: [...new Set(devNotes.filter((a) => a.key === key).map((a) => a.kind))],
   })),
   library_errors: () => [{ path: `${HOME}/Library/Application Support/com.danmactough.sessionplayer/library/Y2xhdWRlOmRlbW8.spsession`, error: "Y2xhdWRlOmRlbW8.spsession is damaged: bundle is malformed" }],

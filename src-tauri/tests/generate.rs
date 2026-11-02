@@ -105,12 +105,9 @@ fn stub(answer: serde_json::Value, calls: &mut Vec<String>) -> impl FnMut(&str, 
 
 fn answer() -> serde_json::Value {
     serde_json::json!({
-        "title": "Flaky login test, first look",
-        "goal": "Fix the flaky login test",
-        "context": "",
         "outcome": "failed",
         "outcome_note": "One test run; nothing changed",
-        "tags": ["tests", "auth"],
+        "components": ["./packages/auth/", "apps/web", "packages/auth"],
         "annotations": [
             { "kind": "tool_error", "anchors": ["e4"], "note": "npm test failed", "rationale": "exit code 1", "confidence": "high" },
             { "kind": "agent_stuck", "anchors": ["e99"], "note": "made up", "rationale": "", "confidence": "low" },
@@ -127,8 +124,10 @@ fn generated_annotations_must_point_at_real_events() {
     assert_eq!(calls.len(), 1);
     assert!(calls[0].contains("[e1 user") && calls[0].contains("Fix the flaky login test please"), "{}", calls[0]);
     let kept: Vec<_> = out.annotations.iter().map(|a| (a.kind, a.anchors.clone())).collect();
-    assert_eq!(kept, [(notes::Kind::ToolError, vec!["e4".to_string()]), (notes::Kind::MissingContext, vec![])]);
-    assert_eq!(out.rejected, 1);
+    // One points at an event that doesn't exist, one at no event at all.
+    assert_eq!(kept, [(notes::Kind::ToolError, vec!["e4".to_string()])]);
+    assert_eq!(out.rejected, 2);
+    assert_eq!(out.components, ["packages/auth", "apps/web"]);
     assert_eq!(out.model, "claude-haiku-5-5");
     assert_eq!(out.revision, generate::revision(&events));
 }
@@ -179,39 +178,40 @@ fn temp_db(name: &str) -> rusqlite::Connection {
 fn regenerating_keeps_what_people_wrote_edited_or_accepted() {
     let conn = temp_db("apply");
     let events = fixture_events();
-    notes::save_meta(&conn, &notes::SessionMeta { key: KEY.into(), title: Some("My title".into()), ..Default::default() }).unwrap();
-    let mine = notes::save_annotation(&conn, notes::Annotation::new(KEY, notes::Kind::HumanFrustration, "mine", vec![], notes::Author::Person { name: None })).unwrap();
+    notes::save_meta(&conn, &notes::SessionMeta { key: KEY.into(), components: vec!["mine".into()], ..Default::default() }).unwrap();
+    let event = events.iter().find(|e| e.anchor.as_deref() == Some("e1")).unwrap();
+    let anchor: notes::EventRef = serde_json::from_value(serde_json::json!({ "anchor": "e1", "kind": "user", "ts": event.ts })).unwrap();
+    let mine = notes::save_annotation(&conn, notes::Annotation::new(KEY, notes::Kind::HumanFrustration, "mine", vec![anchor], notes::Author::Person { name: None })).unwrap();
 
     let mut calls = Vec::new();
     let first = generate::generate(&events, &mut stub(answer(), &mut calls), &mut |_, _| {}).unwrap();
     generate::apply(&conn, KEY, &first, &events).unwrap();
     let meta = notes::meta(&conn, KEY).unwrap().unwrap();
-    assert_eq!(meta.title.as_deref(), Some("My title"), "a person's title stays");
-    assert_eq!(meta.goal.as_deref(), Some("Fix the flaky login test"));
+    assert_eq!(meta.components, ["mine"], "a person's components stay");
     assert_eq!(meta.outcome, notes::Outcome::Failed);
-    assert_eq!(meta.generated, ["goal", "outcome", "tags"]);
+    assert_eq!(meta.generated, ["outcome"]);
     assert_eq!(meta.generated_by.as_ref().unwrap().model, "claude-haiku-5-5");
     let list = notes::annotations(&conn, KEY).unwrap();
-    assert_eq!(list.len(), 3);
+    assert_eq!(list.len(), 2);
     let tool_error = list.iter().find(|a| a.kind == notes::Kind::ToolError).unwrap().clone();
     assert!(!tool_error.accepted);
     assert_eq!(tool_error.confidence.as_deref(), Some("high"));
 
-    // A person edits the generated goal and accepts the tool error annotation.
+    // A person edits the generated outcome and accepts the tool error annotation.
     let mut edited = meta.clone();
-    edited.goal = Some("Make login tests reliable".into());
+    edited.outcome_note = Some("Never got past the first run".into());
     notes::save_meta(&conn, &edited).unwrap();
     let accepted = notes::save_annotation(&conn, tool_error).unwrap();
     assert!(accepted.accepted);
 
     let mut second = answer();
-    second["goal"] = "Something else".into();
+    second["outcome"] = "succeeded".into();
     second["annotations"] = serde_json::json!([{ "kind": "key_decision", "anchors": ["e3"], "note": "ran the tests first", "rationale": "", "confidence": "medium" }]);
     let regenerated = generate::generate(&events, &mut stub(second, &mut calls), &mut |_, _| {}).unwrap();
     generate::apply(&conn, KEY, &regenerated, &events).unwrap();
     let meta = notes::meta(&conn, KEY).unwrap().unwrap();
-    assert_eq!(meta.goal.as_deref(), Some("Make login tests reliable"));
-    assert_eq!(meta.generated, ["outcome", "tags"]);
+    assert_eq!((meta.outcome, meta.outcome_note.as_deref()), (notes::Outcome::Failed, Some("Never got past the first run")));
+    assert!(meta.generated.is_empty());
     let kinds: Vec<_> = notes::annotations(&conn, KEY).unwrap().iter().map(|a| a.kind).collect();
     assert_eq!(kinds, [notes::Kind::HumanFrustration, notes::Kind::ToolError, notes::Kind::KeyDecision]);
     assert!(notes::annotations(&conn, KEY).unwrap().iter().any(|a| a.id == mine.id));
@@ -241,7 +241,7 @@ fn real_claude_generates_valid_notes() {
     let conn = temp_db("real");
     generate::apply(&conn, KEY, &out, &events).unwrap();
     println!("{:#?}", notes::meta(&conn, KEY).unwrap());
-    assert!(!out.annotations.is_empty() || out.goal.is_some());
+    assert!(!out.annotations.is_empty() || !out.components.is_empty());
 }
 
 #[test]
@@ -270,32 +270,28 @@ fn a_field_a_person_cleared_stays_empty() {
     let g = generate::generate(&events, &mut stub(answer(), &mut calls), &mut |_, _| {}).unwrap();
     generate::apply(&conn, KEY, &g, &events).unwrap();
     let mut meta = notes::meta(&conn, KEY).unwrap().unwrap();
-    meta.goal = None;
-    meta.tags = vec![];
+    meta.components = vec![];
     notes::save_meta(&conn, &meta).unwrap();
-    let saved = notes::meta(&conn, KEY).unwrap().unwrap();
-    assert_eq!(saved.cleared, ["goal", "tags"]);
+    assert_eq!(notes::meta(&conn, KEY).unwrap().unwrap().cleared, ["components"]);
 
     generate::apply(&conn, KEY, &g, &events).unwrap();
     let meta = notes::meta(&conn, KEY).unwrap().unwrap();
-    assert_eq!((meta.goal.clone(), meta.tags.clone()), (None, vec![]));
-    assert!(!meta.generated.iter().any(|f| f == "goal" || f == "tags"));
+    assert!(meta.components.is_empty());
+    assert_eq!(meta.generated, ["outcome"]);
 
     // Filling it in again lifts that.
     let mut refilled = meta.clone();
-    refilled.goal = Some("Mine".into());
+    refilled.components = vec!["mine".into()];
     notes::save_meta(&conn, &refilled).unwrap();
-    assert_eq!(notes::meta(&conn, KEY).unwrap().unwrap().cleared, ["tags"]);
+    assert!(notes::meta(&conn, KEY).unwrap().unwrap().cleared.is_empty());
 
     // Emptying every field still remembers which ones were emptied.
     let mut all_clear = notes::meta(&conn, KEY).unwrap().unwrap();
-    all_clear.title = None;
-    all_clear.goal = None;
-    all_clear.context = None;
+    all_clear.components = vec![];
     all_clear.outcome = notes::Outcome::Unknown;
     all_clear.outcome_note = None;
     notes::save_meta(&conn, &all_clear).unwrap();
     generate::apply(&conn, KEY, &g, &events).unwrap();
     let meta = notes::meta(&conn, KEY).unwrap().unwrap();
-    assert_eq!((meta.title, meta.goal, meta.context, meta.outcome), (None, None, None, notes::Outcome::Unknown));
+    assert_eq!((meta.outcome, meta.outcome_note, meta.components.len()), (notes::Outcome::Unknown, None, 0));
 }

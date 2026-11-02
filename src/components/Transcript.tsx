@@ -18,7 +18,7 @@ import {
   toolSummary,
 } from "../lib/format";
 import { Markdown } from "./Markdown";
-import { AnnotationEditor, AnnotationItem, AnnotationsPanel, SessionDetails } from "./Notes";
+import { Analysis, AnnotationEditor, AnnotationItem } from "./Notes";
 import { blockEvents, ref, sessionKey } from "../lib/notes";
 import { RemoteImages } from "../lib/remoteImages";
 import { BranchIcon } from "./BranchIcon";
@@ -48,6 +48,9 @@ interface Props {
   onNotesChanged: () => void;
   /** Asks, the first time, whether sending a transcript to Anthropic is all right. */
   confirmGenerate: () => Promise<boolean>;
+  /** The summary under the title (first prompt, analysis, stats) is hidden. */
+  collapsed: boolean;
+  onCollapse: (collapsed: boolean) => void;
 }
 
 export function Transcript({
@@ -65,6 +68,8 @@ export function Transcript({
   authorName,
   onNotesChanged,
   confirmGenerate,
+  collapsed,
+  onCollapse,
 }: Props) {
   const [events, setEvents] = useState<SessionEvent[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -163,7 +168,6 @@ export function Transcript({
     annotations: [],
     revision: null,
   });
-  const [panel, setPanel] = useState(false);
   const [composing, setComposing] = useState<{ block: number; refs: EventRef[] } | null>(null);
   // `n` changes with every jump, so a block collapsed since the last one opens again.
   const [reveal, setReveal] = useState<{ block: number; step?: number; n: number } | null>(null);
@@ -280,6 +284,20 @@ export function Transcript({
     const step = b.type === "tools" ? b.steps.findIndex((s) => s.call.anchor === r.anchor || s.result?.anchor === r.anchor) : undefined;
     setReveal((prev) => ({ block: i, step, n: (prev?.n ?? 0) + 1 }));
     virt.scrollToIndex(i, { align: "center" });
+  };
+  // The annotation navigator steps through annotations in transcript order.
+  const anchorNumber = (a: Annotation) => Math.min(...a.anchors.filter((r) => r.found).map((r) => Number(r.anchor.slice(1)) || 0));
+  const noteStops = useMemo(
+    () => notes.annotations.filter((a) => a.anchors.some((r) => r.found)).sort((x, y) => anchorNumber(x) - anchorNumber(y)),
+    [notes.annotations],
+  );
+  const [noteIdx, setNoteIdx] = useState<number | null>(null);
+  const stepNote = (dir: 1 | -1) => {
+    if (!noteStops.length) return;
+    const n = noteStops.length;
+    const next = noteIdx === null || noteIdx >= n ? (dir === 1 ? 0 : n - 1) : (noteIdx + dir + n) % n;
+    setNoteIdx(next);
+    jumpTo(noteStops[next]);
   };
   const jumpRef = useRef(jumpTo);
   jumpRef.current = jumpTo;
@@ -467,65 +485,80 @@ export function Transcript({
             {session.imported_from && <span className="tag">imported from {session.imported_from}</span>}
             {session.from_bundle && <span className="tag">imported bundle</span>}
           </div>
-            {/* A pi branch keeps its own label; the details belong to the whole session. */}
-          <h1 className="t-title">{(!session.branch_of && notes.meta?.title) || session.title}</h1>
-          {session.title_source !== "prompt" && session.first_prompt && (
-            <p className="t-prompt">{session.first_prompt.split("\n").find((l) => l.trim()) ?? ""}</p>
-          )}
-          <SessionDetails
-            session={session}
-            sessionKey={key}
-            meta={notes.meta}
-            original={!session.branch_of && notes.meta?.title ? session.title : undefined}
-            revision={notes.revision}
-            onSave={saveMeta}
-          />
-          <dl className="t-meta">
-            <div>
-              <dt>Started</dt>
-              <dd>{fullDate(session.started_at)}</dd>
-            </div>
-            <div>
-              <dt>Span</dt>
-              <dd>{duration(elapsed)}</dd>
-            </div>
-            <div>
-              <dt>Turns</dt>
-              <dd>
-                {session.user_turns} <span className="dim">/ {session.tool_calls} tools</span>
-                {session.error_count > 0 && (
-                  <span className="err-count">
-                    {" "}
-                    · {session.error_count} {session.error_count === 1 ? "error" : "errors"}
-                  </span>
-                )}
-              </dd>
-            </div>
-            {/* Token totals belong to the whole file; a branch has none of its own. */}
-            {!session.branch_of && (
-              <div>
-                <dt>Tokens</dt>
-                <dd title={`${session.input_tokens.toLocaleString()} input · ${session.cache_read_tokens.toLocaleString()} cache read · ${session.output_tokens.toLocaleString()} output`}>
-                  {compact(totalIn)} <span className="dim">in</span> · {compact(session.output_tokens)} <span className="dim">out</span>
-                </dd>
-              </div>
-            )}
-            {session.models.length > 0 ? (
-              <div>
-                <dt>Model</dt>
-                <dd>{session.models.join(", ")}</dd>
-              </div>
-            ) : (
-              session.imported_from && (
+          <div className="t-title-row">
+            <h1 className="t-title">{session.title}</h1>
+            <button
+              className="ghost collapse-toggle"
+              aria-expanded={!collapsed}
+              title={collapsed ? "Show the summary" : "Hide the summary"}
+              onClick={() => onCollapse(!collapsed)}
+            >
+              {collapsed ? "▸ Summary" : "▾ Summary"}
+            </button>
+          </div>
+          {!collapsed && (
+            <div className="t-summary">
+              {session.title_source !== "prompt" && session.first_prompt && (
+                <p className="t-prompt">{session.first_prompt.split("\n").find((l) => l.trim()) ?? ""}</p>
+              )}
+              <Analysis
+                sessionKey={key}
+                meta={notes.meta}
+                revision={notes.revision}
+                annotations={notes.annotations}
+                onSaveMeta={saveMeta}
+                onSaveAnnotation={saveAnnotation}
+                onDeleteAnnotation={deleteAnnotation}
+                onJump={jumpTo}
+              />
+              <dl className="t-meta">
                 <div>
-                  <dt>Model</dt>
-                  <dd title={`Codex imported this session from ${session.imported_from} without recording the model`}>
-                    <span className="dim">not recorded</span>
+                  <dt>Started</dt>
+                  <dd>{fullDate(session.started_at)}</dd>
+                </div>
+                <div>
+                  <dt>Span</dt>
+                  <dd>{duration(elapsed)}</dd>
+                </div>
+                <div>
+                  <dt>Turns</dt>
+                  <dd>
+                    {session.user_turns} <span className="dim">/ {session.tool_calls} tools</span>
+                    {session.error_count > 0 && (
+                      <span className="err-count">
+                        {" "}
+                        · {session.error_count} {session.error_count === 1 ? "error" : "errors"}
+                      </span>
+                    )}
                   </dd>
                 </div>
-              )
-            )}
-          </dl>
+                {/* Token totals belong to the whole file; a branch has none of its own. */}
+                {!session.branch_of && (
+                  <div>
+                    <dt>Tokens</dt>
+                    <dd title={`${session.input_tokens.toLocaleString()} input · ${session.cache_read_tokens.toLocaleString()} cache read · ${session.output_tokens.toLocaleString()} output`}>
+                      {compact(totalIn)} <span className="dim">in</span> · {compact(session.output_tokens)} <span className="dim">out</span>
+                    </dd>
+                  </div>
+                )}
+                {session.models.length > 0 ? (
+                  <div>
+                    <dt>Model</dt>
+                    <dd>{session.models.join(", ")}</dd>
+                  </div>
+                ) : (
+                  session.imported_from && (
+                    <div>
+                      <dt>Model</dt>
+                      <dd title={`Codex imported this session from ${session.imported_from} without recording the model`}>
+                        <span className="dim">not recorded</span>
+                      </dd>
+                    </div>
+                  )
+                )}
+              </dl>
+            </div>
+          )}
           <div className="t-actions">
             {session.from_bundle ? (
               <button disabled title="Imported sessions have no agent files on this Mac to resume or open">
@@ -587,9 +620,21 @@ export function Transcript({
             <input type="checkbox" checked={showThinking} onChange={(e) => setShowThinking(e.target.checked)} />
             Reasoning
           </label>
-          <button className={`ghost annotations-toggle ${panel ? "on" : ""}`} aria-expanded={panel} onClick={() => setPanel((o) => !o)}>
-            Annotations{notes.annotations.length ? ` · ${notes.annotations.length}` : ""}
-          </button>
+          {noteStops.length > 0 && (
+            <div className="err-nav note-nav" title="Jump between annotations">
+              <span className="err-dot" />
+              <span className="err-label">
+                {noteIdx === null ? noteStops.length : `${noteIdx + 1}/${noteStops.length}`}{" "}
+                {noteStops.length === 1 ? "annotation" : "annotations"}
+              </span>
+              <button aria-label="Previous annotation" onClick={() => stepNote(-1)}>
+                ↑
+              </button>
+              <button aria-label="Next annotation" onClick={() => stepNote(1)}>
+                ↓
+              </button>
+            </div>
+          )}
           {errorStops.length > 0 && (
             <div className="err-nav" title="Jump between failed tool calls and errors">
               <span className="err-dot" />
@@ -634,16 +679,6 @@ export function Transcript({
           </div>
         </div>
 
-        {panel && (
-          <AnnotationsPanel
-            annotations={notes.annotations}
-            revision={notes.revision}
-            onSave={saveAnnotation}
-            onDelete={deleteAnnotation}
-            onJump={jumpTo}
-            onAdd={(kind, note) => addAnnotation([], kind, note)}
-          />
-        )}
         <div className="t-body">
           <div className="t-scroll" ref={scrollRef} tabIndex={-1}>
             {error && <div className="empty">Could not read this session: {error}</div>}

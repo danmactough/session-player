@@ -41,21 +41,18 @@ fn metadata_is_saved_edited_and_kept_through_an_index_rebuild() {
     assert_eq!(notes::meta(&conn, KEY).unwrap(), None);
     let mut meta = notes::SessionMeta {
         key: KEY.into(),
-        title: Some("Fix the flaky login test".into()),
-        goal: Some("CI fails one run in five".into()),
         outcome: notes::Outcome::Partial,
         outcome_note: Some("Fixed locally, CI still flaky".into()),
-        tags: vec!["ci".into(), "auth".into()],
-        links: vec![notes::Link { url: "https://github.com/o/r/pull/7".into(), label: Some("PR 7".into()) }],
+        components: vec!["packages/auth".into(), " ".into()],
         ..Default::default()
     };
     notes::save_meta(&conn, &meta).unwrap();
-    meta.tags.push("flaky".into());
-    meta.title = Some("Flaky login test, round two".into());
+    meta.components = vec!["packages/auth".into(), "apps/web".into()];
+    meta.outcome = notes::Outcome::Failed;
     notes::save_meta(&conn, &meta).unwrap();
     let saved = notes::meta(&conn, KEY).unwrap().unwrap();
-    assert_eq!(saved.tags, ["ci", "auth", "flaky"]);
-    assert_eq!(saved.title.as_deref(), Some("Flaky login test, round two"));
+    assert_eq!(saved.components, ["packages/auth", "apps/web"]);
+    assert_eq!(saved.outcome, notes::Outcome::Failed);
     assert!(saved.updated_at > 0);
 
     // Rebuild index, then a parser change that forces a rebuild on open.
@@ -63,14 +60,14 @@ fn metadata_is_saved_edited_and_kept_through_an_index_rebuild() {
     conn.execute("UPDATE settings SET value='0' WHERE key='index_version'", []).unwrap();
     drop(conn);
     let conn = index::open(&path).unwrap();
-    assert_eq!(notes::meta(&conn, KEY).unwrap().unwrap().title.as_deref(), Some("Flaky login test, round two"));
+    assert_eq!(notes::meta(&conn, KEY).unwrap().unwrap().components, ["packages/auth", "apps/web"]);
 
-    // Clearing every field (blank tags count as empty) keeps only which
-    // fields were cleared, so generating won't fill them again.
-    notes::save_meta(&conn, &notes::SessionMeta { key: KEY.into(), tags: vec![" ".into()], ..Default::default() }).unwrap();
+    // Clearing every field (blank components count as empty) keeps only
+    // which fields were cleared, so generating won't fill them again.
+    notes::save_meta(&conn, &notes::SessionMeta { key: KEY.into(), components: vec![" ".into()], ..Default::default() }).unwrap();
     let cleared = notes::meta(&conn, KEY).unwrap().unwrap();
-    assert_eq!((cleared.title, cleared.goal, cleared.tags.len()), (None, None, 0));
-    assert_eq!(cleared.cleared, ["title", "goal", "outcome", "tags"]);
+    assert_eq!((cleared.outcome, cleared.components.len()), (notes::Outcome::Unknown, 0));
+    assert_eq!(cleared.cleared, ["outcome", "components"]);
 
     // A session that never had any details stores nothing.
     let other = "local:claude:never";
@@ -96,7 +93,7 @@ fn annotations_are_created_edited_and_deleted() {
     .unwrap();
     assert!(!created.id.is_empty());
     assert_eq!(created.created_at, created.updated_at);
-    let session_wide = notes::save_annotation(&conn, notes::Annotation::new(KEY, notes::Kind::Automatable, "same fix as last week", vec![], person())).unwrap();
+    let second = notes::save_annotation(&conn, notes::Annotation::new(KEY, notes::Kind::Automatable, "", vec![event_ref("e1", "user", None)], person())).unwrap();
 
     let mut edited = created.clone();
     edited.note = "npm test failed: login spec".into();
@@ -106,7 +103,7 @@ fn annotations_are_created_edited_and_deleted() {
     assert!(edited.updated_at >= edited.created_at);
 
     let listed = notes::annotations(&conn, KEY).unwrap();
-    assert_eq!(listed.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), [created.id.as_str(), session_wide.id.as_str()]);
+    assert_eq!(listed.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), [created.id.as_str(), second.id.as_str()]);
     assert_eq!(listed[0].note, "npm test failed: login spec");
 
     notes::delete_annotation(&conn, &created.id).unwrap();
@@ -115,11 +112,9 @@ fn annotations_are_created_edited_and_deleted() {
 }
 
 #[test]
-fn an_annotation_needs_a_note_or_an_event() {
+fn editing_an_annotation_that_was_deleted_fails() {
     let (_, conn) = temp_db("invalid");
-    let err = notes::save_annotation(&conn, notes::Annotation::new(KEY, notes::Kind::Other, "  ", vec![], person())).unwrap_err();
-    assert!(err.to_string().contains("needs a note or an event"), "{err}");
-    let mut unknown = notes::Annotation::new(KEY, notes::Kind::Other, "x", vec![], person());
+    let mut unknown = notes::Annotation::new(KEY, notes::Kind::Other, "x", vec![event_ref("e1", "user", None)], person());
     unknown.id = "missing".into();
     assert!(notes::save_annotation(&conn, unknown).unwrap_err().to_string().contains("no longer exists"));
 }
@@ -152,10 +147,10 @@ fn search_finds_sessions_by_their_metadata_and_annotations() {
     index::add_root(&conn, &root.to_string_lossy()).unwrap();
     index::run(&mut conn, false, None, &|_, _| {}).unwrap();
 
-    let meta = notes::SessionMeta { key: KEY.into(), goal: Some("stabilize the zeppelin harness".into()), tags: vec!["quokka".into()], ..Default::default() };
+    let meta = notes::SessionMeta { key: KEY.into(), outcome_note: Some("stabilized the zeppelin harness".into()), components: vec!["packages/quokka".into()], ..Default::default() };
     notes::save_meta(&conn, &meta).unwrap();
     // A pi session's notes belong to the file, whichever branch they were made on.
-    notes::save_annotation(&conn, notes::Annotation::new("local:pi:01a-pi", notes::Kind::AgentStuck, "retried the marmalade cache three times", vec![], person())).unwrap();
+    notes::save_annotation(&conn, notes::Annotation::new("local:pi:01a-pi", notes::Kind::AgentStuck, "retried the marmalade cache three times", vec![event_ref("e2", "assistant", None)], person())).unwrap();
 
     let hit = |q: &str| index::search(&conn, q).unwrap().into_iter().map(|h| h.path).collect::<Vec<_>>();
     let claude = root.join("claude/-work-repo/abc.jsonl").to_string_lossy().into_owned();
@@ -168,21 +163,15 @@ fn search_finds_sessions_by_their_metadata_and_annotations() {
     let pi_summary = summaries.iter().find(|s| s.key == "local:pi:01a-pi").unwrap();
     assert_eq!(pi_summary.kinds, [notes::Kind::AgentStuck]);
     let claude_summary = summaries.iter().find(|s| s.key == KEY).unwrap();
-    assert_eq!((claude_summary.tags.as_slice(), claude_summary.outcome), (["quokka".to_string()].as_slice(), notes::Outcome::Unknown));
+    assert_eq!((claude_summary.components.as_slice(), claude_summary.outcome), (["packages/quokka".to_string()].as_slice(), notes::Outcome::Unknown));
     let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
-fn links_must_be_web_addresses() {
-    let (_, conn) = temp_db("links");
-    let meta = notes::SessionMeta {
-        key: KEY.into(),
-        links: vec![notes::Link { url: "javascript:alert(1)".into(), label: None }],
-        ..Default::default()
-    };
-    let err = notes::save_meta(&conn, &meta).unwrap_err().to_string();
-    assert!(err.contains("isn't a web address"), "{err}");
-    assert_eq!(notes::meta(&conn, KEY).unwrap(), None);
+fn an_annotation_must_point_at_an_event() {
+    let (_, conn) = temp_db("anchorless");
+    let err = notes::save_annotation(&conn, notes::Annotation::new(KEY, notes::Kind::Other, "about everything", vec![], person())).unwrap_err().to_string();
+    assert!(err.contains("needs an event"), "{err}");
 }
 
 fn pi_ref(anchor: &str, kind: &str, ts: Option<i64>, entry: &str) -> notes::EventRef {
@@ -218,8 +207,8 @@ fn notes_never_change_the_agent_files() {
     let before = (std::fs::read(&file).unwrap(), std::fs::metadata(&file).unwrap().modified().unwrap());
     index::add_root(&conn, &root.to_string_lossy()).unwrap();
     index::run(&mut conn, false, None, &|_, _| {}).unwrap();
-    notes::save_meta(&conn, &notes::SessionMeta { key: KEY.into(), title: Some("x".into()), ..Default::default() }).unwrap();
-    notes::save_annotation(&conn, notes::Annotation::new(KEY, notes::Kind::ToolError, "y", vec![], person())).unwrap();
+    notes::save_meta(&conn, &notes::SessionMeta { key: KEY.into(), components: vec!["x".into()], ..Default::default() }).unwrap();
+    notes::save_annotation(&conn, notes::Annotation::new(KEY, notes::Kind::ToolError, "y", vec![event_ref("e4", "tool_result", None)], person())).unwrap();
     index::run(&mut conn, true, None, &|_, _| {}).unwrap();
     assert_eq!((std::fs::read(&file).unwrap(), std::fs::metadata(&file).unwrap().modified().unwrap()), before);
     let _ = std::fs::remove_dir_all(&root);

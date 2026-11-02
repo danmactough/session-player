@@ -529,11 +529,20 @@ fn nothing_is_imported_when_the_exported_session_is_empty() {
     assert!(!recipient.library.exists() || std::fs::read_dir(&recipient.library).unwrap().count() == 0);
 }
 
+fn event_ref(anchor: &str, kind: &str, ts: i64) -> session_player_lib::test_support::annotations::EventRef {
+    serde_json::from_value(serde_json::json!({ "anchor": anchor, "kind": kind, "ts": ts })).unwrap()
+}
+
+/// The prompt in claude.jsonl.
+fn prompt_ref() -> session_player_lib::test_support::annotations::EventRef {
+    event_ref("e1", "user", 1767261602000)
+}
+
 #[test]
 fn details_and_annotations_travel_with_the_session() {
     use session_player_lib::test_support::annotations as notes;
     let sender = Sender::new("notes");
-    let meta = notes::SessionMeta { key: "local:claude:abc".into(), goal: Some("Fix the login test".into()), tags: vec!["ci".into()], ..Default::default() };
+    let meta = notes::SessionMeta { key: "local:claude:abc".into(), outcome_note: Some("Fixed the login test".into()), components: vec!["packages/auth".into()], ..Default::default() };
     notes::save_meta(&sender.conn, &meta).unwrap();
     let event = |anchor: &str, kind: &str| -> notes::EventRef { serde_json::from_value(serde_json::json!({ "anchor": anchor, "kind": kind, "ts": 1767261605000i64 })).unwrap() };
     let theirs = notes::save_annotation(
@@ -543,12 +552,12 @@ fn details_and_annotations_travel_with_the_session() {
     .unwrap();
     let sub_path = sender.root.join("claude/-work-repo/abc/subagents/agent-a1.jsonl");
     let sub_events = session_player_lib::test_support::parse::parse_file(&sub_path, session_player_lib::test_support::parse::detect(&sub_path).unwrap()).unwrap().events;
-    let mut suggestion = notes::Annotation::new("local:claude:agent-a1", notes::Kind::KeyDecision, "read the login code", vec![], notes::Author::Model { model: "claude-haiku-5-5".into() });
+    let mut suggestion = notes::Annotation::new("local:claude:agent-a1", notes::Kind::KeyDecision, "read the login code", vec![event_ref("e0", "user", 1767261606000)], notes::Author::Model { model: "claude-haiku-5-5".into() });
     suggestion.revision = Some(session_player_lib::test_support::generate::revision(&sub_events));
     notes::save_annotation(&sender.conn, suggestion).unwrap();
 
     let exported = sender.export("claude/-work-repo/abc.jsonl", None, None);
-    assert_eq!(exported.sessions[0].meta.as_ref().unwrap().goal.as_deref(), Some("Fix the login test"));
+    assert_eq!(exported.sessions[0].meta.as_ref().unwrap().outcome_note.as_deref(), Some("Fixed the login test"));
     assert_eq!(exported.sessions[0].annotations.len(), 1);
     assert_eq!(exported.sessions[1].annotations[0].author, notes::Author::Model { model: "claude-haiku-5-5".into() });
     // Still current against the transcript as bundled, whose text export rewrites.
@@ -560,13 +569,13 @@ fn details_and_annotations_travel_with_the_session() {
     let recipient = Recipient::new("notes");
     bundle::import(&recipient.conn, &recipient.library, &file, None).unwrap();
     let key = "bundle:claude:abc";
-    assert_eq!(notes::meta(&recipient.conn, key).unwrap().unwrap().tags, ["ci"]);
+    assert_eq!(notes::meta(&recipient.conn, key).unwrap().unwrap().components, ["packages/auth"]);
     let imported = notes::annotations(&recipient.conn, key).unwrap();
     assert_eq!((imported[0].id.as_str(), imported[0].author.clone()), (theirs.id.as_str(), notes::Author::Person { name: Some("Sam".into()) }));
     assert_eq!(notes::annotations(&recipient.conn, "bundle:claude:agent-a1").unwrap().len(), 1);
 
     // The recipient adds a note of their own, then the sender sends an updated bundle.
-    notes::save_annotation(&recipient.conn, notes::Annotation::new(key, notes::Kind::Other, "mine", vec![], notes::Author::Person { name: None })).unwrap();
+    notes::save_annotation(&recipient.conn, notes::Annotation::new(key, notes::Kind::Other, "mine", vec![prompt_ref()], notes::Author::Person { name: None })).unwrap();
     let again = bundle::import(&recipient.conn, &recipient.library, &file, None).unwrap();
     assert!(again.imported.is_empty());
     assert_eq!(notes::annotations(&recipient.conn, key).unwrap().len(), 2, "nothing duplicated");
@@ -586,7 +595,7 @@ fn details_and_annotations_travel_with_the_session() {
 fn imported_annotations_never_take_over_another_sessions() {
     use session_player_lib::test_support::annotations as notes;
     let sender = Sender::new("steal");
-    let mine = notes::save_annotation(&sender.conn, notes::Annotation::new("local:claude:abc", notes::Kind::Other, "on my local copy", vec![], notes::Author::Person { name: None })).unwrap();
+    let mine = notes::save_annotation(&sender.conn, notes::Annotation::new("local:claude:abc", notes::Kind::Other, "on my local copy", vec![prompt_ref()], notes::Author::Person { name: None })).unwrap();
     // Importing your own export: the bundle's annotation has the same id as the local one.
     let file = sender.save(&sender.export("claude/-work-repo/abc.jsonl", None, Some(vec![])), "own.spsession");
     let library = sender.base.join("library");
@@ -603,8 +612,8 @@ fn imported_annotations_never_take_over_another_sessions() {
 fn replacing_keeps_annotations_the_recipient_edited() {
     use session_player_lib::test_support::annotations as notes;
     let sender = Sender::new("replace-edits");
-    let theirs = notes::save_annotation(&sender.conn, notes::Annotation::new("local:claude:abc", notes::Kind::Other, "first", vec![], notes::Author::Person { name: None })).unwrap();
-    notes::save_meta(&sender.conn, &notes::SessionMeta { key: "local:claude:abc".into(), goal: Some("sender goal".into()), ..Default::default() }).unwrap();
+    let theirs = notes::save_annotation(&sender.conn, notes::Annotation::new("local:claude:abc", notes::Kind::Other, "first", vec![prompt_ref()], notes::Author::Person { name: None })).unwrap();
+    notes::save_meta(&sender.conn, &notes::SessionMeta { key: "local:claude:abc".into(), components: vec!["sender".into()], ..Default::default() }).unwrap();
     let first = sender.export("claude/-work-repo/abc.jsonl", None, Some(vec![]));
     let file = sender.save(&first, "one.spsession");
     let recipient = Recipient::new("replace-edits");
@@ -614,17 +623,17 @@ fn replacing_keeps_annotations_the_recipient_edited() {
     edited.note = "recipient's edit".into();
     notes::save_annotation(&recipient.conn, edited).unwrap();
     let mut meta = notes::meta(&recipient.conn, key).unwrap().unwrap();
-    meta.goal = Some("recipient goal".into());
+    meta.components = vec!["recipient".into()];
     notes::save_meta(&recipient.conn, &meta).unwrap();
 
     let mut second = first.clone();
     second.sessions[0].annotations[0].note = "sender's update".into();
-    second.sessions[0].meta.as_mut().unwrap().goal = Some("sender's new goal".into());
+    second.sessions[0].meta.as_mut().unwrap().components = vec!["sender's update".into()];
     let file = sender.save(&second, "two.spsession");
     let report = bundle::import(&recipient.conn, &recipient.library, &file, Some(bundle::OnConflict::Replace)).unwrap();
     assert_eq!(report.imported, vec!["claude:abc".to_string()]);
     assert_eq!(notes::annotations(&recipient.conn, key).unwrap()[0].note, "recipient's edit");
-    assert_eq!(notes::meta(&recipient.conn, key).unwrap().unwrap().goal.as_deref(), Some("recipient goal"));
+    assert_eq!(notes::meta(&recipient.conn, key).unwrap().unwrap().components, ["recipient"]);
     assert_eq!(report.kept_notes, 2);
     let _ = theirs;
 }

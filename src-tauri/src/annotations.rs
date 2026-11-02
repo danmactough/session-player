@@ -33,28 +33,20 @@ pub enum Outcome {
     Failed,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Link {
-    pub url: String,
-    pub label: Option<String>,
-}
-
-/// What a person has written about a session. Every field is optional; the
-/// transcript's own title and details stay on the session row.
+/// The analysis of a session: how it turned out and which parts of the
+/// repository it worked on. Every field is optional.
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SessionMeta {
     pub key: String,
-    pub title: Option<String>,
-    pub goal: Option<String>,
-    pub context: Option<String>,
     pub outcome: Outcome,
+    /// Why the session succeeded or didn't, in a sentence.
     pub outcome_note: Option<String>,
-    pub tags: Vec<String>,
-    pub links: Vec<Link>,
+    /// Repository paths or packages worked on, such as "packages/api".
+    pub components: Vec<String>,
     pub updated_at: i64,
-    /// Fields ("title", "goal", "context", "outcome", "tags") holding a
-    /// model's suggestion that no one has edited or accepted yet.
+    /// Fields ("outcome", "components") holding a model's suggestion that
+    /// no one has edited or accepted yet.
     pub generated: Vec<String>,
     pub generated_by: Option<Generation>,
     /// Fields a person emptied on purpose; generating leaves them empty
@@ -73,16 +65,12 @@ pub struct Generation {
 }
 
 /// The fields `SessionMeta::generated` and `cleared` can name, in display order.
-pub const META_FIELDS: [&str; 5] = ["title", "goal", "context", "outcome", "tags"];
+pub const META_FIELDS: [&str; 2] = ["outcome", "components"];
 
 pub fn field_is_empty(meta: &SessionMeta, name: &str) -> bool {
-    let blank = |s: &Option<String>| s.as_deref().is_none_or(|s| s.trim().is_empty());
     match name {
-        "title" => blank(&meta.title),
-        "goal" => blank(&meta.goal),
-        "context" => blank(&meta.context),
-        "outcome" => meta.outcome == Outcome::Unknown && blank(&meta.outcome_note),
-        "tags" => meta.tags.iter().all(|t| t.trim().is_empty()),
+        "outcome" => meta.outcome == Outcome::Unknown && meta.outcome_note.as_deref().is_none_or(|s| s.trim().is_empty()),
+        "components" => meta.components.iter().all(|c| c.trim().is_empty()),
         _ => true,
     }
 }
@@ -91,36 +79,22 @@ pub fn field_is_empty(meta: &SessionMeta, name: &str) -> bool {
 /// outcome's explanation goes with the outcome.
 pub fn meta_field(meta: &SessionMeta, name: &str) -> serde_json::Value {
     match name {
-        "title" => serde_json::json!(meta.title),
-        "goal" => serde_json::json!(meta.goal),
-        "context" => serde_json::json!(meta.context),
         "outcome" => serde_json::json!([meta.outcome, meta.outcome_note]),
-        "tags" => serde_json::json!(meta.tags),
+        "components" => serde_json::json!(meta.components),
         _ => serde_json::Value::Null,
     }
 }
 
 impl SessionMeta {
     fn is_empty(&self) -> bool {
-        let blank = |s: &Option<String>| s.as_deref().is_none_or(|s| s.trim().is_empty());
-        blank(&self.title)
-            && blank(&self.goal)
-            && blank(&self.context)
-            && blank(&self.outcome_note)
-            && self.outcome == Outcome::Unknown
-            && self.tags.is_empty()
-            && self.links.is_empty()
+        META_FIELDS.iter().all(|f| field_is_empty(self, f))
             // Kept so generating doesn't refill what a person emptied.
             && self.cleared.is_empty()
     }
 
     fn search_text(&self) -> String {
-        let mut parts: Vec<&str> = [&self.title, &self.goal, &self.context, &self.outcome_note]
-            .into_iter()
-            .filter_map(|s| s.as_deref())
-            .collect();
-        parts.extend(self.tags.iter().map(String::as_str));
-        parts.extend(self.links.iter().flat_map(|l| [Some(l.url.as_str()), l.label.as_deref()]).flatten());
+        let mut parts: Vec<&str> = self.outcome_note.as_deref().into_iter().collect();
+        parts.extend(self.components.iter().map(String::as_str));
         parts.join("\n")
     }
 }
@@ -164,12 +138,10 @@ pub fn save_meta(conn: &Connection, meta: &SessionMeta) -> anyhow::Result<()> {
 /// Writes the metadata as given. Metadata with nothing filled in is
 /// removed rather than stored.
 pub fn store_meta(conn: &Connection, meta: &SessionMeta) -> anyhow::Result<()> {
-    // Links are shown as clickable; only web addresses open in the browser.
-    if let Some(bad) = meta.links.iter().find(|l| !(l.url.starts_with("https://") || l.url.starts_with("http://"))) {
-        anyhow::bail!("{} isn't a web address (http:// or https://)", bad.url);
-    }
     let mut meta = meta.clone();
-    meta.tags.retain(|t| !t.trim().is_empty());
+    meta.components = meta.components.iter().map(|c| c.trim().to_string()).filter(|c| !c.is_empty()).collect();
+    meta.generated.retain(|f| META_FIELDS.contains(&f.as_str()));
+    meta.cleared.retain(|f| META_FIELDS.contains(&f.as_str()));
     let tx = conn.unchecked_transaction()?;
     tx.execute("DELETE FROM session_meta WHERE key=?1", [&meta.key])?;
     tx.execute("DELETE FROM notes_fts WHERE key=?1 AND item='meta'", [&meta.key])?;
@@ -239,7 +211,7 @@ pub struct Annotation {
     pub key: String,
     pub kind: Kind,
     pub note: String,
-    /// No anchors means the annotation is about the whole session.
+    /// The events it is about; at least one.
     pub anchors: Vec<EventRef>,
     pub author: Author,
     pub created_at: i64,
@@ -289,8 +261,9 @@ pub fn new_id() -> String {
 /// returning it as stored. Saving a model's annotation again means a person
 /// edited or accepted it.
 pub fn save_annotation(conn: &Connection, mut a: Annotation) -> anyhow::Result<Annotation> {
-    if a.note.trim().is_empty() && a.anchors.is_empty() {
-        anyhow::bail!("An annotation needs a note or an event to point at");
+    // An annotation marks a moment; how the session as a whole went is its metadata.
+    if a.anchors.is_empty() {
+        anyhow::bail!("An annotation needs an event to point at");
     }
     let tx = conn.unchecked_transaction()?;
     if a.id.is_empty() {
@@ -417,23 +390,21 @@ pub fn session_key(row: &SessionRow) -> String {
 #[derive(Debug, Serialize)]
 pub struct Summary {
     pub key: String,
-    pub title: Option<String>,
     pub outcome: Outcome,
-    pub tags: Vec<String>,
+    pub components: Vec<String>,
     /// The kinds of the session's annotations, each once.
     pub kinds: Vec<Kind>,
 }
 
 pub fn summaries(conn: &Connection) -> anyhow::Result<Vec<Summary>> {
     let mut out: HashMap<String, Summary> = HashMap::new();
-    let blank = |key: &str| Summary { key: key.to_string(), title: None, outcome: Outcome::Unknown, tags: Vec::new(), kinds: Vec::new() };
+    let blank = |key: &str| Summary { key: key.to_string(), outcome: Outcome::Unknown, components: Vec::new(), kinds: Vec::new() };
     let mut stmt = conn.prepare("SELECT json FROM session_meta")?;
     for json in stmt.query_map([], |r| r.get::<_, String>(0))? {
         let meta: SessionMeta = serde_json::from_str(&json?)?;
         let s = out.entry(meta.key.clone()).or_insert_with(|| blank(&meta.key));
-        s.title = meta.title.filter(|t| !t.trim().is_empty());
         s.outcome = meta.outcome;
-        s.tags = meta.tags;
+        s.components = meta.components;
     }
     let mut stmt = conn.prepare("SELECT json FROM annotations")?;
     for json in stmt.query_map([], |r| r.get::<_, String>(0))? {

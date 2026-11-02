@@ -649,15 +649,12 @@ const MAX_BUNDLE_BYTES: u64 = 512 << 20;
 /// unique session ids, extra sessions are subagents of the first, anchors
 /// unique per session, and every attachment reference resolves.
 fn validate(bundle: &Bundle) -> anyhow::Result<()> {
-    for s in &bundle.sessions {
-        // Links are shown as clickable, so only web addresses are allowed.
-        if let Some(bad) = s.meta.iter().flat_map(|m| &m.links).find(|l| !(l.url.starts_with("https://") || l.url.starts_with("http://"))) {
-            bail!("session {} links to {}, which isn't a web address", s.id, bad.url);
-        }
-    }
     let mut annotation_ids = HashSet::new();
     for s in &bundle.sessions {
         for a in &s.annotations {
+            if a.anchors.is_empty() {
+                bail!("session {} has an annotation that doesn't point at an event", s.id);
+            }
             if a.id.is_empty() || !annotation_ids.insert(a.id.as_str()) {
                 bail!("session {} has an annotation with a missing or repeated id", s.id);
             }

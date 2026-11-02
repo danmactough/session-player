@@ -34,7 +34,7 @@ Timestamps are milliseconds since the Unix epoch, in UTC.
 | `source_file` | File name of the session log it was read from. The bundle never stores the full path. |
 | `omitted` | Related sessions that are **not** in the bundle: `{relation, id, title}`, where `relation` is `parent`, `subagent` or `branch` |
 | `events` | The normalized transcript (see below) |
-| `meta` | Optional. The session's details: `title`, `goal`, `context`, `outcome` (`unknown`, `succeeded`, `partial` or `failed`), `outcome_note`, `tags`, `links` (`{url, label}`, `http` or `https` only), `generated` (the fields holding a model's suggestion no one has edited or accepted), `generated_by` (`{model, at, revision}`) and `cleared` (the fields a person emptied on purpose, which generating leaves empty). |
+| `meta` | Optional. The session's analysis: `outcome` (`unknown`, `succeeded`, `partial` or `failed`), `outcome_note` (why), `components` (repository paths or packages worked on, such as `packages/api`), `generated` (the fields holding a model's suggestion no one has edited or accepted), `generated_by` (`{model, at, revision}`) and `cleared` (the fields a person emptied on purpose, which generating leaves empty). |
 | `annotations` | Optional. Annotations on the session (see below). |
 
 ### Events
@@ -53,20 +53,20 @@ An image in `images` is a reference, `attachment:<attachment id>`, not the image
 
 ## Annotations
 
-Each annotation marks a moment in the session, or the session as a whole.
+Each annotation marks a moment in the session; how the session went as a whole is its `meta`.
 
 | Field | Meaning |
 |---|---|
 | `id` | Unique, kept through export and import, so a re-import updates the same annotation |
 | `kind` | `tool_error`, `human_intervention`, `agent_stuck`, `human_frustration`, `wrong_assumption`, `wasted_work`, `environment`, `missing_context`, `automatable`, `key_decision` or `other` |
 | `note` | Free text |
-| `anchors` | The events it is about, each `{anchor, kind, ts, entry}`, where `entry` is set for pi. Empty means the whole session. |
+| `anchors` | The events it is about, at least one, each `{anchor, kind, ts, entry}`, where `entry` is set for pi |
 | `author` | `{type: "person", name}` (`name` may be null) or `{type: "model", model}` |
 | `created_at`, `updated_at` | Milliseconds |
 | `accepted` | For a model's annotation: someone accepted or edited it |
 | `rationale`, `confidence`, `revision` | For a model's annotation: why it was made, how sure the model was (`low`, `medium`, `high`), and the transcript it was made from |
 
-`key` is empty in a bundle; import files metadata and annotations under the imported session. A pi branch exports only the annotations about events on that branch, and those about the whole session.
+`key` is empty in a bundle; import files metadata and annotations under the imported session. A pi branch exports only the annotations about events on that branch. Import rejects a bundle with an annotation that points at no event.
 
 On import, a new session's metadata and annotations are added. When a session is replaced after a conflict, the bundle's metadata replaces the library's, and each annotation replaces the one with the same `id`; annotations the recipient added stay. Keeping the library's copy, or re-importing unchanged content, leaves the recipient's notes as they are. Readers of an older version of this format ignore `meta` and `annotations`, so the format version is unchanged.
 

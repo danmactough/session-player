@@ -54,12 +54,14 @@ interface Prefs {
    * "copy" (the default), or an app such as "claude". Kept per agent, so
    * choosing ChatGPT for a Codex session doesn't change Claude Code sessions. */
   openWith: Partial<Record<Source, string>>;
-  /** Keeps only sessions with this outcome, tag or annotation kind: "outcome:<o>", "tag:<t>", "kind:<k>", or "" for all. */
+  /** Keeps only sessions with this outcome, component or annotation kind: "outcome:<o>", "component:<c>", "kind:<k>", or "" for all. */
   noteFilter: string;
   /** Shown as the author of annotations. */
   authorName: string;
   /** The user agreed that generating notes sends the transcript to Anthropic. */
   generateConsent: boolean;
+  /** The summary under a transcript's title is hidden. */
+  summaryCollapsed: boolean;
 }
 const DEFAULT_PREFS: Prefs = {
   projects: [],
@@ -77,6 +79,7 @@ const DEFAULT_PREFS: Prefs = {
   noteFilter: "",
   authorName: "",
   generateConsent: false,
+  summaryCollapsed: false,
 };
 
 export default function App() {
@@ -236,7 +239,7 @@ export default function App() {
       const n = notes.get(sessionKey(s));
       if (!n) return what === "outcome" && value === "unknown";
       if (what === "outcome") return n.outcome === value;
-      if (what === "tag") return n.tags.includes(value);
+      if (what === "component") return n.components.includes(value);
       return (n.kinds as string[]).includes(value);
     },
     [p.noteFilter, notes],
@@ -339,7 +342,7 @@ export default function App() {
     return (s: SessionRow) => {
       if (hits?.has(s.path)) return true;
       const n = notes.get(sessionKey(s));
-      const hay = `${s.title} ${n?.title ?? ""} ${n?.tags.join(" ") ?? ""} ${s.first_prompt ?? ""} ${s.cwd ?? ""} ${s.git_branch ?? ""} ${s.native_id}`.toLowerCase();
+      const hay = `${s.title} ${n?.components.join(" ") ?? ""} ${s.first_prompt ?? ""} ${s.cwd ?? ""} ${s.git_branch ?? ""} ${s.native_id}`.toLowerCase();
       return terms.every((t) => hay.includes(t));
     };
   }, [query, hits, notes]);
@@ -363,7 +366,7 @@ export default function App() {
       const terms = q.split(/\s+/);
       out = out.filter(matchesQuery);
       const rank = (s: SessionRow) => {
-        const title = (notes.get(sessionKey(s))?.title ?? s.title).toLowerCase();
+        const title = s.title.toLowerCase();
         const inTitle = terms.every((t) => title.includes(t)) ? -1000 : 0;
         return inTitle + (hits?.get(s.path)?.rank ?? 0);
       };
@@ -516,7 +519,7 @@ export default function App() {
   // Only outcomes, tags and kinds that some session has are offered.
   const noteFilterOptions = useMemo(() => {
     const all = [...notes.values()];
-    const tags = [...new Set(all.flatMap((n) => n.tags))].sort((a, b) => a.localeCompare(b));
+    const components = [...new Set(all.flatMap((n) => n.components))].sort((a, b) => a.localeCompare(b));
     const kinds = (Object.keys(KIND_LABEL) as (keyof typeof KIND_LABEL)[]).filter((k) => all.some((n) => n.kinds.includes(k)));
     const options: MenuOption<string>[] = [{ key: "", label: "All sessions" }];
     if (all.some((n) => n.outcome !== "unknown")) {
@@ -526,7 +529,9 @@ export default function App() {
         submenu: (Object.keys(OUTCOME_LABEL) as (keyof typeof OUTCOME_LABEL)[]).map((o) => ({ key: `outcome:${o}`, label: OUTCOME_LABEL[o] })),
       });
     }
-    if (tags.length) options.push({ key: "tag", label: "Tag", submenu: tags.map((t) => ({ key: `tag:${t}`, label: t })) });
+    if (components.length) {
+      options.push({ key: "component", label: "Component", submenu: components.map((c) => ({ key: `component:${c}`, label: c })) });
+    }
     if (kinds.length) options.push({ key: "kind", label: "Annotation", submenu: kinds.map((k) => ({ key: `kind:${k}`, label: KIND_LABEL[k] })) });
     // A saved filter whose value no longer exists stays visible so it can be cleared.
     if (p.noteFilter && !options.some((o) => o.submenu?.some((c) => c.key === p.noteFilter))) {
@@ -789,6 +794,8 @@ export default function App() {
             openWith={p.openWith[selected.source]}
             onOpenWith={(choice) => update({ openWith: { ...p.openWith, [selected.source]: choice } })}
             authorName={p.authorName.trim() || null}
+            collapsed={p.summaryCollapsed}
+            onCollapse={(summaryCollapsed) => update({ summaryCollapsed })}
             confirmGenerate={async () => {
               if (p.generateConsent) return true;
               const ok = await ask(

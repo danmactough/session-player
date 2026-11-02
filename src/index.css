@@ -1856,8 +1856,8 @@ mark {
 }
 .details-view {
   display: grid;
-  gap: 4px;
-  margin: 0 0 6px;
+  gap: 8px;
+  margin: 0;
 }
 .details-view > div {
   display: flex;
@@ -2121,7 +2121,7 @@ mark {
   font-size: 12px;
 }
 .analysis-annotations {
-  margin-top: 10px;
+  margin-top: 8px;
 }
 .analysis-annotations-list {
   max-height: 32vh;
@@ -2129,12 +2129,14 @@ mark {
 }
 .analysis-annotations-head {
   display: flex;
-  gap: 12px;
-  align-items: baseline;
-  margin-bottom: 4px;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 8px;
 }
-/* Matches the Outcome and Components labels. */
+/* Matches the Outcome and Components labels and their column. */
 .analysis-label {
+  flex: none;
+  width: 84px;
   font: 10.5px var(--mono);
   letter-spacing: 0.06em;
   text-transform: uppercase;

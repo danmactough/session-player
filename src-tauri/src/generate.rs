@@ -176,7 +176,8 @@ Each event starts with [<anchor> <kind>], such as [e12 tool_result error], at th
 Reply only with the JSON the schema describes. \
 Report the outcome (succeeded, partial, failed, or unknown when the transcript doesn't show) with a one-sentence explanation, \
 and the components worked on: the repository paths or packages the session read or changed, named by their directory relative to the repository root \
-(such as packages/api, apps/web or src-tauri; the root itself is \".\"), the package or app level rather than single files, at most 6, most-worked first. \
+(such as packages/api, apps/web or src-tauri), the package or app level rather than single files, at most 6, most-worked first. \
+Never list the repository root itself; when work happened at the root, name the top-level directories or files involved instead. \
 Annotations mark notable moments, each citing the anchors of one or more events it is about. Kinds: \
 tool_error (a tool call failed or was misused), human_intervention (the user corrected, redirected or stopped the agent), agent_stuck (looping, retrying the same fix), \
 human_frustration (the user shows impatience or annoyance), wrong_assumption (the agent assumed something false), wasted_work (work redone or thrown away), \
@@ -355,7 +356,10 @@ pub fn generate_in_chunks(events: &[Event], chunk_chars: usize, ask: &mut Ask, p
     let mut components: Vec<String> = Vec::new();
     for c in meta.get("components").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
         let c: String = c.trim().trim_start_matches("./").trim_end_matches('/').chars().take(120).collect();
-        let c = if c.is_empty() { ".".to_string() } else { c };
+        // The repository root says nothing about what was worked on.
+        if c.is_empty() || c == "." {
+            continue;
+        }
         if !components.contains(&c) && components.len() < MAX_COMPONENTS {
             components.push(c);
         }

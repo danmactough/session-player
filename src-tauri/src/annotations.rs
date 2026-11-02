@@ -139,7 +139,7 @@ pub fn save_meta(conn: &Connection, meta: &SessionMeta) -> anyhow::Result<()> {
 /// removed rather than stored.
 pub fn store_meta(conn: &Connection, meta: &SessionMeta) -> anyhow::Result<()> {
     let mut meta = meta.clone();
-    meta.components = meta.components.iter().map(|c| c.trim().to_string()).filter(|c| !c.is_empty()).collect();
+    meta.components = meta.components.iter().map(|c| c.trim().to_string()).filter(|c| !c.is_empty() && c != ".").collect();
     meta.generated.retain(|f| META_FIELDS.contains(&f.as_str()));
     meta.cleared.retain(|f| META_FIELDS.contains(&f.as_str()));
     let tx = conn.unchecked_transaction()?;

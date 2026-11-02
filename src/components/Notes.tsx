@@ -51,6 +51,8 @@ export function Analysis({
   const shown = active.length ? annotations.filter((a) => active.includes(a.kind)) : annotations;
   const m = meta ?? blank(sessionKey);
   const hasOutcome = m.outcome !== "unknown" || !!m.outcome_note;
+  // "." (the repository root) was generated before it was ruled out; it names nothing.
+  const components = m.components.filter((c) => c !== ".");
   const stale = !!(m.generated_by && revision && m.generated_by.revision !== revision);
 
   return (
@@ -77,8 +79,8 @@ export function Analysis({
           <div>
             <dt>Components</dt>
             <dd className="tags">
-              {m.components.length ? (
-                m.components.map((c) => (
+              {components.length ? (
+                components.map((c) => (
                   <span key={c} className="component">
                     {c}
                   </span>

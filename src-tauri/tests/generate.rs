@@ -107,7 +107,7 @@ fn answer() -> serde_json::Value {
     serde_json::json!({
         "outcome": "failed",
         "outcome_note": "One test run; nothing changed",
-        "components": ["./packages/auth/", "apps/web", "packages/auth"],
+        "components": ["./packages/auth/", ".", "apps/web", "./", "packages/auth"],
         "annotations": [
             { "kind": "tool_error", "anchors": ["e4"], "note": "npm test failed", "rationale": "exit code 1", "confidence": "high" },
             { "kind": "agent_stuck", "anchors": ["e99"], "note": "made up", "rationale": "", "confidence": "low" },

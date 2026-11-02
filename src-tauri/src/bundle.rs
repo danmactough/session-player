@@ -249,8 +249,8 @@ fn bundled_session(
     // Each remote address is fetched once per session; later uses share the attachment.
     let mut remote: HashMap<String, String> = HashMap::new();
     let mut events = parsed.events;
-    for (i, e) in events.iter_mut().enumerate() {
-        let anchor = format!("e{i}");
+    for e in events.iter_mut() {
+        let anchor = e.anchor.clone().unwrap_or_default();
         for image in e.images.iter_mut() {
             let attachment = match remote.get(image.as_str()) {
                 Some(existing) => {
@@ -291,7 +291,6 @@ fn bundled_session(
                 attachments.push(file_attachment(next_id(), &id, &anchor, name, contents));
             }
         }
-        e.anchor = Some(anchor);
     }
     Ok(BundledSession {
         id,

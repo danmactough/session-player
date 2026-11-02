@@ -110,7 +110,13 @@ fn parse_tree(path: &Path, leaf: Option<&str>, from_split: bool) -> anyhow::Resu
             None => 0,
         },
     };
-    for v in &shown[start..] {
+    // Every entry of the chain is rendered so anchors ("e<n>") count from the
+    // session root; the part before the split is then dropped from the view.
+    let mut hidden = 0;
+    for (i, v) in shown.iter().enumerate() {
+        if i == start {
+            hidden = p.events.len();
+        }
         let before = p.events.len();
         handle_entry(&mut p, v);
         // Entry ids let the UI place fork markers next to the right message.
@@ -119,6 +125,13 @@ fn parse_tree(path: &Path, leaf: Option<&str>, from_split: bool) -> anyhow::Resu
             e.entry = id.clone();
         }
     }
+    if start >= shown.len() {
+        hidden = p.events.len();
+    }
+    for (i, e) in p.events.iter_mut().enumerate() {
+        e.anchor = Some(format!("e{i}"));
+    }
+    p.events.drain(..hidden);
     // Token usage counts every model call, including abandoned branches.
     for v in &entries {
         if let Some(u) = v.get("message").filter(|m| str_of(m, "role") == Some("assistant")).and_then(|m| m.get("usage")) {

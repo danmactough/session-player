@@ -1956,7 +1956,8 @@ mark {
 }
 .srow-title .outcome {
   flex: none;
-  margin-left: 6px;
+  /* Pinned to the right edge so badges line up down the list. */
+  margin-left: auto;
 }
 .details-form,
 .annotation-editor {

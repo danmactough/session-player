@@ -39,7 +39,9 @@ Timestamps are milliseconds since the Unix epoch, in UTC.
 
 ### Events
 
-Events use the same normalized model the app builds from every agent's log: `kind` (`user`, `assistant`, `thinking`, `tool_call`, `tool_result`, `command`, `system`, `compaction`), `ts`, `text`, and the optional fields `tool_name`, `call_id`, `is_error`, `exit_code`, `failed_exit`, `model`, `images`, `sidechain`, `entry`.
+Events use the same normalized model the app builds from every agent's log: `kind` (`user`, `assistant`, `thinking`, `tool_call`, `tool_result`, `command`, `system`, `compaction`, `context`), `ts`, `text`, and the optional fields `tool_name`, `call_id`, `is_error`, `exit_code`, `failed_exit`, `model`, `images`, `sidechain`, `entry`.
+
+A `context` event is something the harness put in the agent's prompt, with its text in `text` and a `context` field `{kind, name, repeat}`. The `kind` is `instructions` (CLAUDE.md, CLAUDE.local.md, AGENTS.md…), `skill`, `agent` (a subagent's definition) or `mcp` (an MCP server's instructions). The `name` is the file's path, or the skill, agent or server's name. `repeat` marks a document sent again unchanged later in the session. These documents travel in full, so the export sheet lists them for review.
 
 Each event also has an `anchor`, `e<n>`, where `n` is the event's position in the transcript at export time. Anchors are unique within a session, and import never changes them, so a later note or comment can refer to an event across export and import. Anchors are scoped to the bundle; they aren't positions in the sender's log.
 

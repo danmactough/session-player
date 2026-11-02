@@ -18,6 +18,7 @@ export const KIND_LABEL: Record<AnnotationKind, string> = {
   missing_context: "Missing context",
   automatable: "Worth automating",
   key_decision: "Key decision",
+  ignored_instruction: "Ignored instruction",
   other: "Other",
 };
 

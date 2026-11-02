@@ -209,6 +209,7 @@ export type AnnotationKind =
   | "missing_context"
   | "automatable"
   | "key_decision"
+  | "ignored_instruction"
   | "other";
 
 export interface EventRef {

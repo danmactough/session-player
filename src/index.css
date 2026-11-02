@@ -1973,7 +1973,8 @@ mark {
 .annotation.kind-agent_stuck,
 .annotation.kind-human_frustration,
 .annotation.kind-wrong_assumption,
-.annotation.kind-wasted_work {
+.annotation.kind-wasted_work,
+.annotation.kind-ignored_instruction {
   border-left-color: var(--err);
 }
 .annotation.kind-key_decision,

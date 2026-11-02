@@ -363,3 +363,28 @@ fn configured_credentials_are_used_instead_of_the_sign_in() {
     let settings = args.iter().position(|a| a == "--settings").map(|i| args[i + 1].clone()).unwrap();
     assert_eq!(serde_json::from_str::<serde_json::Value>(&settings).unwrap()["apiKeyHelper"], "vault read -field=key secret/claude");
 }
+
+#[test]
+fn the_context_the_agent_was_given_goes_ahead_of_the_transcript_once() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude-context.jsonl");
+    let mut events = parse::parse_file(&path, parse::detect(&path).unwrap()).unwrap().events;
+    // A document over the limit is cut.
+    let big = events.iter_mut().find(|e| e.text == "Local note.").unwrap();
+    big.text = "x".repeat(50_000);
+    let instructions = events.iter().find(|e| e.text.starts_with("# Rules")).unwrap().anchor.clone().unwrap();
+    let mut answer = answer();
+    answer["annotations"] = serde_json::json!([
+        { "kind": "ignored_instruction", "anchors": [instructions, "e5"], "note": "Used spaces despite the tabs rule", "rationale": "", "confidence": "high" }
+    ]);
+    let mut calls = Vec::new();
+    let out = generate::generate(&events, &mut stub(answer, &mut calls), &mut |_, _| {}).unwrap();
+    let input = &calls[0];
+    let (context, transcript) = input.split_once("Transcript:\n").expect("a context section, then the transcript");
+    assert_eq!(context.matches("# Rules").count(), 1, "the repeated CLAUDE.md is sent once: {context}");
+    assert!(context.contains("instructions /home/u/.claude/CLAUDE.md]"), "{context}");
+    assert!(context.contains("skill /home/u/.claude/skills/deploy]"));
+    assert!(context.contains("mcp docs]"));
+    assert!(context.len() < 30_000, "the long document is cut: {}", context.len());
+    assert!(!transcript.contains("# Rules") && transcript.contains("/deploy staging"), "{transcript}");
+    assert_eq!(out.annotations.iter().map(|a| a.kind).collect::<Vec<_>>(), [notes::Kind::IgnoredInstruction]);
+}

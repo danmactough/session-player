@@ -174,6 +174,8 @@ pub enum Kind {
     /// Repeated work worth automating.
     Automatable,
     KeyDecision,
+    /// The agent went against an instruction file, skill or agent definition.
+    IgnoredInstruction,
     Other,
 }
 

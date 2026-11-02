@@ -2025,6 +2025,11 @@ mark {
   color: var(--muted);
   opacity: 0;
 }
+/* A prompt box starts lower in its row (its top margin and padding), so
+   the + lines up with its "Prompt n" label instead of the row's top. */
+.t-stream > .row:has(> .b-user) > .annotate-btn {
+  top: 34px;
+}
 .t-stream > .row:hover > .annotate-btn,
 .t-stream > .row > .annotate-btn:focus-visible {
   opacity: 1;

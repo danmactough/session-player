@@ -883,6 +883,8 @@ const BlockView = memo(function BlockView({
       return <Compaction ev={b.ev} reveal={reveal?.n} />;
     case "reference":
       return <Reference ev={b.ev} reveal={reveal?.n} />;
+    case "context":
+      return <ContextBlock ev={b.ev} reveal={reveal?.n} />;
     case "orphan_result":
       return (
         <section className="b-tools">
@@ -930,6 +932,37 @@ function Compaction({ ev, reveal }: { ev: SessionEvent; reveal?: number }) {
 /** Earlier conversation the session was given, such as the ChatGPT chat a
  * Codex task started from; collapsed, since the prompt that follows says what
  * was asked. */
+const CONTEXT_LABEL = { instructions: "Instructions", skill: "Skill", agent: "Agent", mcp: "MCP server instructions" };
+
+/** What the harness gave the agent to follow (a CLAUDE.md, a skill…), folded
+ * where it arrived. A later unchanged copy says so. */
+function ContextBlock({ ev, reveal }: { ev: SessionEvent; reveal?: number }) {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (reveal) setOpen(true);
+  }, [reveal]);
+  const c = ev.context;
+  const name = c?.name ?? "";
+  // A path shows its file name; skills given as a folder show the folder's name.
+  const short = name.includes("/") ? name.replace(/\/+$/, "").split("/").slice(-1)[0] : name;
+  return (
+    <section className={`b-context ${c?.repeat ? "repeat" : ""}`}>
+      <button onClick={() => setOpen((o) => !o)} aria-expanded={open} title={name}>
+        <span className="caret">{open ? "▾" : "▸"}</span>
+        <span className="b-context-kind">{c ? CONTEXT_LABEL[c.kind] : "Context"}</span>
+        <span className="b-context-name">{short}</span>
+        {c?.repeat && <span className="dim">sent again, unchanged</span>}
+      </button>
+      {open && (
+        <>
+          {short !== name && <div className="b-context-path">{name}</div>}
+          <Markdown text={ev.text} className="context-md" />
+        </>
+      )}
+    </section>
+  );
+}
+
 function Reference({ ev, reveal }: { ev: SessionEvent; reveal?: number }) {
   const [open, setOpen] = useState(false);
   useEffect(() => {

@@ -2526,6 +2526,48 @@ mark {
   font: 9px var(--sans);
   font-style: normal;
 }
+.b-context {
+  margin: 8px 0;
+}
+.b-context > button {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.b-context > button:hover {
+  color: var(--ink-2);
+}
+.b-context .caret {
+  font-size: 9px;
+}
+.b-context-kind {
+  font: 10.5px var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.b-context-name {
+  font: 12px var(--mono);
+  color: var(--ink-2);
+}
+.b-context.repeat > button {
+  opacity: 0.75;
+}
+.b-context-path {
+  margin: 6px 0 0 17px;
+  font: 11px var(--mono);
+  color: var(--faint);
+}
+.context-md {
+  margin: 8px 0 0 17px;
+  padding: 10px 14px;
+  max-height: 420px;
+  overflow-y: auto;
+  border-left: 2px solid var(--line);
+  font-size: 13px;
+  color: var(--ink-2);
+}
 .reference-md {
   margin-top: 10px;
   font-size: 13px;

@@ -61,6 +61,7 @@ export type EventKind =
   | "command"
   | "system"
   | "compaction"
+  | "context"
   /** Earlier conversation handed to the session as context; `title` names it. */
   | "reference";
 
@@ -80,6 +81,14 @@ export interface SessionEvent {
   sidechain?: boolean;
   entry?: string;
   title?: string;
+  /** For a "context" event: what the harness put in the prompt, and where it came from. */
+  context?: {
+    kind: "instructions" | "skill" | "agent" | "mcp";
+    /** The file's path, or the skill, agent or server's name. */
+    name: string;
+    /** The same document was given earlier in the session. */
+    repeat?: boolean;
+  };
   /** Set on events from an imported bundle; stable across export and import. */
   anchor?: string;
 }

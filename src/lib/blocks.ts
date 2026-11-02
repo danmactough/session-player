@@ -14,6 +14,8 @@ export type Block =
   | { type: "system"; ev: SessionEvent }
   | { type: "compaction"; ev: SessionEvent }
   | { type: "reference"; ev: SessionEvent }
+  /** An instruction file, skill, agent definition or MCP server's instructions given to the agent. */
+  | { type: "context"; ev: SessionEvent }
   | { type: "orphan_result"; ev: SessionEvent }
   /** Shown above a branch or fork's first message: where it came from. */
   | { type: "fork_from"; source: SessionRow; self: SessionRow }
@@ -85,6 +87,9 @@ export function buildBlocks(
         break;
       case "compaction":
         blocks.push({ type: "compaction", ev: e });
+        break;
+      case "context":
+        blocks.push({ type: "context", ev: e });
         break;
       case "reference":
         blocks.push({ type: "reference", ev: e });

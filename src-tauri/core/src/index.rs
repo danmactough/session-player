@@ -327,7 +327,7 @@ fn enrich(path: &Path, source: Source, parsed: &mut Parsed, sidecars: &CodexSide
     parsed.title = parsed
         .title
         .take()
-        .and_then(|(t, s)| clean_title(&t, parsed.git_branch.as_deref()).map(|t| (t, s)));
+        .and_then(|(t, s)| clean_title(&t).map(|t| (t, s)));
 }
 
 fn index_file(file: FileInfo, sidecars: &CodexSidecars) -> Indexed {
@@ -488,23 +488,15 @@ fn build_row(file: &FileInfo, p: Parsed) -> Option<(SessionRow, String)> {
 
 /// The directory a session is grouped under. Claude Code worktrees live inside
 /// the repo they were cut from, so they fold back into it.
-/// Rejects titles that carry no information (a bare branch name) and unwraps
-/// slash-command markup into "/command args".
-fn clean_title(t: &str, branch: Option<&str>) -> Option<String> {
+/// Unwraps slash-command markup into "/command args". Otherwise the agent's
+/// title is used as given, even a bare slash command or a hyphenated slug.
+fn clean_title(t: &str) -> Option<String> {
     let t = if t.contains("<command-name>") {
         parse::claude::command_label(t)
     } else {
         t.trim().to_string()
     };
-    if t.is_empty() || t.starts_with('<') {
-        return None;
-    }
-    if !t.contains(char::is_whitespace)
-        && (Some(t.as_str()) == branch
-            || matches!(t.as_str(), "main" | "master" | "develop" | "trunk")
-            || t.contains('-')
-            || t.contains('/'))
-    {
+    if t.is_empty() {
         return None;
     }
     Some(t)
@@ -646,15 +638,13 @@ fn read_codex_index(path: &Path) -> HashMap<String, String> {
 }
 
 fn apply_codex_titles(conn: &Connection) -> anyhow::Result<()> {
-    let rows: Vec<(String, String, Option<String>)> = {
-        let mut stmt = conn.prepare("SELECT path, native_id, git_branch FROM sessions WHERE source='codex'")?;
-        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<Result<_, _>>()?
+    let rows: Vec<(String, String)> = {
+        let mut stmt = conn.prepare("SELECT path, native_id FROM sessions WHERE source='codex'")?;
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<_, _>>()?
     };
     let sidecars = CodexSidecars::default();
-    for (path, id, branch) in rows {
-        if let Some(t) = sidecars
-            .title(Path::new(&path), &id)
-            .and_then(|t| clean_title(&t, branch.as_deref()))
+    for (path, id) in rows {
+        if let Some(t) = sidecars.title(Path::new(&path), &id).and_then(|t| clean_title(&t))
         {
             conn.execute(
                 "UPDATE sessions SET title=?1, title_source='thread' WHERE path=?2 AND title<>?1",

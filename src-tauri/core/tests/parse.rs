@@ -42,6 +42,19 @@ fn codex_session() {
 }
 
 #[test]
+fn agent_title_is_used_as_given() {
+    let original = std::fs::read_to_string(fixture("claude.jsonl")).unwrap();
+    for title in ["/review", "feat", "fix-login-bug", "main"] {
+        let path = std::env::temp_dir().join(format!("sp-title-{}-{}.jsonl", std::process::id(), title.replace('/', "_")));
+        let body = original.replace(r#""aiTitle":"Flaky login test""#, &format!(r#""aiTitle":"{title}""#));
+        std::fs::write(&path, body).unwrap();
+        let (row, _) = index_one(path.to_str().unwrap());
+        std::fs::remove_file(path).unwrap();
+        assert_eq!((row.title.as_str(), row.title_source.as_str()), (title, "ai"));
+    }
+}
+
+#[test]
 fn compressed_codex_session_matches_plain_transcript() {
     let path = std::env::temp_dir().join(format!("sp-compressed-{}.jsonl.zst", std::process::id()));
     let bytes = std::fs::read(fixture("codex.jsonl")).unwrap();

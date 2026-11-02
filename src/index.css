@@ -2546,6 +2546,9 @@ mark {
 }
 .b-context .caret {
   font-size: 9px;
+  /* The text pieces share a baseline; the caret sits on the line's center, with the +. */
+  align-self: center;
+  line-height: 1;
 }
 .b-context-kind {
   font: 10.5px var(--mono);

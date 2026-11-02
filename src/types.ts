@@ -152,6 +152,8 @@ export interface ImportReport {
   conflicts: { id: string; existing_title: string; incoming_title: string }[];
   /** Sessions with no conversation, which were not imported. */
   empty: string[];
+  /** Details and annotations you changed since an earlier import, kept rather than replaced. */
+  kept_notes: number;
 }
 
 export interface LibraryError {

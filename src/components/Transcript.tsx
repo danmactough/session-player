@@ -184,20 +184,22 @@ export function Transcript({
   // Generating notes with Claude runs in the backend; progress arrives as events.
   const [gen, setGen] = useState<{ done: number; total: number } | null>(null);
   const [genMessage, setGenMessage] = useState<string | null>(null);
-  const afterGenerate = useRef(() => {});
-  afterGenerate.current = () => {
-    void loadNotes();
-    onNotesChanged();
-  };
+  const loadNotesRef = useRef(loadNotes);
+  loadNotesRef.current = loadNotes;
   useEffect(() => {
     let live = true;
-    void api.generating().then((keys) => live && keys.includes(key) && setGen({ done: 0, total: 0 }));
+    // An event that arrives first is newer than what generating() reports.
+    let heard = false;
+    void api.generating().then((keys) => live && !heard && keys.includes(key) && setGen({ done: 0, total: 0 }));
     const un = [
       listen<{ key: string; done: number; total: number }>("generate-progress", (e) => {
-        if (e.payload.key === key) setGen({ done: e.payload.done, total: e.payload.total });
+        if (e.payload.key !== key) return;
+        heard = true;
+        setGen({ done: e.payload.done, total: e.payload.total });
       }),
       listen<{ key: string; error: string | null; cancelled: boolean; rejected: number }>("generate-done", (e) => {
         if (e.payload.key !== key) return;
+        heard = true;
         setGen(null);
         const { error, cancelled, rejected } = e.payload;
         if (error) setGenMessage(`Couldn't generate notes: ${error}`);
@@ -208,7 +210,8 @@ export function Transcript({
               ? `Left out ${rejected} suggested ${rejected === 1 ? "annotation that pointed" : "annotations that pointed"} at events this transcript doesn't have.`
               : null,
           );
-          afterGenerate.current();
+          // The list refreshes itself (App listens too); this transcript reloads its notes.
+          void loadNotesRef.current();
         }
       }),
     ];

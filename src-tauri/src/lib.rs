@@ -87,6 +87,8 @@ struct AppState {
     export: Mutex<PendingExport>,
     /// Sessions (by key) a model is generating notes for, with the flag that cancels each.
     generating: Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>,
+    /// Where the `claude` command is, once found.
+    claude: Mutex<Option<PathBuf>>,
 }
 
 /// The bundle shown in the export sheet. Saving writes this exact bundle,
@@ -546,8 +548,11 @@ fn find_claude() -> Option<PathBuf> {
         return Some(found);
     }
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
-    let out = std::process::Command::new(shell).args(["-lc", "command -v claude"]).output().ok()?;
-    let path = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+    // Interactive too, since PATH is often set in .zshrc; a profile that
+    // prints something leaves the answer on the last line.
+    let out = std::process::Command::new(shell).args(["-ilc", "command -v claude"]).stdin(std::process::Stdio::null()).output().ok()?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let path = PathBuf::from(stdout.lines().rev().find(|l| !l.trim().is_empty())?.trim());
     path.is_file().then_some(path)
 }
 
@@ -572,9 +577,6 @@ struct GenerateDone {
 /// one "generate-done" event.
 #[tauri::command]
 fn generate_notes(app: AppHandle, state: State<Shared>, key: String, path: String, branch: Option<String>) -> Result<(), String> {
-    let Some(claude) = find_claude() else {
-        return Err("Couldn't find the claude command. Install Claude Code and sign in, then try again.".into());
-    };
     let cancel = Arc::new(AtomicBool::new(false));
     {
         let mut running = state.generating.lock().unwrap();
@@ -585,9 +587,28 @@ fn generate_notes(app: AppHandle, state: State<Shared>, key: String, path: Strin
     }
     let state = state.inner().clone();
     std::thread::spawn(move || {
+        // Clears the session's entry even if this thread panics, so it can be generated again.
+        struct Running(Shared, String);
+        impl Drop for Running {
+            fn drop(&mut self) {
+                self.0.generating.lock().unwrap().remove(&self.1);
+            }
+        }
+        let running = Running(state.clone(), key.clone());
         let progress_app = app.clone();
         let progress_key = key.clone();
         let result = (|| -> anyhow::Result<usize> {
+            // A login shell can take seconds to start, so this happens here, once.
+            let claude = {
+                let mut cached = state.claude.lock().unwrap();
+                if cached.is_none() {
+                    *cached = find_claude();
+                }
+                cached.clone()
+            };
+            let Some(claude) = claude else {
+                anyhow::bail!("Couldn't find the claude command. Install Claude Code and sign in, then try again.");
+            };
             let events = session_events(&path, branch.as_deref()).map_err(anyhow::Error::msg)?;
             let mut ask = |system: &str, input: &str, schema: &serde_json::Value| generate::run_claude(&claude, system, input, schema, &cancel);
             let generated = generate::generate(&events, &mut ask, &mut |done, total| {
@@ -597,7 +618,7 @@ fn generate_notes(app: AppHandle, state: State<Shared>, key: String, path: Strin
             generate::apply(&conn, &key, &generated, &events)?;
             Ok(generated.rejected)
         })();
-        state.generating.lock().unwrap().remove(&key);
+        drop(running);
         let done = match result {
             Ok(rejected) => GenerateDone { key, error: None, cancelled: false, rejected },
             Err(e) if generate::is_cancelled(&e) => GenerateDone { key, error: None, cancelled: true, rejected: 0 },
@@ -781,6 +802,7 @@ pub fn run() {
                 watcher: Mutex::new(None),
                 export: Mutex::new(PendingExport::default()),
                 generating: Mutex::new(Default::default()),
+                claude: Mutex::new(None),
             });
             app.manage(state.clone());
             let handle = app.handle().clone();
@@ -895,6 +917,7 @@ mod tests {
             watcher: Mutex::new(None),
             export: Mutex::new(PendingExport::default()),
             generating: Mutex::new(Default::default()),
+            claude: Mutex::new(None),
         });
         let ok = serve_image(&state, "spimg://localhost/7/1/0");
         assert_eq!(ok.status(), 200);

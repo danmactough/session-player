@@ -171,6 +171,11 @@ export default function App() {
         if (s.updated || s.removed || s.scanned === 0) reload();
       }),
       listen("import-session", () => void chooseBundle()),
+      // Generated notes change titles, outcomes and search hits, even for a session no longer open.
+      listen("generate-done", () => {
+        reloadNotes();
+        setVersion((v) => v + 1);
+      }),
       // Settings… in the app menu (⌘,).
       listen("open-settings", () => {
         setHelp(false);
@@ -182,7 +187,7 @@ export default function App() {
       }),
     ];
     return () => un.forEach((p) => p.then((f) => f()));
-  }, [reload, chooseBundle]);
+  }, [reload, chooseBundle, reloadNotes]);
 
   const update = useCallback((patch: Partial<Prefs>) => {
     setPrefs((p) => {

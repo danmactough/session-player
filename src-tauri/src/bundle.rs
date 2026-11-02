@@ -11,7 +11,7 @@ use base64::Engine;
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
-use crate::annotations::{self, Annotation, SessionMeta};
+use crate::annotations::{self, Annotation, EventRef, SessionMeta};
 use crate::model::{Event, EventKind, Parsed, Source, Tokens};
 use crate::parse;
 
@@ -255,6 +255,9 @@ fn bundled_session(
     };
     // Each remote address is fetched once per session; later uses share the attachment.
     let mut remote: HashMap<String, String> = HashMap::new();
+    // Suggestions record the revision of the transcript as the app shows it;
+    // export changes the text (remote image addresses), so they are re-stamped.
+    let shown_revision = crate::generate::revision(&parsed.events);
     let mut events = parsed.events;
     for e in events.iter_mut() {
         let anchor = e.anchor.clone().unwrap_or_default();
@@ -321,7 +324,7 @@ fn bundled_session(
         annotations: Vec::new(),
         events,
     }
-    .with_notes(conn, &format!("local:{session_id}"))
+    .with_notes(conn, &format!("local:{session_id}"), Some(&shown_revision))
 }
 
 /// A session imported earlier, exported again as it was imported, with the
@@ -331,15 +334,28 @@ fn library_session(conn: &Connection, path: &str, attachments: &mut Vec<Attachme
     attachments.append(&mut bundle.attachments);
     let session = bundle.sessions.swap_remove(0);
     let key = format!("bundle:{}", session.id);
-    session.with_notes(conn, &key)
+    session.with_notes(conn, &key, None)
 }
 
 impl BundledSession {
     /// Adds the metadata and annotations stored under `key`. A pi session's
     /// notes cover every branch, so only annotations about events in this
     /// transcript (or the session as a whole) come along.
-    fn with_notes(mut self, conn: &Connection, key: &str) -> anyhow::Result<BundledSession> {
-        self.meta = annotations::meta(conn, key)?.map(|m| SessionMeta { key: String::new(), ..m });
+    fn with_notes(mut self, conn: &Connection, key: &str, shown_revision: Option<&str>) -> anyhow::Result<BundledSession> {
+        let bundled_revision = crate::generate::revision(&self.events);
+        let restamp = |r: &mut Option<String>| {
+            if r.is_some() && r.as_deref() == shown_revision {
+                *r = Some(bundled_revision.clone());
+            }
+        };
+        self.meta = annotations::meta(conn, key)?.map(|mut m| {
+            if let Some(g) = &mut m.generated_by {
+                let mut r = Some(g.revision.clone());
+                restamp(&mut r);
+                g.revision = r.unwrap_or_default();
+            }
+            SessionMeta { key: String::new(), ..m }
+        });
         let mut list = annotations::annotations(conn, key)?;
         annotations::resolve(&mut list, &self.events, None);
         self.annotations = list
@@ -347,6 +363,7 @@ impl BundledSession {
             .filter(|a| a.anchors.is_empty() || a.anchors.iter().any(|r| r.found))
             .map(|mut a| {
                 a.key = String::new();
+                restamp(&mut a.revision);
                 for r in &mut a.anchors {
                     r.found = false;
                     r.elsewhere = false;
@@ -637,9 +654,11 @@ fn validate(bundle: &Bundle) -> anyhow::Result<()> {
         if let Some(bad) = s.meta.iter().flat_map(|m| &m.links).find(|l| !(l.url.starts_with("https://") || l.url.starts_with("http://"))) {
             bail!("session {} links to {}, which isn't a web address", s.id, bad.url);
         }
-        let mut ids = HashSet::new();
+    }
+    let mut annotation_ids = HashSet::new();
+    for s in &bundle.sessions {
         for a in &s.annotations {
-            if a.id.is_empty() || !ids.insert(a.id.as_str()) {
+            if a.id.is_empty() || !annotation_ids.insert(a.id.as_str()) {
                 bail!("session {} has an annotation with a missing or repeated id", s.id);
             }
         }
@@ -736,6 +755,9 @@ pub struct ImportReport {
     /// Sessions with no prompt, reply or tool call, which would not show in
     /// the list; they are not imported.
     pub empty: Vec<String>,
+    /// Details and annotations the recipient changed since an earlier import,
+    /// kept rather than replaced by the bundle's.
+    pub kept_notes: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -763,7 +785,8 @@ pub fn import(conn: &Connection, library: &Path, path: &Path, on_conflict: Optio
         report.empty.push(bundle.sessions[0].id.clone());
         return Ok(report);
     }
-    let mut writes: Vec<(PathBuf, Bundle)> = Vec::new();
+    // Each write carries the copy it replaces, to tell the recipient's edits apart.
+    let mut writes: Vec<(PathBuf, Bundle, Option<BundledSession>)> = Vec::new();
     for s in &bundle.sessions {
         if !has_conversation(&s.events) {
             report.empty.push(s.id.clone());
@@ -778,6 +801,7 @@ pub fn import(conn: &Connection, library: &Path, path: &Path, on_conflict: Optio
             attachments: bundle.attachments.iter().filter(|a| a.session == s.id).cloned().collect(),
         };
         let dest = library_file(library, &s.id);
+        let mut previous = None;
         if dest.exists() {
             let existing = read(&dest).map_err(|e| {
                 anyhow!("Your library's copy of {} is damaged ({e:#}). Remove it in Settings, under Imported sessions, then import again.", s.id)
@@ -786,6 +810,7 @@ pub fn import(conn: &Connection, library: &Path, path: &Path, on_conflict: Optio
                 report.unchanged.push(s.id.clone());
                 continue;
             }
+            previous = existing.sessions.first().cloned();
             match on_conflict {
                 Some(OnConflict::Replace) => {}
                 Some(OnConflict::Keep) => {
@@ -802,25 +827,58 @@ pub fn import(conn: &Connection, library: &Path, path: &Path, on_conflict: Optio
                 }
             }
         }
-        writes.push((dest, single));
+        writes.push((dest, single, previous));
     }
     if !report.conflicts.is_empty() {
         return Ok(report);
     }
     std::fs::create_dir_all(library).with_context(|| format!("Couldn't create {}", library.display()))?;
-    for (dest, single) in writes {
+    for (dest, single, previous) in writes {
         write(&single, &dest)?;
         let s = &single.sessions[0];
-        let key = format!("bundle:{}", s.id);
-        if let Some(meta) = &s.meta {
-            annotations::store_meta(conn, &SessionMeta { key: key.clone(), ..meta.clone() })?;
-        }
-        for a in &s.annotations {
-            annotations::put_annotation(conn, &Annotation { key: key.clone(), ..a.clone() })?;
-        }
+        report.kept_notes += import_notes(conn, &format!("bundle:{}", s.id), s, previous.as_ref())?;
         report.imported.push(s.id.clone());
     }
     Ok(report)
+}
+
+/// Files a session's metadata and annotations under `key`, and returns how
+/// many the recipient had changed and so kept. A record is replaced only if
+/// it is still as the earlier import (`previous`) left it; with no earlier
+/// import, the bundle's is taken.
+fn import_notes(conn: &Connection, key: &str, s: &BundledSession, previous: Option<&BundledSession>) -> anyhow::Result<usize> {
+    let mut kept = 0;
+    let bare_meta = |m: &SessionMeta| SessionMeta { key: String::new(), updated_at: 0, ..m.clone() };
+    if let Some(meta) = &s.meta {
+        let untouched = match (annotations::meta(conn, key)?, previous) {
+            (None, _) | (_, None) => true,
+            (Some(current), Some(p)) => p.meta.as_ref().map(bare_meta) == Some(bare_meta(&current)),
+        };
+        if untouched {
+            annotations::store_meta(conn, &SessionMeta { key: key.to_string(), ..meta.clone() })?;
+        } else {
+            kept += 1;
+        }
+    }
+    let bare = |a: &Annotation| Annotation { key: String::new(), anchors: a.anchors.iter().map(|r| EventRef { found: false, elsewhere: false, ..r.clone() }).collect(), ..a.clone() };
+    for a in &s.annotations {
+        let incoming = Annotation { key: key.to_string(), ..a.clone() };
+        match annotations::annotation(conn, &a.id)? {
+            None => annotations::put_annotation(conn, &incoming)?,
+            // The same annotation on another session, such as the local
+            // session this bundle was exported from: a copy, with an id of its own.
+            Some(other) if other.key != key => annotations::put_annotation(conn, &Annotation { id: annotations::new_id(), ..incoming })?,
+            Some(current) => {
+                let untouched = previous.is_none_or(|p| p.annotations.iter().any(|old| old.id == a.id && bare(old) == bare(&current)));
+                if untouched {
+                    annotations::put_annotation(conn, &incoming)?;
+                } else {
+                    kept += 1;
+                }
+            }
+        }
+    }
+    Ok(kept)
 }
 
 /// Deletes an imported session from the library, along with the subagents

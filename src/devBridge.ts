@@ -223,7 +223,7 @@ const handlers: Record<string, Handler> = {
     kinds: [...new Set(devNotes.filter((a) => a.key === key).map((a) => a.kind))],
   })),
   library_errors: () => [{ path: `${HOME}/Library/Application Support/com.danmactough.sessionplayer/library/Y2xhdWRlOmRlbW8.spsession`, error: "Y2xhdWRlOmRlbW8.spsession is damaged: bundle is malformed" }],
-  import_bundle: () => ({ imported: ["claude:demo"], unchanged: [], kept: [], conflicts: [], empty: [] }),
+  import_bundle: () => ({ imported: ["claude:demo"], unchanged: [], kept: [], conflicts: [], empty: [], kept_notes: 0 }),
   terminal_apps: () => [
     { id: "terminal", label: "Terminal" },
     { id: "iterm", label: "iTerm" },

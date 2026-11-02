@@ -112,7 +112,8 @@ export function SessionDetails({
       )}
       {has && !editing && meta.generated.length > 0 && (
         <p className="suggestion-line">
-          {meta.generated_by?.model ?? "A model"} suggested the {meta.generated.map((f) => FIELD_LABEL[f] ?? f).join(", ")}.
+          {meta.generated_by?.model ?? "A model"} suggested the {meta.generated.map((f) => FIELD_LABEL[f] ?? f).join(", ")}
+          {meta.generated_by && ` on ${fullDate(meta.generated_by.at)}`}.
           {meta.generated_by && revision && meta.generated_by.revision !== revision && (
             <span className="stale"> The transcript has changed since.</span>
           )}{" "}

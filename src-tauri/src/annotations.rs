@@ -249,7 +249,7 @@ impl Annotation {
 
 /// Unique across machines, so annotations from different people can be
 /// merged later without clashing.
-fn new_id() -> String {
+pub fn new_id() -> String {
     use std::hash::{BuildHasher, Hasher};
     let random = std::collections::hash_map::RandomState::new().build_hasher().finish();
     format!("{:x}-{random:016x}", now())
@@ -292,6 +292,11 @@ pub fn save_annotation(conn: &Connection, mut a: Annotation) -> anyhow::Result<A
     Ok(a)
 }
 
+pub fn annotation(conn: &Connection, id: &str) -> anyhow::Result<Option<Annotation>> {
+    let json: Option<String> = conn.query_row("SELECT json FROM annotations WHERE id=?1", [id], |r| r.get(0)).optional()?;
+    Ok(json.map(|j| serde_json::from_str(&j)).transpose()?)
+}
+
 /// The session's annotations, oldest first.
 pub fn annotations(conn: &Connection, key: &str) -> anyhow::Result<Vec<Annotation>> {
     let mut stmt =
@@ -308,7 +313,9 @@ pub fn annotations(conn: &Connection, key: &str) -> anyhow::Result<Vec<Annotatio
 pub fn put_annotation(conn: &Connection, a: &Annotation) -> anyhow::Result<()> {
     let tx = conn.unchecked_transaction()?;
     tx.execute(
-        "INSERT INTO annotations(id, key, json) VALUES(?1, ?2, ?3) ON CONFLICT(id) DO UPDATE SET key=excluded.key, json=excluded.json",
+        // Never moves an annotation from one session to another.
+        "INSERT INTO annotations(id, key, json) VALUES(?1, ?2, ?3)
+         ON CONFLICT(id) DO UPDATE SET json=excluded.json WHERE annotations.key=excluded.key",
         params![a.id, a.key, serde_json::to_string(a)?],
     )?;
     tx.execute("DELETE FROM notes_fts WHERE item=?1", [&a.id])?;

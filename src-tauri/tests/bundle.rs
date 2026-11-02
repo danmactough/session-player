@@ -244,7 +244,7 @@ fn invalid_bundles_are_rejected_with_a_reason_and_nothing_is_imported() {
     let recipient = Recipient::new("invalid");
     let cases: Vec<(&str, Box<dyn FnOnce(&mut serde_json::Value)>, &str)> = vec![
         ("format", Box::new(|v| v["format"] = "something-else".into()), "isn't a Session Player session bundle"),
-        ("newer", Box::new(|v| v["version"] = 2.into()), "newer version of Session Player"),
+        ("newer", Box::new(|v| v["version"] = 3.into()), "newer version of Session Player"),
         ("unversioned", Box::new(|v| v.as_object_mut().unwrap().remove("version").map(|_| ()).unwrap()), "no version"),
         ("empty", Box::new(|v| v["sessions"] = serde_json::json!([])), "no sessions"),
         ("missing-field", Box::new(|v| v["sessions"][0].as_object_mut().unwrap().remove("events").map(|_| ()).unwrap()), "missing field `events`"),
@@ -657,4 +657,17 @@ fn the_preview_lists_the_context_documents_going_into_the_file() {
         ]
     );
     assert!(exported.sessions[0].events.iter().filter(|e| e.context.is_some()).count() == 5, "every copy is in the file itself");
+}
+
+#[test]
+fn bundles_are_version_2_and_a_changed_document_is_listed_once() {
+    let sender = Sender::new("v2");
+    let mut exported = sender.export("claude/-work-repo/ctx.jsonl", None, None);
+    assert_eq!(exported.version, 2);
+    // CLAUDE.md edited mid-session: a different text under the same name.
+    let again = exported.sessions[0].events.iter_mut().filter(|e| e.context.as_ref().is_some_and(|c| c.repeat)).next().unwrap();
+    again.text = "# Rules\nUse spaces.".into();
+    again.context.as_mut().unwrap().repeat = false;
+    let names: Vec<_> = bundle::summarize(&exported).sessions[0].context.iter().map(|c| c.name.clone()).collect();
+    assert_eq!(names.iter().filter(|n| n.ends_with("CLAUDE.md")).count(), 1, "{names:?}");
 }

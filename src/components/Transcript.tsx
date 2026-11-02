@@ -286,11 +286,12 @@ export function Transcript({
     virt.scrollToIndex(i, { align: "center" });
   };
   // The annotation navigator steps through annotations in transcript order.
-  const anchorNumber = (a: Annotation) => Math.min(...a.anchors.filter((r) => r.found).map((r) => Number(r.anchor.slice(1)) || 0));
-  const noteStops = useMemo(
-    () => notes.annotations.filter((a) => a.anchors.some((r) => r.found)).sort((x, y) => anchorNumber(x) - anchorNumber(y)),
-    [notes.annotations],
-  );
+  // Context (c…) and conversation (e…) anchors are numbered apart, so order by place in the transcript.
+  const noteStops = useMemo(() => {
+    const position = new Map((events ?? []).map((e, i) => [e.anchor, i]));
+    const first = (a: Annotation) => Math.min(...a.anchors.filter((r) => r.found).map((r) => position.get(r.anchor) ?? Infinity));
+    return notes.annotations.filter((a) => a.anchors.some((r) => r.found)).sort((x, y) => first(x) - first(y));
+  }, [notes.annotations, events]);
   const [noteIdx, setNoteIdx] = useState<number | null>(null);
   const stepNote = (dir: 1 | -1) => {
     if (!noteStops.length) return;
@@ -929,9 +930,6 @@ function Compaction({ ev, reveal }: { ev: SessionEvent; reveal?: number }) {
   );
 }
 
-/** Earlier conversation the session was given, such as the ChatGPT chat a
- * Codex task started from; collapsed, since the prompt that follows says what
- * was asked. */
 const CONTEXT_LABEL = { instructions: "Instructions", skill: "Skill", agent: "Agent", mcp: "MCP server instructions" };
 
 /** What the harness gave the agent to follow (a CLAUDE.md, a skill…), folded
@@ -943,8 +941,9 @@ function ContextBlock({ ev, reveal }: { ev: SessionEvent; reveal?: number }) {
   }, [reveal]);
   const c = ev.context;
   const name = c?.name ?? "";
-  // A path shows its file name; skills given as a folder show the folder's name.
-  const short = name.includes("/") ? name.replace(/\/+$/, "").split("/").slice(-1)[0] : name;
+  // A path shows its file name, except a skill's SKILL.md, which shows its folder's name.
+  const parts = name.replace(/\/+$/, "").split("/");
+  const short = parts.length > 1 ? (parts.at(-1) === "SKILL.md" ? parts.at(-2)! : parts.at(-1)!) : name;
   return (
     <section className={`b-context ${c?.repeat ? "repeat" : ""}`}>
       <button onClick={() => setOpen((o) => !o)} aria-expanded={open} title={name}>
@@ -963,6 +962,9 @@ function ContextBlock({ ev, reveal }: { ev: SessionEvent; reveal?: number }) {
   );
 }
 
+/** Earlier conversation the session was given, such as the ChatGPT chat a
+ * Codex task started from; collapsed, since the prompt that follows says what
+ * was asked. */
 function Reference({ ev, reveal }: { ev: SessionEvent; reveal?: number }) {
   const [open, setOpen] = useState(false);
   useEffect(() => {

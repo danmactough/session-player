@@ -227,8 +227,6 @@ fn handle_message(
     }
 }
 
-/// An `@file` mention: Claude Code records the file's contents as an
-/// attachment right after the prompt. Show it inside that prompt.
 /// What the harness put in the prompt: instruction files (CLAUDE.md and
 /// friends), MCP servers' instructions, and, in a subagent's log, its
 /// agent definition (the first part of the system prompt; Claude Code's own
@@ -270,6 +268,8 @@ fn handle_context_attachment(p: &mut Parsed, a: &Value, ts: Option<i64>, agent: 
     }
 }
 
+/// An `@file` mention: Claude Code records the file's contents as an
+/// attachment right after the prompt. Show it inside that prompt.
 fn handle_attachment(p: &mut Parsed, v: &Value, agent: Option<&str>) {
     let ts = parse_ts(v.get("timestamp"));
     if let Some(a) = v.get("attachment") {

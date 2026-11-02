@@ -218,6 +218,8 @@ export interface EventRef {
   ts: number | null;
   /** The pi entry the event came from; pi events are found by entry. */
   entry?: string;
+  /** For a context document: its name, which tells apart documents sent together. */
+  name?: string;
   /** Whether the event is in the transcript as loaded. */
   found?: boolean;
   /** The event is on another branch of the pi session. */

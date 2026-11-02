@@ -303,6 +303,20 @@ pub fn annotations(conn: &Connection, key: &str) -> anyhow::Result<Vec<Annotatio
     Ok(list)
 }
 
+/// Stores an annotation as given (id, author and times included), for one
+/// that arrives in an imported bundle.
+pub fn put_annotation(conn: &Connection, a: &Annotation) -> anyhow::Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "INSERT INTO annotations(id, key, json) VALUES(?1, ?2, ?3) ON CONFLICT(id) DO UPDATE SET key=excluded.key, json=excluded.json",
+        params![a.id, a.key, serde_json::to_string(a)?],
+    )?;
+    tx.execute("DELETE FROM notes_fts WHERE item=?1", [&a.id])?;
+    tx.execute("INSERT INTO notes_fts(key, item, text) VALUES(?1, ?2, ?3)", params![a.key, a.id, a.note])?;
+    tx.commit()?;
+    Ok(())
+}
+
 pub fn delete_annotation(conn: &Connection, id: &str) -> anyhow::Result<()> {
     let tx = conn.unchecked_transaction()?;
     tx.execute("DELETE FROM annotations WHERE id=?1", [id])?;

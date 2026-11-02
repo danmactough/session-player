@@ -420,7 +420,11 @@ async fn import_bundle(
 ) -> Result<bundle::ImportReport, String> {
     let state = state.inner().clone();
     let library = library_dir(&state);
-    let report = tauri::async_runtime::spawn_blocking(move || bundle::import(&library, Path::new(&path), on_conflict))
+    let db_path = state.db_path.clone();
+    let report = tauri::async_runtime::spawn_blocking(move || {
+        let conn = index::open(&db_path)?;
+        bundle::import(&conn, &library, Path::new(&path), on_conflict)
+    })
         .await
         .map_err(err)?
         .map_err(|e| format!("{e:#}"))?;

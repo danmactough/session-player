@@ -11,6 +11,7 @@ use base64::Engine;
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
+use crate::annotations::{self, Annotation, SessionMeta};
 use crate::model::{Event, EventKind, Parsed, Source, Tokens};
 use crate::parse;
 
@@ -54,6 +55,12 @@ pub struct BundledSession {
     /// what was left out.
     pub omitted: Vec<Related>,
     pub events: Vec<Event>,
+    /// What people (or a model) wrote about the session. Their `key` is
+    /// empty here; import files them under the imported session's key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<SessionMeta>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub annotations: Vec<Annotation>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -209,7 +216,7 @@ fn bundled_session(
     attachments: &mut Vec<Attachment>,
 ) -> anyhow::Result<BundledSession> {
     if is_bundle_path(Path::new(path)) {
-        return library_session(path, attachments);
+        return library_session(conn, path, attachments);
     }
     let meta = indexed_meta(conn, path)?;
     let file = Path::new(path);
@@ -292,7 +299,7 @@ fn bundled_session(
             }
         }
     }
-    Ok(BundledSession {
+    BundledSession {
         id,
         source,
         native_id: parsed.native_id,
@@ -310,15 +317,45 @@ fn bundled_session(
         imported_from: meta.imported_from,
         source_file: file.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string(),
         omitted,
+        meta: None,
+        annotations: Vec::new(),
         events,
-    })
+    }
+    .with_notes(conn, &format!("local:{session_id}"))
 }
 
-/// A session imported earlier, exported again as it was imported.
-fn library_session(path: &str, attachments: &mut Vec<Attachment>) -> anyhow::Result<BundledSession> {
+/// A session imported earlier, exported again as it was imported, with the
+/// notes as they are now in this library.
+fn library_session(conn: &Connection, path: &str, attachments: &mut Vec<Attachment>) -> anyhow::Result<BundledSession> {
     let mut bundle = read(Path::new(path))?;
     attachments.append(&mut bundle.attachments);
-    Ok(bundle.sessions.swap_remove(0))
+    let session = bundle.sessions.swap_remove(0);
+    let key = format!("bundle:{}", session.id);
+    session.with_notes(conn, &key)
+}
+
+impl BundledSession {
+    /// Adds the metadata and annotations stored under `key`. A pi session's
+    /// notes cover every branch, so only annotations about events in this
+    /// transcript (or the session as a whole) come along.
+    fn with_notes(mut self, conn: &Connection, key: &str) -> anyhow::Result<BundledSession> {
+        self.meta = annotations::meta(conn, key)?.map(|m| SessionMeta { key: String::new(), ..m });
+        let mut list = annotations::annotations(conn, key)?;
+        annotations::resolve(&mut list, &self.events, None);
+        self.annotations = list
+            .into_iter()
+            .filter(|a| a.anchors.is_empty() || a.anchors.iter().any(|r| r.found))
+            .map(|mut a| {
+                a.key = String::new();
+                for r in &mut a.anchors {
+                    r.found = false;
+                    r.elsewhere = false;
+                }
+                a
+            })
+            .collect();
+        Ok(self)
+    }
 }
 
 /// The `<file name="…" note="…">contents</file>` cards in a prompt (see
@@ -595,6 +632,18 @@ const MAX_BUNDLE_BYTES: u64 = 512 << 20;
 /// unique session ids, extra sessions are subagents of the first, anchors
 /// unique per session, and every attachment reference resolves.
 fn validate(bundle: &Bundle) -> anyhow::Result<()> {
+    for s in &bundle.sessions {
+        // Links are shown as clickable, so only web addresses are allowed.
+        if let Some(bad) = s.meta.iter().flat_map(|m| &m.links).find(|l| !(l.url.starts_with("https://") || l.url.starts_with("http://"))) {
+            bail!("session {} links to {}, which isn't a web address", s.id, bad.url);
+        }
+        let mut ids = HashSet::new();
+        for a in &s.annotations {
+            if a.id.is_empty() || !ids.insert(a.id.as_str()) {
+                bail!("session {} has an annotation with a missing or repeated id", s.id);
+            }
+        }
+    }
     let Some(primary) = bundle.sessions.first() else { bail!("it has no sessions") };
     let mut ids = HashSet::new();
     for s in &bundle.sessions {
@@ -702,7 +751,11 @@ pub struct Conflict {
 /// with different contents is a conflict: without `on_conflict` the import
 /// stops before writing anything and reports the conflicts, so the user can
 /// choose to replace or keep the library's copies.
-pub fn import(library: &Path, path: &Path, on_conflict: Option<OnConflict>) -> anyhow::Result<ImportReport> {
+///
+/// The metadata and annotations of each session written are filed under its
+/// key in `conn`. Annotations are matched by id, so one the recipient added
+/// stays, and one from the bundle replaces the copy with the same id.
+pub fn import(conn: &Connection, library: &Path, path: &Path, on_conflict: Option<OnConflict>) -> anyhow::Result<ImportReport> {
     let bundle = read(path)?;
     let mut report = ImportReport::default();
     // Subagents are imported only with the session they belong to.
@@ -757,7 +810,15 @@ pub fn import(library: &Path, path: &Path, on_conflict: Option<OnConflict>) -> a
     std::fs::create_dir_all(library).with_context(|| format!("Couldn't create {}", library.display()))?;
     for (dest, single) in writes {
         write(&single, &dest)?;
-        report.imported.push(single.sessions[0].id.clone());
+        let s = &single.sessions[0];
+        let key = format!("bundle:{}", s.id);
+        if let Some(meta) = &s.meta {
+            annotations::store_meta(conn, &SessionMeta { key: key.clone(), ..meta.clone() })?;
+        }
+        for a in &s.annotations {
+            annotations::put_annotation(conn, &Annotation { key: key.clone(), ..a.clone() })?;
+        }
+        report.imported.push(s.id.clone());
     }
     Ok(report)
 }
@@ -867,6 +928,8 @@ pub struct SessionSummary {
     pub is_subagent: bool,
     pub prompts: usize,
     pub events: usize,
+    pub has_details: bool,
+    pub annotations: usize,
 }
 
 pub fn summarize(bundle: &Bundle) -> Summary {
@@ -893,6 +956,8 @@ pub fn summarize(bundle: &Bundle) -> Summary {
                 is_subagent: s.is_subagent,
                 prompts: s.events.iter().filter(|e| e.kind == EventKind::User && !e.text.is_empty()).count(),
                 events: s.events.len(),
+                has_details: s.meta.is_some(),
+                annotations: s.annotations.len(),
             })
             .collect(),
         omitted: bundle.sessions.iter().flat_map(|s| s.omitted.iter().cloned()).collect(),

@@ -408,7 +408,8 @@ mark {
 .proj-sort .menu-button:hover,
 .proj-sort.open .menu-button,
 .caps-sort .menu-button:hover,
-.caps-sort.open .menu-button {
+.caps-sort.open .menu-button,
+.caps-sort.filtering .menu-button {
   color: var(--ink);
 }
 .proj-sort .menu-list,
@@ -2130,6 +2131,12 @@ mark {
   text-transform: uppercase;
   color: var(--faint);
 }
+.mid-filters {
+  display: flex;
+  gap: 16px;
+  margin-top: 6px;
+}
+.mid-filters .caps-sort .menu-list,
 .analysis-annotations-head .caps-sort .menu-list {
   left: 0;
   right: auto;

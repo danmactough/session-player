@@ -4,6 +4,7 @@ import type { Annotation, AnnotationKind, Outcome, SessionMeta } from "../types"
 import { KINDS, KIND_LABEL, OUTCOME_LABEL } from "../lib/notes";
 import { fullDate } from "../lib/format";
 import { Menu } from "./Menu";
+import { MultiMenu } from "./MultiMenu";
 
 const OUTCOMES = Object.keys(OUTCOME_LABEL) as Outcome[];
 
@@ -43,11 +44,11 @@ export function Analysis({
   onJump: (a: Annotation) => void;
 }) {
   const [editing, setEditing] = useState(false);
-  const [kind, setKind] = useState<AnnotationKind | "all">("all");
+  const [kinds, setKinds] = useState<AnnotationKind[]>([]);
   const present = KINDS.filter((k) => annotations.some((a) => a.kind === k));
-  // Deleting the last annotation of the chosen kind shows them all again.
-  const active = kind !== "all" && !present.includes(kind) ? "all" : kind;
-  const shown = active === "all" ? annotations : annotations.filter((a) => a.kind === active);
+  // A kind whose last annotation was deleted stops filtering.
+  const active = kinds.filter((k) => present.includes(k));
+  const shown = active.length ? annotations.filter((a) => active.includes(a.kind)) : annotations;
   const m = meta ?? blank(sessionKey);
   const hasOutcome = m.outcome !== "unknown" || !!m.outcome_note;
   const stale = !!(m.generated_by && revision && m.generated_by.revision !== revision);
@@ -105,12 +106,12 @@ export function Analysis({
         <div className="analysis-annotations-head">
           <span className="analysis-label">Annotations</span>
           {present.length > 1 && (
-            <Menu
+            <MultiMenu
               className="caps-sort"
-              label="Filter annotations"
+              label="Annotation type"
+              options={present.map((k) => ({ key: k, label: KIND_LABEL[k] }))}
               value={active}
-              options={[{ key: "all" as const, label: "All kinds" }, ...present.map((k) => ({ key: k, label: KIND_LABEL[k] }))]}
-              onChange={setKind}
+              onChange={setKinds}
             />
           )}
         </div>

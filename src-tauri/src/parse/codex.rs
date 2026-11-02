@@ -110,9 +110,7 @@ pub fn parse(path: &Path) -> anyhow::Result<Parsed> {
     // Numbered before code-mode wrappers are dropped: a wrapper is dropped
     // only once its commands appear, which in a running session can be later,
     // and numbering after would shift every later anchor when it happens.
-    for (i, e) in p.events.iter_mut().enumerate() {
-        e.anchor = Some(format!("e{i}"));
-    }
+    super::assign_anchors(&mut p.events);
     drop_code_mode_wrappers(&mut p.events);
     super::mark_failed_exits(&mut p.events);
     super::mark_repeated_context(&mut p.events);
@@ -128,7 +126,11 @@ fn injected_context(text: &str, ts: Option<i64>) -> Option<Event> {
     if let Some(rest) = text.strip_prefix("# AGENTS.md instructions for ") {
         let dir = rest.lines().next().unwrap_or("").trim();
         let body = inner("<INSTRUCTIONS>", "</INSTRUCTIONS>").unwrap_or(rest);
-        return Some(super::context_event(ContextKind::Instructions, &format!("AGENTS.md ({dir})"), ts, body));
+        return Some(super::context_event(ContextKind::Instructions, &format!("{}/AGENTS.md", dir.trim_end_matches('/')), ts, body));
+    }
+    if text.starts_with("<INSTRUCTIONS>") {
+        let body = inner("<INSTRUCTIONS>", "</INSTRUCTIONS>").unwrap_or(text);
+        return Some(super::context_event(ContextKind::Instructions, "instructions", ts, body));
     }
     if text.starts_with("<user_instructions>") {
         let body = inner("<user_instructions>", "</user_instructions>").unwrap_or(text);

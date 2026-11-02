@@ -213,3 +213,16 @@ fn notes_never_change_the_agent_files() {
     assert_eq!((std::fs::read(&file).unwrap(), std::fs::metadata(&file).unwrap().modified().unwrap()), before);
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn an_annotation_on_one_of_several_context_documents_stays_on_it() {
+    let events = parse::parse_file(&fixture("pi-context.jsonl"), parse::detect(&fixture("pi-context.jsonl")).unwrap()).unwrap().events;
+    let repo = events.iter().find(|e| e.context.as_ref().is_some_and(|c| c.name == "/work/repo/AGENTS.md")).unwrap();
+    let r: notes::EventRef = serde_json::from_value(serde_json::json!({
+        "anchor": "c9", "kind": "context", "ts": repo.ts, "entry": "s1", "name": "/work/repo/AGENTS.md"
+    }))
+    .unwrap();
+    let mut list = vec![notes::Annotation::new("local:pi:pi-ctx", notes::Kind::IgnoredInstruction, "", vec![r], person())];
+    notes::resolve(&mut list, &events, None);
+    assert_eq!((list[0].anchors[0].anchor.as_str(), list[0].anchors[0].found), (repo.anchor.as_deref().unwrap(), true));
+}

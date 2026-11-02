@@ -197,6 +197,11 @@ pub struct EventRef {
     /// rewinds, so its events are found by entry instead of by anchor.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry: Option<String>,
+    /// For a context document: its name (path), since one pi entry or one
+    /// Claude Code attachment carries several documents of the same kind
+    /// and time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     /// Set by `resolve`: whether the event is in the transcript as loaded.
     #[serde(default)]
     pub found: bool,
@@ -351,8 +356,9 @@ pub fn resolve(list: &mut [Annotation], events: &[Event], entries: Option<&HashS
     for r in list.iter_mut().flat_map(|a| a.anchors.iter_mut()) {
         r.found = false;
         r.elsewhere = false;
+        let named = |e: &Event| r.name.is_none() || e.context.as_ref().map(|c| &c.name) == r.name.as_ref();
         if let Some(entry) = r.entry.clone() {
-            match events.iter().find(|e| e.entry.as_deref() == Some(entry.as_str()) && e.kind == r.kind) {
+            match events.iter().find(|e| e.entry.as_deref() == Some(entry.as_str()) && e.kind == r.kind && named(e)) {
                 Some(e) => {
                     r.anchor = e.anchor.clone().unwrap_or_default();
                     r.found = true;
@@ -361,7 +367,7 @@ pub fn resolve(list: &mut [Annotation], events: &[Event], entries: Option<&HashS
             }
             continue;
         }
-        let same = |e: &Event| e.kind == r.kind && e.ts == r.ts;
+        let same = |e: &Event| e.kind == r.kind && e.ts == r.ts && named(e);
         if by_anchor.get(r.anchor.as_str()).is_some_and(|e| same(e)) {
             r.found = true;
             continue;

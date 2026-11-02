@@ -543,6 +543,7 @@ pub fn apply(conn: &Connection, key: &str, g: &Generated, events: &[Event]) -> a
                 kind: e.kind,
                 ts: e.ts,
                 entry: e.entry.clone(),
+                name: e.context.as_ref().map(|c| c.name.clone()),
                 found: false,
                 elsewhere: false,
             })

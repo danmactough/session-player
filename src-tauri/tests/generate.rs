@@ -374,7 +374,7 @@ fn the_context_the_agent_was_given_goes_ahead_of_the_transcript_once() {
     let instructions = events.iter().find(|e| e.text.starts_with("# Rules")).unwrap().anchor.clone().unwrap();
     let mut answer = answer();
     answer["annotations"] = serde_json::json!([
-        { "kind": "ignored_instruction", "anchors": [instructions, "e5"], "note": "Used spaces despite the tabs rule", "rationale": "", "confidence": "high" }
+        { "kind": "ignored_instruction", "anchors": [instructions, "e1"], "note": "Used spaces despite the tabs rule", "rationale": "", "confidence": "high" }
     ]);
     let mut calls = Vec::new();
     let out = generate::generate(&events, &mut stub(answer, &mut calls), &mut |_, _| {}).unwrap();

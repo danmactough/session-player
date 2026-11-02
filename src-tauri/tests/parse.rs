@@ -315,7 +315,7 @@ fn codex_agents_md_and_skills_are_context() {
     let events = parsed(&fixture("codex-context.jsonl"));
     assert_eq!(
         context_of(&events),
-        ["instructions:AGENTS.md (/work/repo):Run tests before committing.", "skill:/home/u/.codex/skills/release/SKILL.md:Tag and push."]
+        ["instructions:/work/repo/AGENTS.md:Run tests before committing.", "skill:/home/u/.codex/skills/release/SKILL.md:Tag and push."]
     );
     assert!(!events.iter().any(|e| e.text.contains("environment_context")));
 }
@@ -334,4 +334,40 @@ fn pi_project_instructions_agents_and_skills_are_context() {
     );
     let texts: Vec<_> = events.iter().filter(|e| e.context.is_none()).map(|e| e.text.as_str()).collect();
     assert_eq!(texts, ["/skill:grill-me", "stress test my plan", "Here goes."]);
+}
+
+#[test]
+fn context_events_are_numbered_apart_from_the_conversation() {
+    let events = parsed(&fixture("claude-context.jsonl"));
+    let anchors: Vec<_> = events.iter().map(|e| e.anchor.clone().unwrap()).collect();
+    // Adding context to a log doesn't renumber the conversation's events.
+    assert_eq!(anchors, ["c0", "c1", "c2", "e0", "c3", "e1", "c4"]);
+}
+
+#[test]
+fn pi_addendum_and_delegate_agents_are_context_and_malformed_tags_are_skipped() {
+    let dir = std::env::temp_dir().join(format!("sp-pi-addendum-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("session.jsonl");
+    let system = serde_json::json!({
+        "type": "message", "id": "s1", "parentId": null, "timestamp": "2026-04-03T10:00:00.000Z",
+        "message": { "role": "system", "content": "", "sections": {
+            "preamble": "You are a helpful agent. See <br/> here.",
+            "addendum": "<addendum>\n<active_agent name=\"delegate\"/>\nHand work to others.\n</addendum>",
+            "project_context": "<project_context><project_instructions path=\"/a\"</project_instructions><project_instructions path=\"/b\">Fine.</project_instructions></project_context>"
+        } }
+    });
+    let user = serde_json::json!({ "type": "message", "id": "u1", "parentId": "s1", "timestamp": "2026-04-03T10:00:01.000Z",
+        "message": { "role": "user", "content": [{ "type": "text", "text": "<skill name=\"plain\">\nBody mentions location=\"/nope\" in passing.\n</skill>\n\ndo it" }] } });
+    std::fs::write(&file, format!("{}\n{}\n{}\n", r#"{"type":"session","version":3,"id":"pi-add","timestamp":"2026-04-03T10:00:00.000Z","cwd":"/w"}"#, system, user)).unwrap();
+    let events = parsed(&file.to_string_lossy());
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(
+        context_of(&events),
+        [
+            "agent:delegate:Hand work to others.",
+            "instructions:/b:Fine.",
+            "skill:plain:Body mentions location=\"/nope\" in passing.",
+        ]
+    );
 }

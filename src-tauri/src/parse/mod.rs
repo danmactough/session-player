@@ -72,10 +72,25 @@ pub fn parse_file(path: &Path, source: Source) -> anyhow::Result<Parsed> {
 /// Gives each event its anchor, "e<n>" for its position in the file, so
 /// annotations and bundles can refer to it.
 fn with_anchors(mut p: Parsed) -> Parsed {
-    for (i, e) in p.events.iter_mut().enumerate() {
-        e.anchor = Some(format!("e{i}"));
-    }
+    assign_anchors(&mut p.events);
     p
+}
+
+/// Numbers the conversation's events "e0", "e1"… and context documents
+/// "c0", "c1"… separately, so finding more context in a log (a parser that
+/// learns a new kind) doesn't renumber the conversation that annotations
+/// point at.
+pub fn assign_anchors(events: &mut [Event]) {
+    let (mut conversation, mut context) = (0, 0);
+    for e in events.iter_mut() {
+        if e.kind == EventKind::Context {
+            e.anchor = Some(format!("c{context}"));
+            context += 1;
+        } else {
+            e.anchor = Some(format!("e{conversation}"));
+            conversation += 1;
+        }
+    }
 }
 
 /// An instruction file, skill, agent definition or MCP server's

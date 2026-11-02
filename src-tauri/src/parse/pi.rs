@@ -130,9 +130,7 @@ fn parse_tree(path: &Path, leaf: Option<&str>, from_split: bool) -> anyhow::Resu
     if start >= shown.len() {
         hidden = p.events.len();
     }
-    for (i, e) in p.events.iter_mut().enumerate() {
-        e.anchor = Some(format!("e{i}"));
-    }
+    super::assign_anchors(&mut p.events);
     p.events.drain(..hidden);
     // Token usage counts every model call, including abandoned branches.
     for v in &entries {
@@ -160,6 +158,15 @@ pub fn entry_ids(path: &Path) -> anyhow::Result<HashSet<String>> {
         }
     })?;
     Ok(ids)
+}
+
+/// The agent named by an `<active_agent name="…"/>` tag in `text`, and the
+/// text without the tag.
+fn agent_tag(text: &str) -> Option<(&str, String)> {
+    let start = text.find("<active_agent")?;
+    let end = start + text[start..].find('>')? + 1;
+    let name = between(&text[start..end], "name=\"", "\"")?;
+    Some((name, format!("{}{}", &text[..start], &text[end..])))
 }
 
 /// The root-to-leaf chain ending at `leaf`, or at the last entry in the file.
@@ -355,7 +362,9 @@ fn handle_entry(p: &mut Parsed, v: &Value) {
                     if e.text.starts_with("<skill name=\"") {
                         let name = between(&e.text, "<skill name=\"", "\"").unwrap_or("skill");
                         p.events.push(Event::new(EventKind::Command, ts, format!("/skill:{name}")));
-                        let location = between(&e.text, "location=\"", "\"").unwrap_or(name);
+                        // Attributes are read from the opening tag only; the body can mention anything.
+                        let open = e.text.find('>').map_or(e.text.as_str(), |i| &e.text[..i]);
+                        let location = between(open, "location=\"", "\"").unwrap_or(name);
                         if let Some(body) = between(&e.text, ">", "</skill>") {
                             p.events.push(super::context_event(ContextKind::Skill, location, ts, body));
                         }
@@ -369,21 +378,32 @@ fn handle_entry(p: &mut Parsed, v: &Value) {
                     }
                 }
                 // A subagent run records its system prompt in sections: the
-                // agent's definition (its preamble) and the project's
-                // instruction files.
+                // agent's definition (named by <active_agent>, in the preamble
+                // or the addendum), more instructions in the addendum, and
+                // the project's instruction files. A main session's log has
+                // no system message.
                 "system" => {
                     let sections = m.get("sections");
                     let section = |k: &str| sections.and_then(|s| str_of(s, k)).unwrap_or("");
-                    let preamble = section("preamble");
-                    if let Some(agent) = between(preamble, "<active_agent name=\"", "\"") {
-                        let body = preamble.find("/>").map_or(preamble, |i| &preamble[i + 2..]);
-                        p.events.push(super::context_event(ContextKind::Agent, agent, ts, body));
+                    for key in ["preamble", "addendum"] {
+                        let text = section(key);
+                        let text = text.trim().strip_prefix("<addendum>").map_or(text, |t| t.trim_end().trim_end_matches("</addendum>"));
+                        match agent_tag(text) {
+                            Some((agent, body)) => p.events.push(super::context_event(ContextKind::Agent, agent, ts, &body)),
+                            None if key == "addendum" && !text.trim().is_empty() => {
+                                p.events.push(super::context_event(ContextKind::Instructions, "system addendum", ts, text))
+                            }
+                            None => {}
+                        }
                     }
                     let mut rest = section("project_context");
                     while let Some(start) = rest.find("<project_instructions path=\"") {
                         let tag = &rest[start + "<project_instructions path=\"".len()..];
-                        let (Some(path_end), Some(open_end), Some(close)) = (tag.find('"'), tag.find('>'), tag.find("</project_instructions>")) else {
-                            break;
+                        let Some(close) = tag.find("</project_instructions>") else { break };
+                        let (Some(path_end), Some(open_end)) = (tag.find('"'), tag[..close].find('>')) else {
+                            // An opening tag that never closes: skip to the next block.
+                            rest = &tag[close..];
+                            continue;
                         };
                         p.events.push(super::context_event(ContextKind::Instructions, &tag[..path_end], ts, &tag[open_end + 1..close]));
                         rest = &tag[close..];

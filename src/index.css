@@ -1848,6 +1848,226 @@ mark {
   font-size: 12px;
 }
 
+/* ---------- metadata and annotations ---------- */
+.t-details {
+  margin: 4px 0 10px;
+  font-size: 13px;
+}
+.t-original {
+  margin: 0 0 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.details-view {
+  display: grid;
+  gap: 4px;
+  margin: 0 0 6px;
+}
+.details-view > div {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+}
+.details-view dt {
+  flex: none;
+  width: 64px;
+  font: 10.5px var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+.details-view dd {
+  margin: 0;
+  color: var(--ink-2);
+  white-space: pre-wrap;
+}
+.details-view .tags,
+.details-view .links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+.details-edit {
+  font-size: 12px;
+}
+.outcome {
+  font: 10px var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 0 5px;
+  border-radius: 4px;
+  border: 1px solid currentColor;
+  white-space: nowrap;
+}
+.outcome-succeeded {
+  color: var(--ok);
+}
+.outcome-partial {
+  color: var(--warn);
+}
+.outcome-failed {
+  color: var(--err);
+}
+.outcome-unknown {
+  color: var(--muted);
+}
+.srow-title .outcome {
+  flex: none;
+  margin-left: 6px;
+}
+.details-form,
+.annotation-editor {
+  display: grid;
+  gap: 8px;
+  max-width: 560px;
+  margin: 6px 0 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--raised);
+}
+.details-form label,
+.setting-field {
+  display: grid;
+  gap: 3px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.details-form input,
+.details-form textarea,
+.annotation-editor textarea,
+.setting-field input {
+  font: 13px var(--sans);
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 5px 8px;
+  resize: vertical;
+}
+.details-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.details-label {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.details-actions {
+  display: flex;
+  gap: 8px;
+}
+.setting-field {
+  max-width: 320px;
+}
+.annotations-toggle {
+  white-space: nowrap;
+}
+.annotations-toggle.on {
+  background: var(--hover);
+}
+.annotations-panel {
+  flex: none;
+  max-height: 38vh;
+  overflow-y: auto;
+  padding: 8px 40px 10px;
+  border-bottom: 1px solid var(--line-2);
+}
+.annotations-panel-head {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+.annotations-panel > p {
+  font-size: 12.5px;
+}
+.annotation {
+  max-width: 860px;
+  padding: 6px 10px;
+  margin: 4px 0;
+  border-left: 2px solid var(--warn);
+  background: var(--hover);
+  border-radius: 0 6px 6px 0;
+  font-size: 12.5px;
+}
+.annotation.kind-tool_error,
+.annotation.kind-agent_stuck,
+.annotation.kind-human_frustration,
+.annotation.kind-wrong_assumption,
+.annotation.kind-wasted_work {
+  border-left-color: var(--err);
+}
+.annotation.kind-key_decision,
+.annotation.kind-automatable {
+  border-left-color: var(--ok);
+}
+.annotation-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  align-items: baseline;
+}
+.annotation-head .link {
+  font-size: 11.5px;
+}
+.annotation-kind {
+  font-weight: 600;
+  color: var(--ink);
+}
+.annotation-by {
+  font-size: 11.5px;
+  color: var(--faint);
+  margin-right: auto;
+}
+.annotation-lost {
+  font: 10.5px var(--mono);
+  color: var(--err);
+}
+.annotation-note {
+  margin: 3px 0 0;
+  color: var(--ink-2);
+  white-space: pre-wrap;
+}
+.link.danger {
+  color: var(--err);
+}
+.t-stream > .row > .annotate-btn {
+  position: absolute;
+  left: 12px;
+  top: 2px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: 50%;
+  font: 14px/18px var(--mono);
+  color: var(--muted);
+  opacity: 0;
+}
+.t-stream > .row:hover > .annotate-btn,
+.t-stream > .row > .annotate-btn:focus-visible {
+  opacity: 1;
+}
+.t-stream > .row > .annotate-btn::before,
+.t-stream > .row > .row-notes::before {
+  display: none;
+}
+.row-notes {
+  padding: 2px 0 6px;
+}
+/* Each row is positioned with a transform, so later rows paint over an open
+   menu in an earlier one (the annotation kind picker). Lift the row that has it. */
+.t-stream > .row:has(.menu.open) {
+  z-index: 2;
+}
+.tool-annotate {
+  display: inline-block;
+  margin-top: 6px;
+  font-size: 11.5px;
+}
+
 /* ---------- scrollbars ---------- */
 ::-webkit-scrollbar {
   width: 10px;

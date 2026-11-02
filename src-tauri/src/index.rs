@@ -11,7 +11,7 @@ use crate::model::{EventKind, Parsed, SessionRow, Source};
 use crate::parse;
 
 /// Bump when parsing changes so existing indexes are rebuilt on launch.
-const INDEX_VERSION: &str = "20";
+const INDEX_VERSION: &str = "21";
 const FTS_BODY_LIMIT: usize = 400_000;
 const SKIP_DIRS: &[&str] = &["memory", "tool-results", "subagent-artifacts", "node_modules", ".git"];
 
@@ -43,6 +43,7 @@ pub fn open(db_path: &Path) -> anyhow::Result<Connection> {
          CREATE VIRTUAL TABLE IF NOT EXISTS session_fts USING fts5(
             path UNINDEXED, title, body, tokenize='porter unicode61');",
     )?;
+    crate::annotations::create_tables(&conn)?;
     let version: Option<String> = conn
         .query_row("SELECT value FROM settings WHERE key='index_version'", [], |r| r.get(0))
         .optional()?;
@@ -356,7 +357,12 @@ fn index_bundle(file: FileInfo, path: &Path) -> Indexed {
     };
     let source = session.source;
     let (title, title_source) = (session.title.clone(), session.title_source.clone());
+    let branch = session.branch_leaf.clone();
     let row = build_row(&file, crate::bundle::to_parsed(session)).map(|(mut row, body)| {
+        // An imported pi branch is a session of its own here, with its own notes.
+        if let Some(leaf) = branch {
+            row.native_id = format!("{}@{leaf}", row.native_id);
+        }
         row.title = title;
         row.title_source = title_source;
         row.from_bundle = true;
@@ -757,9 +763,28 @@ pub fn search(conn: &Connection, query: &str) -> anyhow::Result<Vec<SearchHit>> 
         "SELECT path, snippet(session_fts, 2, '\u{1}', '\u{2}', ' … ', 14), bm25(session_fts, 0.0, 4.0, 1.0)
          FROM session_fts WHERE session_fts MATCH ?1 ORDER BY 3 LIMIT 500",
     )?;
-    let hits = stmt
-        .query_map([fts_query], |r| Ok(SearchHit { path: r.get(0)?, snippet: r.get(1)?, rank: r.get(2)? }))?
+    let mut hits: Vec<SearchHit> = stmt
+        .query_map([&fts_query], |r| Ok(SearchHit { path: r.get(0)?, snippet: r.get(1)?, rank: r.get(2)? }))?
         .collect::<Result<_, _>>()?;
+
+    // Metadata and annotations are stored by session key; find the path the
+    // list knows each session by.
+    let notes = crate::annotations::search(conn, &fts_query)?;
+    if !notes.is_empty() {
+        let mut paths: HashMap<String, String> = HashMap::new();
+        for row in list(conn)? {
+            paths.insert(crate::annotations::session_key(&row), row.path);
+        }
+        let mut seen: HashSet<String> = hits.iter().map(|h| h.path.clone()).collect();
+        for (key, snippet, rank) in notes {
+            if let Some(path) = paths.get(&key)
+                && seen.insert(path.clone())
+            {
+                hits.push(SearchHit { path: path.clone(), snippet, rank });
+            }
+        }
+        hits.sort_by(|a, b| a.rank.total_cmp(&b.rank));
+    }
     Ok(hits)
 }
 

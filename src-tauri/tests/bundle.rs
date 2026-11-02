@@ -184,6 +184,8 @@ fn a_pi_branch_exports_its_whole_path_and_lists_the_others() {
     bundle::import(&recipient.library, &file, None).unwrap();
     let rows = recipient.reindex();
     assert_eq!(rows[0].title, "Retry: stress test my caching plan");
+    // Its notes are kept apart from those of an imported copy of the active branch.
+    assert_eq!(session_player_lib::test_support::annotations::session_key(&rows[0]), "bundle:pi:01a-pi@a3");
     // Other branches stay with the sender.
     assert!(rows[0].branches.is_empty());
     assert_eq!(bundle::load_events(Path::new(&rows[0].path)).unwrap(), s.events);

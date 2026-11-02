@@ -6,11 +6,16 @@ mod terminals;
 pub mod index;
 #[doc(hidden)]
 pub mod model;
-mod parse;
+#[doc(hidden)]
+pub mod parse;
+#[doc(hidden)]
+pub mod annotations;
 
 #[doc(hidden)]
 pub mod test_support {
+    pub use crate::annotations;
     pub use crate::bundle;
+    pub use crate::parse;
     pub use crate::index;
     pub use crate::model::SessionRow as Row;
 
@@ -291,17 +296,7 @@ fn search(state: State<Shared>, query: String) -> Result<Vec<index::SearchHit>, 
 async fn load_session(state: State<'_, Shared>, path: String, branch: Option<String>) -> Result<Vec<Event>, String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let p = PathBuf::from(&path);
-        let mut events = if bundle::is_bundle_path(&p) {
-            bundle::load_events(&p).map_err(err)?
-        } else {
-            let source = parse::detect(&p).ok_or_else(|| "Unrecognized session format".to_string())?;
-            let parsed = match (&branch, source) {
-                (Some(leaf), model::Source::Pi) => parse::pi::parse_branch(&p, Some(leaf)),
-                _ => parse::parse_file(&p, source),
-            };
-            parsed.map_err(err)?.events
-        };
+        let mut events = session_events(&path, branch.as_deref())?;
         let mut cache = state.images.lock().unwrap();
         let generation = cache.0 + 1;
         let mut images = Vec::with_capacity(events.len());
@@ -444,6 +439,78 @@ fn remove_imported(app: AppHandle, state: State<Shared>, path: String) -> Result
 fn library_errors(state: State<Shared>) -> Result<Vec<index::LibraryError>, String> {
     let conn = index::open(&state.db_path).map_err(err)?;
     index::library_errors(&conn, &library_dir(&state)).map_err(err)
+}
+
+/// The transcript as the UI shows it: a library bundle, a session file, or
+/// one branch of a pi session.
+fn session_events(path: &str, branch: Option<&str>) -> Result<Vec<Event>, String> {
+    let p = Path::new(path);
+    if bundle::is_bundle_path(p) {
+        return bundle::load_events(p).map_err(err);
+    }
+    let source = parse::detect(p).ok_or_else(|| "Unrecognized session format".to_string())?;
+    let parsed = match (branch, source) {
+        (Some(leaf), model::Source::Pi) => parse::pi::parse_branch(p, Some(leaf)),
+        _ => parse::parse_file(p, source),
+    };
+    Ok(parsed.map_err(err)?.events)
+}
+
+#[derive(Serialize)]
+struct SessionNotes {
+    meta: Option<annotations::SessionMeta>,
+    annotations: Vec<annotations::Annotation>,
+}
+
+/// A session's metadata and annotations, with each annotation's anchors
+/// checked against the transcript at `path` (and `branch`).
+#[tauri::command]
+async fn session_notes(state: State<'_, Shared>, key: String, path: String, branch: Option<String>) -> Result<SessionNotes, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = index::open(&state.db_path).map_err(err)?;
+        let meta = annotations::meta(&conn, &key).map_err(err)?;
+        let mut list = annotations::annotations(&conn, &key).map_err(err)?;
+        if list.iter().any(|a| !a.anchors.is_empty()) {
+            let events = session_events(&path, branch.as_deref())?;
+            // pi annotations made on another branch of the file are told apart from lost ones.
+            let p = Path::new(&path);
+            let entries = match parse::detect(p) {
+                Some(model::Source::Pi) if !bundle::is_bundle_path(p) => parse::pi::entry_ids(p).ok(),
+                _ => None,
+            };
+            annotations::resolve(&mut list, &events, entries.as_ref());
+        }
+        Ok(SessionNotes { meta, annotations: list })
+    })
+    .await
+    .map_err(err)?
+}
+
+#[tauri::command]
+fn save_meta(state: State<Shared>, meta: annotations::SessionMeta) -> Result<Option<annotations::SessionMeta>, String> {
+    let conn = index::open(&state.db_path).map_err(err)?;
+    annotations::save_meta(&conn, &meta).map_err(err)?;
+    annotations::meta(&conn, &meta.key).map_err(err)
+}
+
+#[tauri::command]
+fn save_annotation(state: State<Shared>, annotation: annotations::Annotation) -> Result<annotations::Annotation, String> {
+    let conn = index::open(&state.db_path).map_err(err)?;
+    annotations::save_annotation(&conn, annotation).map_err(err)
+}
+
+#[tauri::command]
+fn delete_annotation(state: State<Shared>, id: String) -> Result<(), String> {
+    let conn = index::open(&state.db_path).map_err(err)?;
+    annotations::delete_annotation(&conn, &id).map_err(err)
+}
+
+/// Titles, outcomes, tags and annotation kinds for the session list.
+#[tauri::command]
+fn note_summaries(state: State<Shared>) -> Result<Vec<annotations::Summary>, String> {
+    let conn = index::open(&state.db_path).map_err(err)?;
+    annotations::summaries(&conn).map_err(err)
 }
 
 fn serve_image(state: &Shared, uri: &str) -> tauri::http::Response<Vec<u8>> {
@@ -649,7 +716,12 @@ pub fn run() {
             export_cancel,
             import_bundle,
             remove_imported,
-            library_errors
+            library_errors,
+            session_notes,
+            save_meta,
+            save_annotation,
+            delete_annotation,
+            note_summaries
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

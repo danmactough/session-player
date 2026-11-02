@@ -1,6 +1,6 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import type { SessionEvent, SessionRow } from "../types";
+import type { Annotation, AnnotationKind, EventRef, SessionEvent, SessionMeta, SessionRow } from "../types";
 import { ask, message } from "@tauri-apps/plugin-dialog";
 import { api } from "../api";
 import { buildBlocks, blockText, type Block, type ToolStep } from "../lib/blocks";
@@ -17,6 +17,8 @@ import {
   toolSummary,
 } from "../lib/format";
 import { Markdown } from "./Markdown";
+import { AnnotationEditor, AnnotationItem, AnnotationsPanel, SessionDetails } from "./Notes";
+import { blockEvents, ref, sessionKey } from "../lib/notes";
 import { RemoteImages } from "../lib/remoteImages";
 import { BranchIcon } from "./BranchIcon";
 import { OpenButton } from "./OpenButton";
@@ -39,6 +41,10 @@ interface Props {
   openWith: string | undefined;
   onOpenWith: (id: string) => void;
   onExport: () => void;
+  /** Shown as the author of annotations made here. */
+  authorName: string | null;
+  /** Metadata or annotations changed, so the list's titles and filters should refresh. */
+  onNotesChanged: () => void;
 }
 
 export function Transcript({
@@ -53,6 +59,8 @@ export function Transcript({
   openWith,
   onOpenWith,
   onExport,
+  authorName,
+  onNotesChanged,
 }: Props) {
   const [events, setEvents] = useState<SessionEvent[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -142,6 +150,90 @@ export function Transcript({
     paddingStart: 8,
     paddingEnd: 160,
   });
+
+  // Metadata and annotations. Anchors are checked against the transcript on
+  // the backend, so they are fetched again whenever the events reload.
+  const key = useMemo(() => sessionKey(session), [session]);
+  const [notes, setNotes] = useState<{ meta: SessionMeta | null; annotations: Annotation[] }>({ meta: null, annotations: [] });
+  const [panel, setPanel] = useState(false);
+  const [composing, setComposing] = useState<{ block: number; refs: EventRef[] } | null>(null);
+  // `n` changes with every jump, so a block collapsed since the last one opens again.
+  const [reveal, setReveal] = useState<{ block: number; step?: number; n: number } | null>(null);
+  const [pendingJump, setPendingJump] = useState<Annotation | null>(null);
+  const loadNotes = useCallback(
+    () =>
+      api
+        .sessionNotes(key, session.branch_of ?? session.path, session.branch_leaf)
+        // Annotations made on another branch of a pi session aren't about this view.
+        .then((n) => setNotes({ ...n, annotations: n.annotations.filter((a) => !a.anchors.length || !a.anchors.every((r) => r.elsewhere)) }))
+        .catch((e) => api.log("error", `session_notes failed for ${key}: ${e}`)),
+    [key, session.branch_of, session.path, session.branch_leaf],
+  );
+  useEffect(() => {
+    if (events) void loadNotes();
+  }, [events, loadNotes]);
+
+  const saveMeta = async (meta: SessionMeta) => {
+    const saved = await api.saveMeta(meta);
+    setNotes((n) => ({ ...n, meta: saved }));
+    onNotesChanged();
+  };
+  const saveAnnotation = async (a: Annotation) => {
+    await api.saveAnnotation(a);
+    await loadNotes();
+    onNotesChanged();
+  };
+  const deleteAnnotation = async (a: Annotation) => {
+    await api.deleteAnnotation(a.id);
+    await loadNotes();
+    onNotesChanged();
+  };
+  const addAnnotation = (anchors: EventRef[], kind: AnnotationKind, note: string) =>
+    saveAnnotation({ id: "", key, kind, note, anchors, author: { type: "person", name: authorName }, created_at: 0, updated_at: 0 });
+
+  const blockOfAnchor = useMemo(() => {
+    const m = new Map<string, number>();
+    blocks.forEach((b, i) => blockEvents(b).forEach((e) => e.anchor && m.set(e.anchor, i)));
+    return m;
+  }, [blocks]);
+  // Each annotation is shown under the block holding the first event it points at.
+  const notesByBlock = useMemo(() => {
+    const m = new Map<number, Annotation[]>();
+    for (const a of notes.annotations) {
+      const r = a.anchors.find((r) => r.found && blockOfAnchor.has(r.anchor));
+      if (!r) continue;
+      const i = blockOfAnchor.get(r.anchor)!;
+      m.set(i, [...(m.get(i) ?? []), a]);
+    }
+    return m;
+  }, [notes.annotations, blockOfAnchor]);
+  const jumpTo = (a: Annotation) => {
+    const r = a.anchors.find((r) => r.found && blockOfAnchor.has(r.anchor));
+    if (!r) {
+      // The event is in a block hidden by the Tool calls or Reasoning toggle: show it, then jump.
+      const hidden = a.anchors.find((r) => r.found);
+      if (!hidden) return;
+      if (hidden.kind === "thinking") setShowThinking(true);
+      else setShowTools(true);
+      setPendingJump(a);
+      return;
+    }
+    const i = blockOfAnchor.get(r.anchor)!;
+    const b = blocks[i];
+    const step = b.type === "tools" ? b.steps.findIndex((s) => s.call.anchor === r.anchor || s.result?.anchor === r.anchor) : undefined;
+    setReveal((prev) => ({ block: i, step, n: (prev?.n ?? 0) + 1 }));
+    virt.scrollToIndex(i, { align: "center" });
+  };
+  const jumpRef = useRef(jumpTo);
+  jumpRef.current = jumpTo;
+  useEffect(() => {
+    if (!pendingJump) return;
+    setPendingJump(null);
+    jumpRef.current(pendingJump);
+  }, [pendingJump, blockOfAnchor]);
+  const annotateStep = useCallback((block: number, step: ToolStep) => {
+    setComposing({ block, refs: (step.result ? [step.call, step.result] : [step.call]).map(ref) });
+  }, []);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: 0 });
@@ -318,10 +410,18 @@ export function Transcript({
             {session.imported_from && <span className="tag">imported from {session.imported_from}</span>}
             {session.from_bundle && <span className="tag">imported bundle</span>}
           </div>
-          <h1 className="t-title">{session.title}</h1>
+            {/* A pi branch keeps its own label; the details belong to the whole session. */}
+          <h1 className="t-title">{(!session.branch_of && notes.meta?.title) || session.title}</h1>
           {session.title_source !== "prompt" && session.first_prompt && (
             <p className="t-prompt">{session.first_prompt.split("\n").find((l) => l.trim()) ?? ""}</p>
           )}
+          <SessionDetails
+            session={session}
+            sessionKey={key}
+            meta={notes.meta}
+            original={!session.branch_of && notes.meta?.title ? session.title : undefined}
+            onSave={saveMeta}
+          />
           <dl className="t-meta">
             <div>
               <dt>Started</dt>
@@ -418,6 +518,9 @@ export function Transcript({
             <input type="checkbox" checked={showThinking} onChange={(e) => setShowThinking(e.target.checked)} />
             Reasoning
           </label>
+          <button className={`ghost annotations-toggle ${panel ? "on" : ""}`} aria-expanded={panel} onClick={() => setPanel((o) => !o)}>
+            Annotations{notes.annotations.length ? ` · ${notes.annotations.length}` : ""}
+          </button>
           {errorStops.length > 0 && (
             <div className="err-nav" title="Jump between failed tool calls and errors">
               <span className="err-dot" />
@@ -462,6 +565,15 @@ export function Transcript({
           </div>
         </div>
 
+        {panel && (
+          <AnnotationsPanel
+            annotations={notes.annotations}
+            onSave={saveAnnotation}
+            onDelete={deleteAnnotation}
+            onJump={jumpTo}
+            onAdd={(kind, note) => addAnnotation([], kind, note)}
+          />
+        )}
         <div className="t-body">
           <div className="t-scroll" ref={scrollRef} tabIndex={-1}>
             {error && <div className="empty">Could not read this session: {error}</div>}
@@ -476,15 +588,44 @@ export function Transcript({
                     key={item.key}
                     data-index={item.index}
                     ref={virt.measureElement}
-                    className={`row ${matchSet.has(item.index) ? "hit" : ""} ${isCurrent ? "hit-current" : ""} ${item.index === focusIndex || (item.index === errorTarget?.block && b.type !== "tools") ? "focused" : ""}`}
+                    className={`row ${matchSet.has(item.index) ? "hit" : ""} ${isCurrent ? "hit-current" : ""} ${item.index === focusIndex || (item.index === errorTarget?.block && b.type !== "tools") || (item.index === reveal?.block && b.type !== "tools") ? "focused" : ""}`}
                     style={{ transform: `translateY(${item.start}px)` }}
                   >
                     <BlockView
                       block={b}
+                      index={item.index}
                       onOpen={onOpen}
                       openErrors={item.index === errorTarget?.block}
                       errorStep={item.index === errorTarget?.block ? errorTarget.step : undefined}
+                      reveal={item.index === reveal?.block ? reveal : undefined}
+                      onAnnotateStep={annotateStep}
                     />
+                    {blockEvents(b).some((e) => e.anchor) && (
+                      <button
+                        className="annotate-btn"
+                        title="Annotate"
+                        aria-label="Annotate"
+                        onClick={() => setComposing({ block: item.index, refs: blockEvents(b).filter((e) => e.anchor).map(ref) })}
+                      >
+                        +
+                      </button>
+                    )}
+                    {(notesByBlock.has(item.index) || composing?.block === item.index) && (
+                      <div className="row-notes">
+                        {notesByBlock.get(item.index)?.map((a) => (
+                          <AnnotationItem key={a.id} annotation={a} onSave={saveAnnotation} onDelete={deleteAnnotation} />
+                        ))}
+                        {composing?.block === item.index && (
+                          <AnnotationEditor
+                            onCancel={() => setComposing(null)}
+                            onSave={async (kind, note) => {
+                              await addAnnotation(composing.refs, kind, note);
+                              setComposing(null);
+                            }}
+                          />
+                        )}
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -522,12 +663,19 @@ const afterPrompt = (n: number | null | undefined) => (n ? `after prompt ${n}` :
 
 const BlockView = memo(function BlockView({
   block: b,
+  index,
   onOpen,
   openErrors,
   errorStep,
+  reveal,
+  onAnnotateStep,
 }: {
   block: Block;
+  index: number;
   onOpen: (path: string, focus?: string) => void;
+  /** Expand collapsed content (and in a tool group, this call) to show an annotated event. */
+  reveal?: { step?: number; n: number };
+  onAnnotateStep: (block: number, step: ToolStep) => void;
   /** Expand failed tool calls (set while the error navigator points here). */
   openErrors?: boolean;
   /** The failed tool call in this group the error navigator points at. */
@@ -577,9 +725,18 @@ const BlockView = memo(function BlockView({
         </section>
       );
     case "thinking":
-      return <Thinking ev={b.ev} />;
+      return <Thinking ev={b.ev} reveal={reveal?.n} />;
     case "tools":
-      return <Tools steps={b.steps} openErrors={openErrors} errorStep={errorStep} />;
+      return (
+        <Tools
+          steps={b.steps}
+          openErrors={openErrors}
+          errorStep={errorStep}
+          revealStep={reveal?.step}
+          revealN={reveal?.n}
+          onAnnotate={(step) => onAnnotateStep(index, step)}
+        />
+      );
     case "command":
       return (
         <section className="b-command">
@@ -598,9 +755,9 @@ const BlockView = memo(function BlockView({
         <div className="b-system">{b.ev.text}</div>
       );
     case "compaction":
-      return <Compaction ev={b.ev} />;
+      return <Compaction ev={b.ev} reveal={reveal?.n} />;
     case "reference":
-      return <Reference ev={b.ev} />;
+      return <Reference ev={b.ev} reveal={reveal?.n} />;
     case "orphan_result":
       return (
         <section className="b-tools">
@@ -610,8 +767,11 @@ const BlockView = memo(function BlockView({
   }
 });
 
-function Thinking({ ev }: { ev: SessionEvent }) {
+function Thinking({ ev, reveal }: { ev: SessionEvent; reveal?: number }) {
   const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (reveal) setOpen(true);
+  }, [reveal]);
   const first = ev.text.trim().split("\n")[0];
   return (
     <section className={`b-thinking ${open ? "open" : ""}`} onClick={() => !open && setOpen(true)}>
@@ -625,8 +785,11 @@ function Thinking({ ev }: { ev: SessionEvent }) {
   );
 }
 
-function Compaction({ ev }: { ev: SessionEvent }) {
+function Compaction({ ev, reveal }: { ev: SessionEvent; reveal?: number }) {
   const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (reveal) setOpen(true);
+  }, [reveal]);
   return (
     <section className="b-compaction">
       <button onClick={() => setOpen((o) => !o)} disabled={!ev.text}>
@@ -642,8 +805,11 @@ function Compaction({ ev }: { ev: SessionEvent }) {
 /** Earlier conversation the session was given, such as the ChatGPT chat a
  * Codex task started from; collapsed, since the prompt that follows says what
  * was asked. */
-function Reference({ ev }: { ev: SessionEvent }) {
+function Reference({ ev, reveal }: { ev: SessionEvent; reveal?: number }) {
   const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (reveal) setOpen(true);
+  }, [reveal]);
   return (
     <section className="b-reference">
       <button onClick={() => setOpen((o) => !o)} aria-expanded={open}>
@@ -655,7 +821,21 @@ function Reference({ ev }: { ev: SessionEvent }) {
   );
 }
 
-function Tools({ steps, openErrors, errorStep }: { steps: ToolStep[]; openErrors?: boolean; errorStep?: number }) {
+function Tools({
+  steps,
+  openErrors,
+  errorStep,
+  revealStep,
+  revealN,
+  onAnnotate,
+}: {
+  steps: ToolStep[];
+  openErrors?: boolean;
+  errorStep?: number;
+  revealStep?: number;
+  revealN?: number;
+  onAnnotate: (step: ToolStep) => void;
+}) {
   const errors = steps.filter((s) => s.result?.is_error).length;
   return (
     <section className="b-tools">
@@ -665,18 +845,38 @@ function Tools({ steps, openErrors, errorStep }: { steps: ToolStep[]; openErrors
         </div>
       )}
       {steps.map((s, i) => (
-        <ToolRow key={s.call.call_id ?? i} step={s} forceOpen={openErrors && s.result?.is_error} current={i === errorStep} />
+        <ToolRow
+          key={s.call.call_id ?? i}
+          step={s}
+          forceOpen={(openErrors && s.result?.is_error) || i === revealStep}
+          revealN={i === revealStep ? revealN : undefined}
+          current={i === errorStep || i === revealStep}
+          onAnnotate={onAnnotate}
+        />
       ))}
     </section>
   );
 }
 
-function ToolRow({ step, forceOpen, current }: { step: ToolStep; forceOpen?: boolean; current?: boolean }) {
+function ToolRow({
+  step,
+  forceOpen,
+  current,
+  revealN,
+  onAnnotate,
+}: {
+  step: ToolStep;
+  forceOpen?: boolean;
+  current?: boolean;
+  /** Changes with each jump to this call, reopening it if it was closed. */
+  revealN?: number;
+  onAnnotate: (step: ToolStep) => void;
+}) {
   const [open, setOpen] = useState(false);
   const rowRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (forceOpen) setOpen(true);
-  }, [forceOpen]);
+  }, [forceOpen, revealN]);
   // The navigator scrolls to the group; in a long group, bring this call into
   // view too, once the virtualizer has placed the group.
   useEffect(() => {
@@ -706,6 +906,11 @@ function ToolRow({ step, forceOpen, current }: { step: ToolStep; forceOpen?: boo
               {result.text && <Output text={result.text} isError={result.is_error} lines={40} />}
               <Images images={result.images} />
             </>
+          )}
+          {call.anchor && (
+            <button className="link tool-annotate" onClick={() => onAnnotate(step)}>
+              Annotate this call
+            </button>
           )}
         </div>
       )}

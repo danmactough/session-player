@@ -47,10 +47,21 @@ pub fn detect(path: &Path) -> Option<Source> {
 
 pub fn parse_file(path: &Path, source: Source) -> anyhow::Result<Parsed> {
     match source {
-        Source::Claude => claude::parse(path),
+        Source::Claude => claude::parse(path).map(with_anchors),
+        // Codex numbers its own, before dropping code-mode wrappers; pi numbers
+        // events along the whole chain, including history a branch view hides.
         Source::Codex => codex::parse(path),
         Source::Pi => pi::parse(path),
     }
+}
+
+/// Gives each event its anchor, "e<n>" for its position in the file, so
+/// annotations and bundles can refer to it.
+fn with_anchors(mut p: Parsed) -> Parsed {
+    for (i, e) in p.events.iter_mut().enumerate() {
+        e.anchor = Some(format!("e{i}"));
+    }
+    p
 }
 
 /// The exit code Codex reported in a shell tool's output: "Process exited

@@ -24,6 +24,8 @@ interface Props {
   onTheme: (theme: Theme) => void;
   hideSubagents: boolean;
   onHideSubagents: (hide: boolean) => void;
+  authorName: string;
+  onAuthorName: (name: string) => void;
 }
 
 export function SettingsSheet({
@@ -39,6 +41,8 @@ export function SettingsSheet({
   onTheme,
   hideSubagents,
   onHideSubagents,
+  authorName,
+  onAuthorName,
 }: Props) {
   const [roots, setRoots] = useState<RootInfo[]>([]);
   const [suggested, setSuggested] = useState<string[]>([]);
@@ -157,6 +161,12 @@ export function SettingsSheet({
               means &ldquo;no match&rdquo; or &ldquo;differs&rdquo; and never counts.
             </span>
           </span>
+        </label>
+
+        <h3 className="settings-head">Annotations</h3>
+        <label className="setting-field">
+          Your name
+          <input value={authorName} onChange={(e) => onAuthorName(e.target.value)} placeholder="Shown on annotations you add" />
         </label>
 
         <h3 className="settings-head">Imported sessions</h3>

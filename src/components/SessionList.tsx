@@ -1,6 +1,7 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import type { SearchHit } from "../types";
+import type { SearchHit, NoteSummary } from "../types";
+import { OUTCOME_LABEL, sessionKey } from "../lib/notes";
 import type { ListRow } from "../lib/tree";
 import { basename, compact, dayBucket, relTime } from "../lib/format";
 import { BranchIcon } from "./BranchIcon";
@@ -14,6 +15,7 @@ interface Props {
   onToggle: (path: string) => void;
   hits: Map<string, SearchHit> | null;
   showProject: boolean;
+  notes: Map<string, NoteSummary>;
   groupByDay: boolean;
   /** A new identity means the user asked for a different list (filters, sort,
    * project, search), which starts at the top instead of keeping its place. */
@@ -22,7 +24,7 @@ interface Props {
 
 const itemKey = (it: Item) => (it.kind === "head" ? `head:${it.label}` : it.row.s.path);
 
-export function SessionList({ rows, selected, onSelect, onToggle, hits, showProject, groupByDay, resetKey }: Props) {
+export function SessionList({ rows, selected, onSelect, onToggle, hits, showProject, notes, groupByDay, resetKey }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const items = useMemo<Item[]>(() => {
     if (!groupByDay) return rows.map((row) => ({ kind: "row", row }));
@@ -123,6 +125,8 @@ export function SessionList({ rows, selected, onSelect, onToggle, hits, showProj
                   onToggle={onToggle}
                   hit={hits?.get(it.row.s.path)}
                   showProject={showProject}
+                  // A pi branch shares its session's notes; its own label stays.
+                  note={it.row.s.branch_of ? undefined : notes.get(sessionKey(it.row.s))}
                 />
               )}
             </div>
@@ -140,8 +144,10 @@ const Row = memo(function Row({
   onToggle,
   hit,
   showProject,
+  note,
 }: {
   row: ListRow;
+  note?: NoteSummary;
   active: boolean;
   onSelect: (p: string) => void;
   onToggle: (p: string) => void;
@@ -159,7 +165,8 @@ const Row = memo(function Row({
     >
       <div className="srow-title">
         {kind === "branch" ? <BranchIcon className="branch-glyph" /> : <span className={`sdot src-${s.source}`} title={s.source} />}
-        <span className="t">{s.title}</span>
+        <span className="t">{note?.title || s.title}</span>
+        {note && note.outcome !== "unknown" && <span className={`outcome outcome-${note.outcome}`}>{OUTCOME_LABEL[note.outcome]}</span>}
       </div>
       {hit && <Snippet text={hit.snippet} />}
       <div className="srow-meta">

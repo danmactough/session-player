@@ -103,9 +103,7 @@ export function Analysis({
 
       <div className="analysis-annotations">
         <div className="analysis-annotations-head">
-          <span className="analysis-label">
-            Annotations{annotations.length ? ` · ${annotations.length}` : ""}
-          </span>
+          <span className="analysis-label">Annotations</span>
           {present.length > 1 && (
             <Menu
               className="caps-sort"
@@ -119,16 +117,19 @@ export function Analysis({
         {annotations.length === 0 && (
           <p className="dim">None yet. Hover a message and click + in the margin, or open a tool call and click Annotate this call.</p>
         )}
-        {shown.map((a) => (
-          <AnnotationItem
-            key={a.id}
-            annotation={a}
-            revision={revision}
-            onSave={onSaveAnnotation}
-            onDelete={onDeleteAnnotation}
-            onJump={onJump}
-          />
-        ))}
+        {/* Only the list scrolls, so the kind menu above it isn't cut off. */}
+        <div className="analysis-annotations-list">
+          {shown.map((a) => (
+            <AnnotationItem
+              key={a.id}
+              annotation={a}
+              revision={revision}
+              onSave={onSaveAnnotation}
+              onDelete={onDeleteAnnotation}
+              onJump={onJump}
+            />
+          ))}
+        </div>
       </div>
     </section>
   );

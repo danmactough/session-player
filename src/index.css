@@ -2112,6 +2112,8 @@ mark {
 }
 .analysis-annotations {
   margin-top: 10px;
+}
+.analysis-annotations-list {
   max-height: 32vh;
   overflow-y: auto;
 }

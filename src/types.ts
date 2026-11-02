@@ -88,6 +88,8 @@ export interface SessionEvent {
     name: string;
     /** The same document was given earlier in the session. */
     repeat?: boolean;
+    /** Whose document it is: "user", "repo", "local" or "managed". */
+    scope?: string;
   };
   /** Set on events from an imported bundle; stable across export and import. */
   anchor?: string;

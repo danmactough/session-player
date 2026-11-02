@@ -2552,6 +2552,10 @@ mark {
   font: 12px var(--mono);
   color: var(--ink-2);
 }
+.b-context-scope {
+  font-size: 11px;
+  color: var(--faint);
+}
 .b-context.repeat > button {
   opacity: 0.75;
 }

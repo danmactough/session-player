@@ -113,6 +113,7 @@ pub fn parse(path: &Path) -> anyhow::Result<Parsed> {
     super::assign_anchors(&mut p.events);
     drop_code_mode_wrappers(&mut p.events);
     super::mark_failed_exits(&mut p.events);
+    super::fill_context_scopes(&mut p.events, p.cwd.as_deref());
     super::mark_repeated_context(&mut p.events);
     Ok(p)
 }

@@ -97,8 +97,22 @@ pub fn assign_anchors(events: &mut [Event]) {
 /// instructions, as a `Context` event.
 pub fn context_event(kind: ContextKind, name: &str, ts: Option<i64>, text: &str) -> Event {
     let mut e = Event::new(EventKind::Context, ts, text.trim());
-    e.context = Some(ContextSource { kind, name: name.trim().to_string(), repeat: false });
+    e.context = Some(ContextSource { kind, name: name.trim().to_string(), repeat: false, scope: None });
     e
+}
+
+/// Fills in the scope of context documents the log doesn't give one for:
+/// a file inside the session's working folder belongs to the repo, and any
+/// other file to the user. Names that aren't paths get none.
+pub fn fill_context_scopes(events: &mut [Event], cwd: Option<&str>) {
+    let cwd = cwd.map(|c| format!("{}/", c.trim_end_matches('/')));
+    for c in events.iter_mut().filter_map(|e| e.context.as_mut()).filter(|c| c.scope.is_none()) {
+        if !(c.name.starts_with('/') || c.name.starts_with('~')) {
+            continue;
+        }
+        let in_repo = cwd.as_deref().is_some_and(|cwd| c.name.starts_with(cwd));
+        c.scope = Some(if in_repo { "repo" } else { "user" }.to_string());
+    }
 }
 
 /// Marks context documents given again unchanged later in the session, so

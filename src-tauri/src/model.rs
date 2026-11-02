@@ -122,6 +122,10 @@ pub struct ContextSource {
     /// The same document was given earlier in the session.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub repeat: bool,
+    /// Whose document it is: "user", "repo", "local" or "managed". Unset for
+    /// one that isn't a file, such as an MCP server's instructions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]

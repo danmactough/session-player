@@ -371,3 +371,29 @@ fn pi_addendum_and_delegate_agents_are_context_and_malformed_tags_are_skipped() 
         ]
     );
 }
+
+/// Each context document's name and scope, as "name (scope)".
+fn scopes_of(events: &[session_player_lib::test_support::model::Event]) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|e| e.context.as_ref())
+        .filter(|c| !c.repeat)
+        .map(|c| format!("{} ({})", c.name, c.scope.as_deref().unwrap_or("-")))
+        .collect()
+}
+
+#[test]
+fn context_documents_say_whose_they_are() {
+    assert_eq!(
+        scopes_of(&parsed(&fixture("claude-context.jsonl"))),
+        ["/home/u/.claude/CLAUDE.md (user)", "/work/repo/CLAUDE.local.md (local)", "docs (-)", "/home/u/.claude/skills/deploy (user)"]
+    );
+    assert_eq!(
+        scopes_of(&parsed(&fixture("codex-context.jsonl"))),
+        ["/work/repo/AGENTS.md (repo)", "/home/u/.codex/skills/release/SKILL.md (user)"]
+    );
+    assert_eq!(
+        scopes_of(&parsed(&fixture("pi-context.jsonl"))),
+        ["worker (-)", "/home/u/.pi/agent/AGENTS.md (user)", "/work/repo/AGENTS.md (repo)", "/home/u/.pi/skills/grill-me/SKILL.md (user)"]
+    );
+}

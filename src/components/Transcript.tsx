@@ -75,6 +75,7 @@ export function Transcript({
   const [error, setError] = useState<string | null>(null);
   const [showTools, setShowTools] = useState(true);
   const [showThinking, setShowThinking] = useState(true);
+  const [showContext, setShowContext] = useState(true);
   const [find, setFind] = useState("");
   const [findOpen, setFindOpen] = useState(false);
   const [findIdx, setFindIdx] = useState(0);
@@ -127,9 +128,10 @@ export function Transcript({
     return buildBlocks(shown, forks).filter((b) => {
       if (!showTools && (b.type === "tools" || b.type === "orphan_result")) return false;
       if (!showThinking && b.type === "thinking") return false;
+      if (!showContext && b.type === "context") return false;
       return true;
     });
-  }, [events, forks, showTools, showThinking, countExits]);
+  }, [events, forks, showTools, showThinking, showContext, countExits]);
 
   const matches = useMemo(() => {
     const terms = find.toLowerCase().split(/\s+/).filter(Boolean);
@@ -275,6 +277,7 @@ export function Transcript({
       const hidden = a.anchors.find((r) => r.found);
       if (!hidden) return;
       if (hidden.kind === "thinking") setShowThinking(true);
+      else if (hidden.kind === "context") setShowContext(true);
       else setShowTools(true);
       setPendingJump(a);
       return;
@@ -641,6 +644,10 @@ export function Transcript({
             <input type="checkbox" checked={showThinking} onChange={(e) => setShowThinking(e.target.checked)} />
             Reasoning
           </label>
+          <label className="toggle" title="Instruction files, skills and agent definitions the agent was given">
+            <input type="checkbox" checked={showContext} onChange={(e) => setShowContext(e.target.checked)} />
+            Instructions
+          </label>
           {noteStops.length > 0 && (
             <div className="err-nav note-nav" title="Jump between annotations">
               <span className="err-dot" />
@@ -930,7 +937,8 @@ function Compaction({ ev, reveal }: { ev: SessionEvent; reveal?: number }) {
   );
 }
 
-const CONTEXT_LABEL = { instructions: "Instructions", skill: "Skill", agent: "Agent", mcp: "MCP server instructions" };
+// Instruction files go unlabelled (their names say what they are); the rest say what they are.
+const CONTEXT_LABEL = { instructions: null, skill: "Skill", agent: "Agent", mcp: "MCP" };
 
 /** What the harness gave the agent to follow (a CLAUDE.md, a skill…), folded
  * where it arrived. A later unchanged copy says so. */
@@ -948,9 +956,10 @@ function ContextBlock({ ev, reveal }: { ev: SessionEvent; reveal?: number }) {
     <section className={`b-context ${c?.repeat ? "repeat" : ""}`}>
       <button onClick={() => setOpen((o) => !o)} aria-expanded={open} title={name}>
         <span className="caret">{open ? "▾" : "▸"}</span>
-        <span className="b-context-kind">{c ? CONTEXT_LABEL[c.kind] : "Context"}</span>
+        {c && CONTEXT_LABEL[c.kind] && <span className="b-context-kind">{CONTEXT_LABEL[c.kind]}</span>}
         <span className="b-context-name">{short}</span>
-        {c?.repeat && <span className="dim">sent again, unchanged</span>}
+        {c?.scope && <span className="b-context-scope">{c.scope}</span>}
+        {c?.repeat && <span className="b-context-scope">sent again, unchanged</span>}
       </button>
       {open && (
         <>

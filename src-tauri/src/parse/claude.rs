@@ -93,6 +93,7 @@ pub fn parse(path: &Path) -> anyhow::Result<Parsed> {
         .or(summary.map(|t| (t, "summary")));
 
     super::mark_failed_exits(&mut p.events);
+    super::fill_context_scopes(&mut p.events, p.cwd.as_deref());
     super::mark_repeated_context(&mut p.events);
     Ok(p)
 }
@@ -236,7 +237,16 @@ fn handle_context_attachment(p: &mut Parsed, a: &Value, ts: Option<i64>, agent: 
         Some("instructions") => {
             for f in a.get("files").and_then(Value::as_array).into_iter().flatten() {
                 if let (Some(path), Some(content)) = (str_of(f, "path"), str_of(f, "content")) {
-                    p.events.push(super::context_event(ContextKind::Instructions, path, ts, content));
+                    let mut e = super::context_event(ContextKind::Instructions, path, ts, content);
+                    // Claude Code says whose file it is; its "Project" is the repo's.
+                    let scope = str_of(f, "type").map(|t| match t.to_lowercase().as_str() {
+                        "project" => "repo".to_string(),
+                        other => other.to_string(),
+                    });
+                    if let Some(c) = e.context.as_mut() {
+                        c.scope = scope;
+                    }
+                    p.events.push(e);
                 }
             }
         }

@@ -142,6 +142,7 @@ fn parse_tree(path: &Path, leaf: Option<&str>, from_split: bool) -> anyhow::Resu
         }
     }
     super::mark_failed_exits(&mut p.events);
+    super::fill_context_scopes(&mut p.events, p.cwd.as_deref());
     super::mark_repeated_context(&mut p.events);
     Ok(p)
 }

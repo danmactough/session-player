@@ -97,8 +97,8 @@ function transcript(s: SessionRow, prefix = "e", turns = s.user_turns, setup = t
     ev.push({ kind: "tool_result", ts: at(), call_id: id, text: out, is_error: err });
   };
   if (setup) {
-    ev.push({ kind: "context", ts: at(), text: "# Rules\n\n- Run `npm test` before committing.\n- Prefer small PRs.", context: { kind: "instructions", name: `${HOME}/.claude/CLAUDE.md` } });
-    ev.push({ kind: "context", ts: at(), text: "Use pnpm, not npm.", context: { kind: "instructions", name: `${s.cwd}/CLAUDE.local.md` } });
+    ev.push({ kind: "context", ts: at(), text: "# Rules\n\n- Run `npm test` before committing.\n- Prefer small PRs.", context: { kind: "instructions", name: `${HOME}/.claude/CLAUDE.md`, scope: "user" } });
+    ev.push({ kind: "context", ts: at(), text: "Use pnpm, not npm.", context: { kind: "instructions", name: `${s.cwd}/CLAUDE.local.md`, scope: "local" } });
     ev.push({ kind: "command", ts: at(), text: "/model opus" });
     ev.push({ kind: "system", ts: at(), text: "Set model to opus" });
   }

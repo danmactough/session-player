@@ -672,8 +672,8 @@ export default function App() {
           <button className="ghost help-button" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts" onClick={() => setHelp(true)}>
             ?
           </button>
-          <div className={`rail-status ${progress || notice.shown ? "on" : ""}`} role="status" title={progress ? undefined : notice.text}>
-            {progress ? `Indexing ${progress.done}/${progress.total}` : notice.text}
+          <div className={`rail-status ${notice.shown ? "on" : ""}`} role="status" title={notice.text}>
+            {notice.text}
           </div>
         </footer>
       </aside>

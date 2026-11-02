@@ -185,7 +185,21 @@ const handlers: Record<string, Handler> = {
       summary: {
         bytes: 48_213,
         file_name: `${s.title}.spsession`,
-        sessions: [{ id: `${s.source}:${s.native_id}`, title: s.title, is_subagent: false, prompts: s.user_turns, events: s.user_turns * 9 }],
+        sessions: [
+          {
+            id: `${s.source}:${s.native_id}`,
+            title: s.title,
+            is_subagent: false,
+            prompts: s.user_turns,
+            events: s.user_turns * 9,
+            has_details: false,
+            annotations: 0,
+            context: [
+              { kind: "instructions", name: `${HOME}/.claude/CLAUDE.md` },
+              { kind: "instructions", name: `${s.cwd}/CLAUDE.local.md` },
+            ],
+          },
+        ],
         omitted: [],
         attachments: [
           { id: "a0", session: `${s.source}:${s.native_id}`, anchor: "e3", kind: "image", name: null, mime: "image/png", bytes: 182_331, status: "included", reason: null },

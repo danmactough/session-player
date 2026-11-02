@@ -12,7 +12,7 @@ use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use crate::annotations::{self, Annotation, EventRef, SessionMeta};
-use crate::model::{Event, EventKind, Parsed, Source, Tokens};
+use crate::model::{ContextSource, Event, EventKind, Parsed, Source, Tokens};
 use crate::parse;
 
 pub const FORMAT: &str = "session-player.bundle";
@@ -985,6 +985,9 @@ pub struct SessionSummary {
     pub events: usize,
     pub has_details: bool,
     pub annotations: usize,
+    /// The instruction files, skills, agent definitions and MCP server
+    /// instructions in the transcript, each once.
+    pub context: Vec<ContextSource>,
 }
 
 pub fn summarize(bundle: &Bundle) -> Summary {
@@ -1013,6 +1016,7 @@ pub fn summarize(bundle: &Bundle) -> Summary {
                 events: s.events.len(),
                 has_details: s.meta.is_some(),
                 annotations: s.annotations.len(),
+                context: s.events.iter().filter_map(|e| e.context.clone()).filter(|c| !c.repeat).collect(),
             })
             .collect(),
         omitted: bundle.sessions.iter().flat_map(|s| s.omitted.iter().cloned()).collect(),

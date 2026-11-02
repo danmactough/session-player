@@ -5,6 +5,7 @@ import type { ExportPreview, SessionRow } from "../types";
 import { basename, bytes } from "../lib/format";
 
 const RELATION: Record<string, string> = { parent: "Parent", subagent: "Subagent", branch: "Branch" };
+const CONTEXT_KIND = { instructions: "Instruction file", skill: "Skill", agent: "Agent definition", mcp: "MCP server instructions" };
 
 /**
  * Shows exactly what an export bundle holds before it is written: the
@@ -128,6 +129,31 @@ export function ExportSheet({ session, onClose }: { session: SessionRow; onClose
                       </div>
                     </li>
                   ))}
+                </ul>
+              </>
+            )}
+
+            {summary.sessions.some((s) => s.context.length > 0) && (
+              <>
+                <h3 className="settings-head">Context</h3>
+                <p className="sheet-note">
+                  The instruction files, skills and agent definitions the agent was given go into the file in full. They
+                  can describe internal tools, people or systems.
+                </p>
+                <ul className="roots">
+                  {summary.sessions.flatMap((s) =>
+                    s.context.map((c) => (
+                      <li key={`${s.id}:${c.kind}:${c.name}`}>
+                        <div>
+                          <div className="root-path">{c.name}</div>
+                          <div className="root-meta">
+                            {CONTEXT_KIND[c.kind]}
+                            {summary.sessions.length > 1 && ` · ${s.title}`}
+                          </div>
+                        </div>
+                      </li>
+                    )),
+                  )}
                 </ul>
               </>
             )}

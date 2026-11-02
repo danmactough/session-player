@@ -25,6 +25,7 @@ impl Sender {
         std::fs::copy(fx.join("claude-subagent.jsonl"), claude.join("abc/subagents/agent-a1.jsonl")).unwrap();
         std::fs::copy(fx.join("claude-attach.jsonl"), claude.join("att.jsonl")).unwrap();
         std::fs::copy(fx.join("claude-ide.jsonl"), claude.join("ide.jsonl")).unwrap();
+        std::fs::copy(fx.join("claude-context.jsonl"), claude.join("ctx.jsonl")).unwrap();
         let pi = root.join("pi/--work-pi--");
         std::fs::create_dir_all(&pi).unwrap();
         std::fs::copy(fx.join("pi.jsonl"), pi.join("2026-01-01_01a-pi.jsonl")).unwrap();
@@ -637,4 +638,23 @@ fn replacing_keeps_annotations_the_recipient_edited() {
     assert_eq!(notes::meta(&recipient.conn, key).unwrap().unwrap().components, ["recipient"]);
     assert_eq!(report.kept_notes, 2);
     let _ = theirs;
+}
+
+#[test]
+fn the_preview_lists_the_context_documents_going_into_the_file() {
+    let sender = Sender::new("context");
+    let exported = sender.export("claude/-work-repo/ctx.jsonl", None, None);
+    let preview = bundle::summarize(&exported);
+    let context: Vec<_> = preview.sessions[0].context.iter().map(|c| (serde_json::to_value(c.kind).unwrap().as_str().unwrap().to_string(), c.name.clone())).collect();
+    // Each document once, though the session was given CLAUDE.md twice.
+    assert_eq!(
+        context,
+        [
+            ("instructions".to_string(), "/home/u/.claude/CLAUDE.md".to_string()),
+            ("instructions".to_string(), "/work/repo/CLAUDE.local.md".to_string()),
+            ("mcp".to_string(), "docs".to_string()),
+            ("skill".to_string(), "/home/u/.claude/skills/deploy".to_string()),
+        ]
+    );
+    assert!(exported.sessions[0].events.iter().filter(|e| e.context.is_some()).count() == 5, "every copy is in the file itself");
 }

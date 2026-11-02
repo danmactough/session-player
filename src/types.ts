@@ -145,7 +145,17 @@ export interface ExportPreview {
   summary: {
     bytes: number;
     file_name: string;
-    sessions: { id: string; title: string; is_subagent: boolean; prompts: number; events: number; has_details: boolean; annotations: number }[];
+    sessions: {
+      id: string;
+      title: string;
+      is_subagent: boolean;
+      prompts: number;
+      events: number;
+      has_details: boolean;
+      annotations: number;
+      /** Instruction files, skills, agent definitions and MCP instructions in the transcript, each once. */
+      context: NonNullable<SessionEvent["context"]>[];
+    }[];
     omitted: RelatedSession[];
     attachments: BundleAttachment[];
   };

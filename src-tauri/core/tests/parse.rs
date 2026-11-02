@@ -1,7 +1,7 @@
 // Integration tests run against small synthetic transcripts in tests/fixtures.
 use std::path::Path;
 
-use session_player_lib::test_support::{index_one, load_branch, Row};
+use session_player_core::test_support::{index_one, load_branch, Row};
 
 fn fixture(name: &str) -> String {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name).to_string_lossy().into_owned()
@@ -58,7 +58,7 @@ fn compressed_codex_session_matches_plain_transcript() {
 
 #[test]
 fn index_discovers_compressed_sessions_and_tracks_updates() {
-    use session_player_lib::test_support::index;
+    use session_player_core::test_support::index;
     let root = std::env::temp_dir().join(format!("sp-compressed-index-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
     let path = root.join("rollout.jsonl.zst");
@@ -264,11 +264,11 @@ fn codex_code_mode_shows_the_tools_a_script_ran() {
 
 #[test]
 fn codex_guardian_reviews_are_not_listed() {
-    assert!(!session_player_lib::test_support::is_listed(&fixture("codex-guardian.jsonl")));
+    assert!(!session_player_core::test_support::is_listed(&fixture("codex-guardian.jsonl")));
 }
 
 /// Context events as "kind:name:text", repeats marked with "(again)".
-fn context_of(events: &[session_player_lib::test_support::model::Event]) -> Vec<String> {
+fn context_of(events: &[session_player_core::test_support::model::Event]) -> Vec<String> {
     events
         .iter()
         .filter_map(|e| {
@@ -279,8 +279,8 @@ fn context_of(events: &[session_player_lib::test_support::model::Event]) -> Vec<
         .collect()
 }
 
-fn parsed(path: &str) -> Vec<session_player_lib::test_support::model::Event> {
-    use session_player_lib::test_support::parse;
+fn parsed(path: &str) -> Vec<session_player_core::test_support::model::Event> {
+    use session_player_core::test_support::parse;
     let p = Path::new(path);
     parse::parse_file(p, parse::detect(p).unwrap()).unwrap().events
 }
@@ -373,7 +373,7 @@ fn pi_addendum_and_delegate_agents_are_context_and_malformed_tags_are_skipped() 
 }
 
 /// Each context document's name and scope, as "name (scope)".
-fn scopes_of(events: &[session_player_lib::test_support::model::Event]) -> Vec<String> {
+fn scopes_of(events: &[session_player_core::test_support::model::Event]) -> Vec<String> {
     events
         .iter()
         .filter_map(|e| e.context.as_ref())

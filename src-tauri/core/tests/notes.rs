@@ -2,7 +2,7 @@
 // files, and kept through index rebuilds.
 use std::path::{Path, PathBuf};
 
-use session_player_lib::test_support::{annotations as notes, index, parse};
+use session_player_core::test_support::{annotations as notes, index, parse};
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name)

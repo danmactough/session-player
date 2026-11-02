@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use session_player_lib::test_support::generate;
+use session_player_core::test_support::generate;
 
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("sp-generate-{name}-{}", std::process::id()));
@@ -93,9 +93,9 @@ fn failures_and_cancellation_are_reported() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-use session_player_lib::test_support::{annotations as notes, index, parse};
+use session_player_core::test_support::{annotations as notes, index, parse};
 
-fn fixture_events() -> Vec<session_player_lib::test_support::model::Event> {
+fn fixture_events() -> Vec<session_player_core::test_support::model::Event> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude.jsonl");
     parse::parse_file(&path, parse::detect(&path).unwrap()).unwrap().events
 }
@@ -229,7 +229,7 @@ fn results_are_out_of_date_once_the_transcript_changes() {
     let before = generate::revision(&events);
     assert_eq!(before, generate::revision(&events));
     let mut grown = events.clone();
-    grown.push(session_player_lib::test_support::model::Event::new(session_player_lib::test_support::model::EventKind::User, None, "one more thing"));
+    grown.push(session_player_core::test_support::model::Event::new(session_player_core::test_support::model::EventKind::User, None, "one more thing"));
     assert_ne!(before, generate::revision(&grown));
 }
 

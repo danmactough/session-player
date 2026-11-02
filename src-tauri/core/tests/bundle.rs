@@ -2,8 +2,8 @@
 // files deleted before the recipient replays them.
 use std::path::{Path, PathBuf};
 
-use session_player_lib::test_support::bundle::{self, ExportRequest};
-use session_player_lib::test_support::index;
+use session_player_core::test_support::bundle::{self, ExportRequest};
+use session_player_core::test_support::index;
 
 /// A sender's machine: agent folders laid out the way each agent writes them,
 /// indexed into their own database.
@@ -75,7 +75,7 @@ impl Recipient {
         Recipient { library: base.join("library"), base, conn }
     }
 
-    fn reindex(&mut self) -> Vec<session_player_lib::test_support::Row> {
+    fn reindex(&mut self) -> Vec<session_player_core::test_support::Row> {
         index::run(&mut self.conn, false, Some(&self.library), &|_, _| {}).unwrap();
         index::list(&self.conn).unwrap()
     }
@@ -187,7 +187,7 @@ fn a_pi_branch_exports_its_whole_path_and_lists_the_others() {
     let rows = recipient.reindex();
     assert_eq!(rows[0].title, "Retry: stress test my caching plan");
     // Its notes are kept apart from those of an imported copy of the active branch.
-    assert_eq!(session_player_lib::test_support::annotations::session_key(&rows[0]), "bundle:pi:01a-pi@a3");
+    assert_eq!(session_player_core::test_support::annotations::session_key(&rows[0]), "bundle:pi:01a-pi@a3");
     // Other branches stay with the sender.
     assert!(rows[0].branches.is_empty());
     assert_eq!(bundle::load_events(Path::new(&rows[0].path)).unwrap(), s.events);
@@ -531,18 +531,18 @@ fn nothing_is_imported_when_the_exported_session_is_empty() {
     assert!(!recipient.library.exists() || std::fs::read_dir(&recipient.library).unwrap().count() == 0);
 }
 
-fn event_ref(anchor: &str, kind: &str, ts: i64) -> session_player_lib::test_support::annotations::EventRef {
+fn event_ref(anchor: &str, kind: &str, ts: i64) -> session_player_core::test_support::annotations::EventRef {
     serde_json::from_value(serde_json::json!({ "anchor": anchor, "kind": kind, "ts": ts })).unwrap()
 }
 
 /// The prompt in claude.jsonl.
-fn prompt_ref() -> session_player_lib::test_support::annotations::EventRef {
+fn prompt_ref() -> session_player_core::test_support::annotations::EventRef {
     event_ref("e1", "user", 1767261602000)
 }
 
 #[test]
 fn details_and_annotations_travel_with_the_session() {
-    use session_player_lib::test_support::annotations as notes;
+    use session_player_core::test_support::annotations as notes;
     let sender = Sender::new("notes");
     let meta = notes::SessionMeta { key: "local:claude:abc".into(), outcome_note: Some("Fixed the login test".into()), components: vec!["packages/auth".into()], ..Default::default() };
     notes::save_meta(&sender.conn, &meta).unwrap();
@@ -553,9 +553,9 @@ fn details_and_annotations_travel_with_the_session() {
     )
     .unwrap();
     let sub_path = sender.root.join("claude/-work-repo/abc/subagents/agent-a1.jsonl");
-    let sub_events = session_player_lib::test_support::parse::parse_file(&sub_path, session_player_lib::test_support::parse::detect(&sub_path).unwrap()).unwrap().events;
+    let sub_events = session_player_core::test_support::parse::parse_file(&sub_path, session_player_core::test_support::parse::detect(&sub_path).unwrap()).unwrap().events;
     let mut suggestion = notes::Annotation::new("local:claude:agent-a1", notes::Kind::KeyDecision, "read the login code", vec![event_ref("e0", "user", 1767261606000)], notes::Author::Model { model: "claude-haiku-5-5".into() });
-    suggestion.revision = Some(session_player_lib::test_support::generate::revision(&sub_events));
+    suggestion.revision = Some(session_player_core::test_support::generate::revision(&sub_events));
     notes::save_annotation(&sender.conn, suggestion).unwrap();
 
     let exported = sender.export("claude/-work-repo/abc.jsonl", None, None);
@@ -563,7 +563,7 @@ fn details_and_annotations_travel_with_the_session() {
     assert_eq!(exported.sessions[0].annotations.len(), 1);
     assert_eq!(exported.sessions[1].annotations[0].author, notes::Author::Model { model: "claude-haiku-5-5".into() });
     // Still current against the transcript as bundled, whose text export rewrites.
-    assert_eq!(exported.sessions[1].annotations[0].revision, Some(session_player_lib::test_support::generate::revision(&exported.sessions[1].events)));
+    assert_eq!(exported.sessions[1].annotations[0].revision, Some(session_player_core::test_support::generate::revision(&exported.sessions[1].events)));
     let preview = bundle::summarize(&exported);
     assert_eq!((preview.sessions[0].annotations, preview.sessions[0].has_details), (1, true));
     let file = sender.save(&exported, "abc.spsession");
@@ -595,7 +595,7 @@ fn details_and_annotations_travel_with_the_session() {
 
 #[test]
 fn imported_annotations_never_take_over_another_sessions() {
-    use session_player_lib::test_support::annotations as notes;
+    use session_player_core::test_support::annotations as notes;
     let sender = Sender::new("steal");
     let mine = notes::save_annotation(&sender.conn, notes::Annotation::new("local:claude:abc", notes::Kind::Other, "on my local copy", vec![prompt_ref()], notes::Author::Person { name: None })).unwrap();
     // Importing your own export: the bundle's annotation has the same id as the local one.
@@ -612,7 +612,7 @@ fn imported_annotations_never_take_over_another_sessions() {
 
 #[test]
 fn replacing_keeps_annotations_the_recipient_edited() {
-    use session_player_lib::test_support::annotations as notes;
+    use session_player_core::test_support::annotations as notes;
     let sender = Sender::new("replace-edits");
     let theirs = notes::save_annotation(&sender.conn, notes::Annotation::new("local:claude:abc", notes::Kind::Other, "first", vec![prompt_ref()], notes::Author::Person { name: None })).unwrap();
     notes::save_meta(&sender.conn, &notes::SessionMeta { key: "local:claude:abc".into(), components: vec!["sender".into()], ..Default::default() }).unwrap();

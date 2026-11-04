@@ -146,6 +146,10 @@ pub struct Parsed {
     pub git_branch: Option<String>,
     /// An explicit title and where it came from ("custom", "ai", "thread", "name", ...).
     pub title: Option<(String, &'static str)>,
+    /// A subagent's type, the title of last resort when it has no prompt either.
+    pub agent_type: Option<String>,
+    /// A pi subagent's run id, which its parent's log uses to refer to it.
+    pub run_id: Option<String>,
     pub models: Vec<String>,
     pub tokens: Tokens,
     pub events: Vec<Event>,
@@ -189,6 +193,8 @@ impl Parsed {
             project: None,
             git_branch: None,
             title: None,
+            agent_type: None,
+            run_id: None,
             models: Vec::new(),
             tokens: Tokens::default(),
             events: Vec::new(),

@@ -32,6 +32,9 @@ pub fn parse(path: &Path) -> anyhow::Result<Parsed> {
     let mut p = Parsed::new(Source::Codex, fallback_id.to_string());
     let mut model: Option<String> = None;
     let mut guardian = false;
+    let mut task: Option<String> = None;
+    let mut forked = false;
+    let mut seen_meta = false;
 
     for_each_line(path, |line| {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
@@ -40,7 +43,10 @@ pub fn parse(path: &Path) -> anyhow::Result<Parsed> {
         let ts = parse_ts(v.get("timestamp"));
         let payload = v.get("payload").unwrap_or(&Value::Null);
         match str_of(&v, "type").unwrap_or("") {
+            // A forked session's log goes on to copy its parent's session_meta.
+            "session_meta" if seen_meta => {}
             "session_meta" => {
+                seen_meta = true;
                 if let Some(id) = str_of(payload, "id") {
                     p.native_id = id.to_string();
                 }
@@ -56,10 +62,19 @@ pub fn parse(path: &Path) -> anyhow::Result<Parsed> {
                     || str_of(payload, "thread_source") == Some("guardian_review");
                 if payload.get("source").is_some_and(Value::is_object) {
                     p.is_subagent = true;
-                    p.parent_id = find_key(payload.get("source").unwrap(), "parent_thread_id");
+                    let source = payload.get("source").unwrap();
+                    p.parent_id = find_key(source, "parent_thread_id");
+                    // A role is optional; every spawned agent gets a nickname.
+                    // Other subagents are named by kind: {"subagent":"review"}.
+                    p.agent_type = find_key(source, "agent_role")
+                        .or_else(|| find_key(source, "agent_nickname"))
+                        .or_else(|| find_key(source, "subagent"));
+                    // "/root/explorer": the name the parent gave the task.
+                    task = find_key(source, "agent_path").and_then(|a| a.rsplit('/').next().map(str::to_string));
                 }
                 if let Some(fork) = str_of(payload, "forked_from_id") {
                     p.parent_id = Some(fork.to_string());
+                    forked = true;
                 }
             }
             "turn_context" => {
@@ -106,6 +121,21 @@ pub fn parse(path: &Path) -> anyhow::Result<Parsed> {
     if guardian {
         // A session with no events isn't listed.
         p.events.clear();
+    }
+    if p.is_subagent {
+        // A forked subagent's log opens with its parent's history, so its first
+        // prompt is the parent's. Its own task can be encrypted in the log.
+        let prompt = p.events.iter().find(|e| !forked && e.kind == EventKind::User && !e.text.is_empty());
+        let label = task.map(|t| (t, "agent")).or_else(|| {
+            let label = super::label_from_prompt(&prompt?.text)?;
+            Some((label.strip_prefix("You are ").map_or(label.clone(), str::to_string), "prompt"))
+        });
+        p.title = match (label, &p.agent_type) {
+            (Some((label, source)), Some(agent)) => Some((format!("{agent}: {label}"), source)),
+            (Some(label), None) => Some(label),
+            (None, Some(agent)) => Some((agent.clone(), "agent")),
+            (None, None) => None,
+        };
     }
     // Numbered before code-mode wrappers are dropped: a wrapper is dropped
     // only once its commands appear, which in a running session can be later,

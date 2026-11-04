@@ -25,7 +25,7 @@ Timestamps are milliseconds since the Unix epoch, in UTC.
 | `source` | `claude`, `codex` or `pi` |
 | `native_id` | The agent's own session ID |
 | `branch_leaf` | For a pi branch: the last entry of the exported branch |
-| `title`, `title_source` | The label the sender saw, and where it came from (`custom`, `ai`, `thread`, `name`, `prompt`, `branch`, …) |
+| `title`, `title_source` | The label the sender saw, and where it came from (`custom`, `ai`, `thread`, `name`, `agent`, `prompt`, `branch`, …) |
 | `project`, `cwd`, `git_branch` | Where the session ran, as recorded on the sender's machine. Shown as labels only. |
 | `models`, `tokens` | Models used; `{input, output, cache_read}` token totals |
 | `started_at` | When the session started |

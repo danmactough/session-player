@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use session_player_core::test_support::bundle::{self, ExportRequest};
 use session_player_core::test_support::index;
+use session_player_core::test_support::model::EventKind;
 
 /// A sender's machine: agent folders laid out the way each agent writes them,
 /// indexed into their own database.
@@ -670,4 +671,17 @@ fn bundles_are_version_2_and_a_changed_document_is_listed_once() {
     again.context.as_mut().unwrap().repeat = false;
     let names: Vec<_> = bundle::summarize(&exported).sessions[0].context.iter().map(|c| c.name.clone()).collect();
     assert_eq!(names.iter().filter(|n| n.ends_with("CLAUDE.md")).count(), 1, "{names:?}");
+}
+
+#[test]
+fn a_subagent_that_only_replied_in_text_survives_import() {
+    let sender = Sender::new("text-only");
+    let mut exported = sender.export("claude/-work-repo/abc.jsonl", None, None);
+    exported.sessions[1].events.retain(|e| e.kind != EventKind::ToolCall);
+    let file = sender.save(&exported, "text-only.spsession");
+
+    let recipient = Recipient::new("text-only");
+    let report = bundle::import(&recipient.conn, &recipient.library, &file, None).unwrap();
+    assert!(report.empty.is_empty());
+    assert_eq!(report.imported, ["claude:abc", "claude:agent-a1"]);
 }

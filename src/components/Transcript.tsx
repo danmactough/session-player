@@ -158,9 +158,37 @@ export function Transcript({
     getScrollElement: () => scrollRef.current,
     estimateSize: () => 96,
     overscan: 8,
-    paddingStart: 8,
     paddingEnd: 160,
   });
+
+  // Keeps aiming at a block until its position stops changing. The virtualizer
+  // stops correcting its own scroll after a few frames, and in WKWebView rows
+  // above the target can still be getting their real heights then, which
+  // leaves the target far from where it was asked to be. Any scrolling by the
+  // user (or a newer jump) ends this.
+  const scrollAttempt = useRef(0);
+  const scrollToBlock = (index: number, align: "start" | "center") => {
+    const attempt = ++scrollAttempt.current;
+    virt.scrollToIndex(index, { align });
+    let frames = 0;
+    let stable = 0;
+    const check = () => {
+      const el = scrollRef.current;
+      const offset = virt.getOffsetForIndex(index, align)?.[0];
+      if (attempt !== scrollAttempt.current || !el || offset === undefined || ++frames > 240) return;
+      if (Math.abs(el.scrollTop - offset) > 1) {
+        stable = 0;
+        virt.scrollToIndex(index, { align });
+      } else if (++stable >= 12) {
+        return;
+      }
+      requestAnimationFrame(check);
+    };
+    requestAnimationFrame(check);
+  };
+  const stopScrollingToBlock = () => {
+    scrollAttempt.current++;
+  };
 
   // Metadata and annotations. Anchors are checked against the transcript on
   // the backend, so they are fetched again whenever the events reload.
@@ -286,7 +314,7 @@ export function Transcript({
     const b = blocks[i];
     const step = b.type === "tools" ? b.steps.findIndex((s) => s.call.anchor === r.anchor || s.result?.anchor === r.anchor) : undefined;
     setReveal((prev) => ({ block: i, step, n: (prev?.n ?? 0) + 1 }));
-    virt.scrollToIndex(i, { align: "center" });
+    scrollToBlock(i, "center");
   };
   // The annotation navigator steps through annotations in transcript order.
   // Context (c…) and conversation (e…) anchors are numbered apart, so order by place in the transcript.
@@ -321,6 +349,7 @@ export function Transcript({
   }, []);
 
   useEffect(() => {
+    stopScrollingToBlock();
     scrollRef.current?.scrollTo({ top: 0 });
     // Take keyboard focus so Space, Page Down and the arrows scroll the
     // transcript, unless the user is typing (arrowing through search results).
@@ -332,7 +361,7 @@ export function Transcript({
   useEffect(() => {
     if (matches.length && events) {
       const i = Math.min(findIdx, matches.length - 1);
-      virt.scrollToIndex(matches[i], { align: "center" });
+      scrollToBlock(matches[i], "center");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [matches, findIdx, events]);
@@ -363,10 +392,10 @@ export function Transcript({
     const n = errorStops.length;
     const next = errIdx === null ? (dir === 1 ? 0 : n - 1) : (errIdx + dir + n) % n;
     setErrIdx(next);
-    virt.scrollToIndex(errorStops[next].block, { align: "center" });
+    scrollToBlock(errorStops[next].block, "center");
   };
   useEffect(() => {
-    if (focusIndex >= 0) virt.scrollToIndex(focusIndex, { align: "center" });
+    if (focusIndex >= 0) scrollToBlock(focusIndex, "center");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusIndex]);
 
@@ -388,7 +417,7 @@ export function Transcript({
       dir === 1
         ? ((atBottom ? undefined : targets.find((i) => start(i) > top + 8)) ?? targets[0])
         : (targets.findLast((i) => start(i) < top - 8) ?? targets[targets.length - 1]);
-    virt.scrollToIndex(next, { align: "start" });
+    scrollToBlock(next, "start");
   };
 
   // Transcript keys. Space is handled here rather than left to the browser:
@@ -397,6 +426,7 @@ export function Transcript({
   const keyRef = useRef<(e: KeyboardEvent) => void>(() => {});
   keyRef.current = (e: KeyboardEvent) => {
     if (!keyboard) return;
+    stopScrollingToBlock();
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "f") {
       e.preventDefault();
       setFindOpen(true);
@@ -717,7 +747,7 @@ export function Transcript({
         </div>
 
         <div className="t-body">
-          <div className="t-scroll" ref={scrollRef} tabIndex={-1}>
+          <div className="t-scroll" ref={scrollRef} tabIndex={-1} onWheel={stopScrollingToBlock} onPointerDown={stopScrollingToBlock}>
             {error && <div className="empty">Could not read this session: {error}</div>}
             {!events && !error && <div className="empty pulse">Reading session…</div>}
             {events && blocks.length === 0 && <div className="empty">Nothing to show.</div>}
@@ -778,7 +808,7 @@ export function Transcript({
             <nav className="t-outline">
               <div className="o-head">Prompts</div>
               {outline.map(({ b, i }) => (
-                <button key={i} onClick={() => virt.scrollToIndex(i, { align: "start" })} title={b.ev.text.slice(0, 400)}>
+                <button key={i} onClick={() => scrollToBlock(i, "start")} title={b.ev.text.slice(0, 400)}>
                   <span className="o-n">{b.turn}</span>
                   <span className="o-t">{b.ev.text.replace(FILE_TAG, "").trim().slice(0, 90) || "(image)"}</span>
                 </button>

@@ -1,0 +1,1 @@
+{"type":"assistant","sessionId":"abc","isSidechain":true,"timestamp":"2026-04-01T11:00:02Z","message":{"id":"m2","model":"claude-opus-5-5","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"git diff"}}]}}

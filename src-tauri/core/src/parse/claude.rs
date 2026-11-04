@@ -22,14 +22,17 @@ pub fn parse(path: &Path) -> anyhow::Result<Parsed> {
             .map(str::to_string);
     }
 
-    // A subagent's type is in the <agent>.meta.json beside its log.
-    let agent: Option<String> = subagent.then(|| {
-        std::fs::read_to_string(path.with_extension("meta.json"))
-            .ok()
-            .and_then(|m| serde_json::from_str::<Value>(&m).ok())
-            .and_then(|m| str_of(&m, "agentType").map(str::to_string))
-            .unwrap_or_else(|| "subagent".to_string())
+    // A subagent's type and task are in the <agent>.meta.json beside its log.
+    let meta: Option<Value> = subagent
+        .then(|| std::fs::read_to_string(path.with_extension("meta.json")).ok())
+        .flatten()
+        .and_then(|m| serde_json::from_str(&m).ok());
+    p.agent_type = meta.as_ref().and_then(|m| str_of(m, "agentType")).map(str::to_string);
+    let task = meta.as_ref().and_then(|m| str_of(m, "description")).map(|d| match &p.agent_type {
+        Some(agent) => format!("{agent}: {d}"),
+        None => d.to_string(),
     });
+    let agent: Option<String> = subagent.then(|| p.agent_type.clone().unwrap_or_else(|| "subagent".to_string()));
 
     let mut custom_title: Option<String> = None;
     let mut ai_title: Option<String> = None;
@@ -89,6 +92,7 @@ pub fn parse(path: &Path) -> anyhow::Result<Parsed> {
     p.title = custom_title
         .map(|t| (t, "custom"))
         .or(ai_title.map(|t| (t, "ai")))
+        .or(task.map(|t| (t, "agent")))
         .or(agent_name.map(|t| (t, "name")))
         .or(summary.map(|t| (t, "summary")));
 

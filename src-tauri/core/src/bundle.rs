@@ -779,14 +779,14 @@ pub fn import(conn: &Connection, library: &Path, path: &Path, on_conflict: Optio
     let bundle = read(path)?;
     let mut report = ImportReport::default();
     // Subagents are imported only with the session they belong to.
-    if !has_conversation(&bundle.sessions[0].events) {
+    if !has_conversation(&bundle.sessions[0]) {
         report.empty.push(bundle.sessions[0].id.clone());
         return Ok(report);
     }
     // Each write carries the copy it replaces, to tell the recipient's edits apart.
     let mut writes: Vec<(PathBuf, Bundle, Option<BundledSession>)> = Vec::new();
     for s in &bundle.sessions {
-        if !has_conversation(&s.events) {
+        if !has_conversation(s) {
             report.empty.push(s.id.clone());
             continue;
         }
@@ -904,9 +904,9 @@ pub fn remove(conn: &Connection, library: &Path, path: &Path) -> anyhow::Result<
 }
 
 /// The same test the indexer applies (`index::build_row`) before listing a session.
-fn has_conversation(events: &[Event]) -> bool {
-    events.iter().any(|e| match e.kind {
-        EventKind::User | EventKind::Assistant => !e.sidechain,
+fn has_conversation(session: &BundledSession) -> bool {
+    session.events.iter().any(|e| match e.kind {
+        EventKind::User | EventKind::Assistant => !e.sidechain || session.is_subagent,
         EventKind::ToolCall => true,
         _ => false,
     })

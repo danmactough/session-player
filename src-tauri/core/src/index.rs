@@ -11,7 +11,7 @@ use crate::model::{EventKind, Parsed, SessionRow, Source};
 use crate::parse;
 
 /// Bump when parsing changes so existing indexes are rebuilt on launch.
-const INDEX_VERSION: &str = "23";
+const INDEX_VERSION: &str = "26";
 const FTS_BODY_LIMIT: usize = 400_000;
 const SKIP_DIRS: &[&str] = &["memory", "tool-results", "subagent-artifacts", "node_modules", ".git"];
 
@@ -207,9 +207,21 @@ pub fn run(
     let seen: HashSet<&str> = files.iter().map(|f| f.path.as_str()).collect();
     let removed: Vec<String> = known.keys().filter(|p| !seen.contains(p.as_str())).cloned().collect();
     let scanned = files.len();
+    // A pi subagent's title is in its parent's log, which can change after the
+    // subagent's own log last did, so a changed parent re-reads its subagents.
+    let changed_pi_session_dirs: Vec<PathBuf> = files
+        .iter()
+        .filter(|f| known.get(&f.path) != Some(&(f.mtime, f.size)))
+        .map(|f| Path::new(&f.path))
+        .filter(|p| p.parent().and_then(Path::file_name).and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("--")))
+        .map(|p| p.with_extension(""))
+        .collect();
     let changed: Vec<FileInfo> = files
         .into_iter()
-        .filter(|f| known.get(&f.path) != Some(&(f.mtime, f.size)))
+        .filter(|f| {
+            known.get(&f.path) != Some(&(f.mtime, f.size))
+                || changed_pi_session_dirs.iter().any(|d| Path::new(&f.path).starts_with(d))
+        })
         .collect();
 
     let total = changed.len();
@@ -324,6 +336,9 @@ fn enrich(path: &Path, source: Source, parsed: &mut Parsed, sidecars: &CodexSide
         parsed.imported_from = sidecars.imported_from(path, &parsed.native_id);
         parsed.project = sidecars.projectless_root(path, &parsed.native_id, parsed.cwd.as_deref());
     }
+    if source == Source::Pi {
+        parse::pi::title_subagent(path, parsed);
+    }
     parsed.title = parsed
         .title
         .take()
@@ -399,7 +414,8 @@ fn build_row(file: &FileInfo, p: Parsed) -> Option<(SessionRow, String)> {
             exit_count += 1;
         }
         match e.kind {
-            EventKind::User if !e.sidechain => {
+            // Every entry in a subagent's own log is marked as a sidechain.
+            EventKind::User if !e.sidechain || p.is_subagent => {
                 user_turns += 1;
                 if !e.text.is_empty() {
                     prompts_seen += 1;
@@ -417,7 +433,7 @@ fn build_row(file: &FileInfo, p: Parsed) -> Option<(SessionRow, String)> {
                 }
             }
             EventKind::Command if first_command.is_none() => first_command = Some(e.text.clone()),
-            EventKind::Assistant if !e.sidechain => assistant_msgs += 1,
+            EventKind::Assistant if !e.sidechain || p.is_subagent => assistant_msgs += 1,
             EventKind::ToolCall => tool_calls += 1,
             _ => {}
         }
@@ -446,7 +462,8 @@ fn build_row(file: &FileInfo, p: Parsed) -> Option<(SessionRow, String)> {
         .or(first_prompt.as_deref())
         .and_then(parse::label_from_prompt)
         .map(|l| (l, "prompt"))
-        .or_else(|| first_command.map(|c| (c, "command")));
+        .or_else(|| first_command.map(|c| (c, "command")))
+        .or_else(|| p.agent_type.map(|a| (a, "agent")));
     let (title, title_source) = match (p.title, fallback_label) {
         (Some((t, s)), _) => (t, s),
         (None, Some((t, s))) => (t, s),

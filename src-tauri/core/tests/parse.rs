@@ -410,3 +410,193 @@ fn context_documents_say_whose_they_are() {
         ["worker (-)", "/home/u/.pi/agent/AGENTS.md (user)", "/work/repo/AGENTS.md (repo)", "/home/u/.pi/skills/grill-me/SKILL.md (user)"]
     );
 }
+
+#[test]
+fn a_claude_subagent_is_titled_by_its_agent_type_and_description() {
+    let (row, _) = index_one(&fixture("context/claude/abc/subagents/agent-x1.jsonl"));
+    assert_eq!(row.title, "senior-code-reviewer: Review");
+    assert_eq!(row.title_source, "agent");
+    assert_eq!(row.user_turns, 1);
+    assert_eq!(row.first_prompt.as_deref(), Some("Review the diff"));
+}
+
+#[test]
+fn a_claude_subagent_without_a_description_is_titled_by_its_prompt() {
+    let (row, _) = index_one(&fixture("context/claude/abc/subagents/agent-x2.jsonl"));
+    assert_eq!(row.title, "Review the diff");
+    assert_eq!(row.title_source, "prompt");
+}
+
+#[test]
+fn a_claude_subagent_without_a_description_or_prompt_is_titled_by_its_agent_type() {
+    let (row, _) = index_one(&fixture("context/claude/abc/subagents/agent-x3.jsonl"));
+    assert_eq!(row.title, "senior-code-reviewer");
+    assert_eq!(row.title_source, "agent");
+}
+
+#[test]
+fn a_claude_subagent_with_nothing_to_name_it_is_untitled() {
+    let (row, _) = index_one(&fixture("context/claude/abc/subagents/agent-x4.jsonl"));
+    assert_eq!(row.title, "Untitled session");
+    assert_eq!(row.title_source, "none");
+}
+
+#[test]
+fn a_claude_subagent_that_only_replied_in_text_is_listed() {
+    let (row, _) = index_one(&fixture("context/claude/abc/subagents/agent-x5.jsonl"));
+    assert_eq!(row.title, "Review the login change");
+    assert_eq!((row.user_turns, row.assistant_msgs, row.tool_calls), (1, 1, 0));
+}
+
+const PI_RUN: &str = "10b4d1d8-7eb7-4e35-948c-60b250e4ba99";
+
+fn pi_subagent_log(name: Option<&str>, prompt: &str) -> String {
+    let info = name.map_or(String::new(), |n| format!("{{\"type\":\"session_info\",\"id\":\"s1\",\"parentId\":null,\"timestamp\":\"2026-01-03T10:00:00.000Z\",\"name\":\"{n}\"}}\n"));
+    let prompt = serde_json::to_string(prompt).unwrap();
+    format!(
+        "{{\"type\":\"session\",\"version\":3,\"id\":\"child\",\"timestamp\":\"2026-01-03T10:00:00.000Z\",\"cwd\":\"/work/pi\"}}\n{info}{{\"type\":\"message\",\"id\":\"m1\",\"parentId\":\"s1\",\"timestamp\":\"2026-01-03T10:00:01.000Z\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"text\",\"text\":{prompt}}}]}}}}\n"
+    )
+}
+
+fn pi_child_notice(key: &str, run: &str) -> String {
+    let content = serde_json::to_string(&format!("Workflow child completed: **{key}**\nWorkflow run: 38b3e1b9\nChild run: {run}\nStatus: workflow still running")).unwrap();
+    format!("{{\"type\":\"custom_message\",\"customType\":\"subagent-incremental-child-notify\",\"id\":\"c1\",\"parentId\":\"a1\",\"timestamp\":\"2026-01-03T10:00:09.000Z\",\"content\":{content}}}\n")
+}
+
+/// Lays out a parent log and one subagent log the way pi writes them, and returns
+/// the parent's path, the subagent's path, and the session folder's temp root.
+fn pi_subagent_files(test: &str, parent_extra: &str, child: &str) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+    let root = std::env::temp_dir().join(format!("sp-pi-subagent-{test}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let project = root.join("--work-pi--");
+    let stem = "2026-01-03T10-00-00-000Z_01a0cdf2-badc-7337-8fd2-81ab00fb91b7";
+    let run_dir = project.join(stem).join("eecbe780-f75c-46aa-80cf-d68570eddea1/run-0");
+    std::fs::create_dir_all(&run_dir).unwrap();
+    let parent = project.join(format!("{stem}.jsonl"));
+    let mut log = std::fs::read_to_string(fixture("pi.jsonl")).unwrap();
+    log.push_str(parent_extra);
+    std::fs::write(&parent, log).unwrap();
+    let path = run_dir.join("session.jsonl");
+    std::fs::write(&path, child).unwrap();
+    (parent, path, root)
+}
+
+fn pi_subagent_title(test: &str, parent_extra: &str, child: &str) -> (String, String) {
+    let (_, path, root) = pi_subagent_files(test, parent_extra, child);
+    let (row, _) = index_one(path.to_str().unwrap());
+    std::fs::remove_dir_all(&root).unwrap();
+    (row.title, row.title_source)
+}
+
+#[test]
+fn a_pi_subagent_is_titled_by_its_agent_and_workflow_key() {
+    let child = pi_subagent_log(Some(&format!("subagent-senior-code-reviewer-{PI_RUN}-1")), "You are resolving a ticket");
+    let notices = pi_child_notice("other-child", "3af4ce52-bfec-473a-9c17-2b9b08edfc18") + &pi_child_notice("perry-local", PI_RUN);
+    assert_eq!(pi_subagent_title("key", &notices, &child), ("senior-code-reviewer: perry-local".to_string(), "agent".to_string()));
+}
+
+#[test]
+fn a_pi_subagent_without_a_workflow_key_is_titled_by_its_agent_and_prompt() {
+    let child = pi_subagent_log(Some(&format!("subagent-worker-{PI_RUN}-1")), "Task: \nYou are resolving a wayfinder ticket");
+    assert_eq!(pi_subagent_title("no-key", "", &child), ("worker: resolving a wayfinder ticket".to_string(), "prompt".to_string()));
+}
+
+#[test]
+fn an_automatic_workflow_key_says_nothing_so_the_prompt_is_used() {
+    let child = pi_subagent_log(Some(&format!("subagent-delegate-{PI_RUN}-1")), "Research strand D");
+    assert_eq!(pi_subagent_title("auto-key", &pi_child_notice("task-3", PI_RUN), &child), ("delegate: Research strand D".to_string(), "prompt".to_string()));
+}
+
+#[test]
+fn a_forked_pi_subagents_title_skips_the_fork_instructions() {
+    let prompt = "Task: You are a delegated subagent running from a fork of the parent session. Treat it as reference only.\n\nTask:\n\nYou are resolving ticket 01.";
+    let child = pi_subagent_log(Some(&format!("subagent-worker-{PI_RUN}-1")), prompt);
+    assert_eq!(pi_subagent_title("fork", "", &child), ("worker: resolving ticket 01.".to_string(), "prompt".to_string()));
+}
+
+#[test]
+fn a_pi_subagent_with_no_recorded_agent_is_titled_by_its_prompt_alone() {
+    let child = pi_subagent_log(None, "You are resolving ticket 02");
+    assert_eq!(pi_subagent_title("no-agent", "", &child), ("resolving ticket 02".to_string(), "prompt".to_string()));
+}
+
+#[test]
+fn a_pi_subagent_picks_up_its_key_when_the_parent_is_notified_later() {
+    use session_player_core::test_support::index;
+    let child = pi_subagent_log(Some(&format!("subagent-worker-{PI_RUN}-1")), "You are resolving ticket 03");
+    let (parent, _, root) = pi_subagent_files("later", "", &child);
+    let mut conn = index::open(&root.join("index.sqlite")).unwrap();
+    index::add_root(&conn, root.to_str().unwrap()).unwrap();
+    index::run(&mut conn, false, None, &|_, _| {}).unwrap();
+    let title = |conn: &rusqlite::Connection| index::list(conn).unwrap().into_iter().find(|r| r.is_subagent).unwrap().title;
+    assert_eq!(title(&conn), "worker: resolving ticket 03");
+
+    let mut log = std::fs::read_to_string(&parent).unwrap();
+    log.push_str(&pi_child_notice("perry-local", PI_RUN));
+    std::fs::write(&parent, log).unwrap();
+    index::run(&mut conn, false, None, &|_, _| {}).unwrap();
+    assert_eq!(title(&conn), "worker: perry-local");
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+fn codex_subagent_title(test: &str, source: &str, fork: bool) -> (String, String) {
+    let fork = if fork { r#""forked_from_id":"parent","# } else { "" };
+    let log = format!(
+        "{{\"timestamp\":\"2026-11-04T01:56:33.164Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"child\",{fork}\"cwd\":\"/work/repo\",\"timestamp\":\"2026-11-04T01:56:33.164Z\",\"source\":{source}}}}}\n{{\"timestamp\":\"2026-11-04T01:56:34.000Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":\"You are checking the login flow\"}}]}}}}\n"
+    );
+    let path = std::env::temp_dir().join(format!("sp-codex-subagent-{test}-{}.jsonl", std::process::id()));
+    std::fs::write(&path, log).unwrap();
+    let (row, _) = index_one(path.to_str().unwrap());
+    std::fs::remove_file(&path).unwrap();
+    assert!(row.is_subagent);
+    (row.title, row.title_source)
+}
+
+fn thread_spawn(role: &str, path: &str) -> String {
+    format!(r#"{{"subagent":{{"thread_spawn":{{"parent_thread_id":"parent","depth":1,{path}"agent_nickname":"Parfit","agent_role":{role}}}}}}}"#)
+}
+
+#[test]
+fn a_codex_subagent_is_titled_by_its_role_and_task_name() {
+    let source = thread_spawn(r#""reviewer""#, r#""agent_path":"/root/check/login-flow","#);
+    assert_eq!(codex_subagent_title("role", &source, true), ("reviewer: login-flow".to_string(), "agent".to_string()));
+}
+
+#[test]
+fn a_codex_subagent_with_no_role_is_titled_by_its_nickname() {
+    let source = thread_spawn("null", r#""agent_path":"/root/explorer","#);
+    assert_eq!(codex_subagent_title("nickname", &source, true), ("Parfit: explorer".to_string(), "agent".to_string()));
+}
+
+#[test]
+fn a_codex_subagent_without_a_task_name_is_titled_by_its_agent_and_prompt() {
+    let source = thread_spawn(r#""reviewer""#, "");
+    assert_eq!(codex_subagent_title("prompt", &source, false), ("reviewer: checking the login flow".to_string(), "prompt".to_string()));
+}
+
+#[test]
+fn a_forked_codex_subagent_does_not_take_its_parents_prompt_as_a_title() {
+    let source = thread_spawn(r#""reviewer""#, "");
+    assert_eq!(codex_subagent_title("fork", &source, true), ("reviewer".to_string(), "agent".to_string()));
+}
+
+#[test]
+fn a_codex_review_subagent_is_titled_by_its_kind_and_prompt() {
+    assert_eq!(codex_subagent_title("review", r#"{"subagent":"review"}"#, false), ("review: checking the login flow".to_string(), "prompt".to_string()));
+}
+
+#[test]
+fn a_forked_codex_session_keeps_its_own_id_after_its_parents_copied_metadata() {
+    let meta = |id: &str, source: &str| format!("{{\"timestamp\":\"2026-11-04T01:56:33.164Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"forked_from_id\":\"parent\",\"cwd\":\"/work/{id}\",\"source\":{source}}}}}\n");
+    let log = meta("child", &thread_spawn("null", r#""agent_path":"/root/explorer","#))
+        + &meta("parent", r#""exec""#)
+        + "{\"timestamp\":\"2026-11-04T01:56:34.000Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"The parent's prompt\"}]}}\n";
+    let path = std::env::temp_dir().join(format!("sp-codex-second-meta-{}.jsonl", std::process::id()));
+    std::fs::write(&path, log).unwrap();
+    let (row, _) = index_one(path.to_str().unwrap());
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(row.native_id, "child");
+    assert_eq!(row.cwd.as_deref(), Some("/work/child"));
+    assert_eq!(row.parent_id.as_deref(), Some("parent"));
+    assert_eq!(row.title, "Parfit: explorer");
+}

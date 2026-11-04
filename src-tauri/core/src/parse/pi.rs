@@ -77,8 +77,12 @@ fn parse_tree(path: &Path, leaf: Option<&str>, from_split: bool) -> anyhow::Resu
         }
     }
     if let Some(n) = &name {
-        if n.starts_with("subagent-") {
+        if let Some(run) = n.strip_prefix("subagent-") {
             p.is_subagent = true;
+            if let Some((agent, run)) = agent_and_run(run) {
+                p.agent_type = Some(agent.to_string());
+                p.run_id = Some(run.to_string());
+            }
         } else {
             p.title = Some((n.clone(), "name"));
         }
@@ -159,6 +163,70 @@ pub fn entry_ids(path: &Path) -> anyhow::Result<HashSet<String>> {
         }
     })?;
     Ok(ids)
+}
+
+/// Splits the end of a run's name, `<agent>-<run uuid>-<attempt>`. Agent names
+/// can contain hyphens, so the uuid is found by its length.
+fn agent_and_run(name: &str) -> Option<(&str, &str)> {
+    let (rest, _attempt) = name.rsplit_once('-')?;
+    let (agent, run) = rest.split_at_checked(rest.len().checked_sub(36)?)?;
+    Some((agent.strip_suffix('-')?, run))
+}
+
+/// Titles a subagent the way its parent labelled it, or else by its prompt.
+/// The label is in the parent's log, so this runs only when indexing, not each
+/// time a transcript is opened.
+pub fn title_subagent(path: &Path, p: &mut Parsed) {
+    if !p.is_subagent || p.title.is_some() {
+        return;
+    }
+    if p.agent_type.is_none() {
+        p.agent_type = p.events.iter().find_map(|e| {
+            let c = e.context.as_ref()?;
+            (c.kind == ContextKind::Agent).then(|| c.name.clone())
+        });
+    }
+    let key = p.run_id.as_deref().and_then(|run| workflow_key(path, run));
+    let label = key.map(|k| (k, "agent")).or_else(|| {
+        let prompt = p.events.iter().find(|e| e.kind == EventKind::User && !e.text.is_empty())?;
+        let prompt = match prompt.text.strip_prefix("Task: You are a delegated subagent") {
+            Some(rest) => rest.split_once('\n')?.1,
+            None => &prompt.text,
+        };
+        let label = super::label_from_prompt(prompt)?;
+        Some((label.strip_prefix("You are ").map_or(label.clone(), str::to_string), "prompt"))
+    });
+    p.title = label.map(|(label, source)| match &p.agent_type {
+        Some(agent) => (format!("{agent}: {label}"), source),
+        None => (label, source),
+    });
+}
+
+/// The key a workflow gave this run, from the notice its parent got when the
+/// run finished. pi numbers the runs of a workflow that names none ("task-3"),
+/// and those say less than the prompt does.
+fn workflow_key(path: &Path, run: &str) -> Option<String> {
+    let session_dir = path.ancestors().skip(1).find(|a| {
+        a.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.contains('_') && n.len() > 36)
+    })?;
+    let parent = session_dir.with_file_name(format!("{}.jsonl", session_dir.file_name()?.to_str()?));
+    let mut key = None;
+    for_each_line(&parent, |line| {
+        if key.is_some() || !line.contains(run) {
+            return;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            return;
+        };
+        let Some(notice) = str_of(&v, "content").filter(|_| str_of(&v, "type") == Some("custom_message")) else {
+            return;
+        };
+        if notice.starts_with("Workflow child ") && notice.contains(&format!("Child run: {run}")) {
+            key = between(notice, "**", "**").map(str::to_string);
+        }
+    })
+    .ok()?;
+    key.filter(|k| !k.strip_prefix("task-").is_some_and(|n| n.chars().all(|c| c.is_ascii_digit())))
 }
 
 /// The agent named by an `<active_agent name="…"/>` tag in `text`, and the

@@ -37,6 +37,10 @@ const GROUPS: { title: string; keys: { keys: string[][]; what: string }[] }[] = 
     ],
   },
   {
+    title: "Agents",
+    keys: [{ keys: [["⌥", "click"]], what: "Show only that agent" }],
+  },
+  {
     title: "Projects",
     keys: [
       { keys: [["⌘", "click"]], what: "Add or remove a project" },

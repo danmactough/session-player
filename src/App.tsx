@@ -591,8 +591,8 @@ export default function App() {
             <button
               key={s}
               className={`srcpill src-${s} ${p.sources.includes(s) ? "on" : ""}`}
-              onClick={() => toggleSource(s)}
-              title={`Show ${SOURCE_LABEL[s]} sessions`}
+              onClick={(e) => (e.altKey ? update({ sources: [s] }) : toggleSource(s))}
+              title={`Show ${SOURCE_LABEL[s]} sessions (⌥-click to show only ${SOURCE_LABEL[s]})`}
             >
               <SourceIcon source={s} />
               {SOURCE_LABEL[s]}

@@ -252,6 +252,13 @@ const handlers: Record<string, Handler> = {
     return handler;
   },
   "plugin:event|unlisten": () => null,
+  "plugin:app|version": () => "0.12.0",
+  // Settings > Check now always finds this release, so the update banner can be previewed.
+  "plugin:updater|check": () => ({ rid: 1, currentVersion: "0.12.0", version: "0.13.0", date: null, body: "", rawJson: {} }),
+  "plugin:updater|download": () => 2,
+  "plugin:updater|install": () => console.log("install update"),
+  "plugin:process|restart": () => console.log("restart"),
+  "plugin:resources|close": () => null,
 };
 
 let cb = 0;

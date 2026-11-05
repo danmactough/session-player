@@ -18,6 +18,8 @@ import { Menu } from "./components/Menu";
 import { SourceIcon } from "./components/AppIcon";
 import { applyTheme, storedTheme, type Theme } from "./lib/theme";
 import { ProjectNav, type ProjectSummary } from "./components/ProjectNav";
+import { UpdateBanner } from "./components/UpdateBanner";
+import { useUpdater } from "./lib/useUpdater";
 import { ancestors, branchChildren, branchRows, branchSourcePath, buildTree, type ListRow } from "./lib/tree";
 
 const ALL_SOURCES: Source[] = ["claude", "codex", "pi"];
@@ -67,6 +69,8 @@ interface Prefs {
   generateConsent: boolean;
   /** The summary under a transcript's title is hidden. */
   summaryCollapsed: boolean;
+  /** Ask GitHub for a newer release when the app opens and periodically after that. */
+  autoCheckUpdates: boolean;
 }
 const DEFAULT_PREFS: Prefs = {
   projects: [],
@@ -86,6 +90,7 @@ const DEFAULT_PREFS: Prefs = {
   authorName: "",
   generateConsent: false,
   summaryCollapsed: false,
+  autoCheckUpdates: true,
 };
 
 export default function App() {
@@ -232,6 +237,12 @@ export default function App() {
   }, [query, version]);
 
   const p = prefs ?? DEFAULT_PREFS;
+  const updater = useUpdater({ autoCheck: prefs !== null && p.autoCheckUpdates, onNotice: showNotice });
+  const { checkNow } = updater;
+  useEffect(() => {
+    const un = listen("check-for-updates", () => void checkNow());
+    return () => void un.then((f) => f());
+  }, [checkNow]);
 
   useEffect(() => applyTheme(p.theme), [p.theme]);
 
@@ -670,6 +681,14 @@ export default function App() {
           resetKey={projectListKey}
         />
 
+        {!updater.bannerHidden && (
+          <UpdateBanner
+            status={updater.status}
+            onInstall={() => void updater.install()}
+            onRestart={() => void updater.restart()}
+            onLater={updater.later}
+          />
+        )}
         <footer className="rail-foot">
           <button className="ghost icon-button" title="Settings (⌘,)" aria-label="Settings" onClick={() => setSheet(true)}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -863,6 +882,11 @@ export default function App() {
           onAuthorName={(authorName) => update({ authorName })}
           hideSubagents={!p.showSub}
           onHideSubagents={(hide) => update({ showSub: !hide })}
+          autoCheckUpdates={p.autoCheckUpdates}
+          onAutoCheckUpdates={(autoCheckUpdates) => update({ autoCheckUpdates })}
+          checkingForUpdates={updater.checking}
+          updateCheckResult={updater.checkResult}
+          onCheckForUpdates={() => void updater.checkNow()}
         />
       )}
     </div>

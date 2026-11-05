@@ -652,6 +652,26 @@ mark {
   pointer-events: auto;
 }
 
+/* ---------- update banner ---------- */
+.update-banner {
+  margin: 8px 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.update-text {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--ink);
+}
+.update-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
 /* ---------- buttons ---------- */
 .ghost {
   padding: 5px 10px;

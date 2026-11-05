@@ -738,9 +738,10 @@ fn install_menu(app: &AppHandle) -> tauri::Result<()> {
     use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
     let menu = Menu::default(app)?;
     let settings = MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?;
+    let check_updates = MenuItem::with_id(app, "check-for-updates", "Check for Updates…", true, None::<&str>)?;
     let items = menu.items()?;
     if let Some(app_menu) = items.first().and_then(|m| m.as_submenu()) {
-        app_menu.insert_items(&[&settings, &PredefinedMenuItem::separator(app)?], 2)?;
+        app_menu.insert_items(&[&check_updates, &settings, &PredefinedMenuItem::separator(app)?], 2)?;
     }
     if let Some(file_menu) = items.iter().filter_map(|m| m.as_submenu()).find(|m| m.text().is_ok_and(|t| t == "File")) {
         let import = MenuItem::with_id(app, "import-session", "Import Session…", true, Some("CmdOrCtrl+Shift+I"))?;
@@ -755,6 +756,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(external_links())
         .register_uri_scheme_protocol("spimg", |ctx, req| {
             let state = ctx.app_handle().state::<Shared>();
@@ -791,6 +794,9 @@ pub fn run() {
             match event.id().as_ref() {
                 "settings" => {
                     let _ = app.emit("open-settings", ());
+                }
+                "check-for-updates" => {
+                    let _ = app.emit("check-for-updates", ());
                 }
                 "import-session" => {
                     let _ = app.emit("import-session", ());

@@ -3,7 +3,7 @@ members = ["core"]
 
 [package]
 name = "session-player"
-version = "0.1.0"
+version = "0.12.0"
 description = "A unified viewer for coding-agent sessions"
 authors = ["Dan MacTough"]
 edition = "2024"
@@ -29,3 +29,5 @@ dirs = "6"
 anyhow = "1"
 base64 = "0.22"
 session-player-core = { path = "core" }
+tauri-plugin-updater = "2.14.1"
+tauri-plugin-process = "2.4.0"

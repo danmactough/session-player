@@ -47,9 +47,6 @@ A few words used below:
 1. Download the latest `.dmg` from [Releases](https://github.com/danmactough/session-player/releases/latest). It runs on Macs with Apple silicon.
 2. Open the `.dmg` and drag Session Player to Applications.
 
-> [!NOTE]
-> The app doesn't update itself. To update, install a newer `.dmg` the same way.
-
 ### Add your sessions
 
 There's usually nothing to do. The first time it opens, the app adds each of these folders that exists:

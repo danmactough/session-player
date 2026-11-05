@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { getVersion } from "@tauri-apps/api/app";
 import { open } from "@tauri-apps/plugin-dialog";
 import { api } from "../api";
 import type { IndexStats, LibraryError, RootInfo } from "../types";
@@ -26,6 +27,11 @@ interface Props {
   onHideSubagents: (hide: boolean) => void;
   authorName: string;
   onAuthorName: (name: string) => void;
+  autoCheckUpdates: boolean;
+  onAutoCheckUpdates: (on: boolean) => void;
+  checkingForUpdates: boolean;
+  updateCheckResult: string | null;
+  onCheckForUpdates: () => void;
 }
 
 export function SettingsSheet({
@@ -43,11 +49,17 @@ export function SettingsSheet({
   onHideSubagents,
   authorName,
   onAuthorName,
+  autoCheckUpdates,
+  onAutoCheckUpdates,
+  checkingForUpdates,
+  updateCheckResult,
+  onCheckForUpdates,
 }: Props) {
   const [roots, setRoots] = useState<RootInfo[]>([]);
   const [suggested, setSuggested] = useState<string[]>([]);
   const [damaged, setDamaged] = useState<LibraryError[]>([]);
   const [err, setErr] = useState<string | null>(null);
+  const [appVersion, setAppVersion] = useState<string | null>(null);
 
   const refresh = () => {
     api.getRoots().then(setRoots).catch((e) => setErr(String(e)));
@@ -55,6 +67,9 @@ export function SettingsSheet({
     api.libraryErrors().then(setDamaged).catch(() => {});
   };
   useEffect(refresh, [version]);
+  useEffect(() => {
+    getVersion().then(setAppVersion).catch(() => {});
+  }, []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -212,6 +227,25 @@ export function SettingsSheet({
           ))}
           {hidden.length === 0 && <li className="none">None. Hover a project in the sidebar and click Hide.</li>}
         </ul>
+
+        <h3 className="settings-head">Updates</h3>
+        <label className="setting-toggle">
+          <input type="checkbox" checked={autoCheckUpdates} onChange={(e) => onAutoCheckUpdates(e.target.checked)} />
+          <span>
+            Check for updates automatically
+            <span className="setting-note">
+              Asks GitHub for the latest version when the app opens and every 6 hours. Your sessions aren&rsquo;t sent,
+              and nothing installs until you choose to.
+            </span>
+          </span>
+        </label>
+        <div className="sheet-foot">
+          <button className="ghost" disabled={checkingForUpdates} onClick={onCheckForUpdates}>
+            {checkingForUpdates ? "Checking…" : "Check now"}
+          </button>
+          {appVersion && <span className="sheet-stats">Version {appVersion}</span>}
+        </div>
+        {updateCheckResult && <p className="sheet-note">{updateCheckResult}</p>}
       </div>
     </div>
   );

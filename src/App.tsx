@@ -587,18 +587,29 @@ export default function App() {
         </div>
 
         <div className="sources">
-          {ALL_SOURCES.map((s) => (
-            <button
-              key={s}
-              className={`srcpill src-${s} ${p.sources.includes(s) ? "on" : ""}`}
-              onClick={() => toggleSource(s)}
-              title={`Show ${SOURCE_LABEL[s]} sessions`}
-            >
-              <SourceIcon source={s} />
-              {SOURCE_LABEL[s]}
-              <span className="n">{counts[s]}</span>
-            </button>
-          ))}
+          {ALL_SOURCES.map((s) => {
+            const on = p.sources.includes(s);
+            const alone = on && p.sources.length === 1;
+            const label = SOURCE_LABEL[s];
+            return (
+              <div key={s} className={`srcpill-wrap ${alone ? "" : "can-only"}`}>
+                <button
+                  className={`srcpill src-${s} ${on ? "on" : ""}`}
+                  onClick={(e) => (e.altKey ? update({ sources: [s] }) : toggleSource(s))}
+                  title={alone ? "Show all agents" : `${on ? "Hide" : "Show"} ${label} sessions (⌥-click to show only ${label})`}
+                >
+                  <SourceIcon source={s} />
+                  {label}
+                  <span className="n">{counts[s]}</span>
+                </button>
+                {!alone && (
+                  <button className="srcpill-only" onClick={() => update({ sources: [s] })} title={`Show only ${label}`} aria-label={`Show only ${label}`}>
+                    only
+                  </button>
+                )}
+              </div>
+            );
+          })}
           <button
             className={`srcpill filter-pill ${p.errorsOnly ? "on" : ""}`}
             onClick={() => update({ errorsOnly: !p.errorsOnly })}

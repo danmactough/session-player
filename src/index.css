@@ -273,6 +273,40 @@ mark {
   font: 11px var(--mono);
   color: var(--faint);
 }
+.srcpill-wrap {
+  position: relative;
+}
+.srcpill-wrap .srcpill {
+  width: 100%;
+}
+.srcpill-wrap:hover .srcpill {
+  background: var(--hover);
+}
+/* A sibling of the agent button, not a child, because a button can't contain
+   a button. It sits on top of the count, which it replaces while visible. */
+.srcpill-only {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 8px;
+  font: 11px var(--mono);
+  color: var(--muted);
+  opacity: 0;
+  pointer-events: none;
+}
+.srcpill-only:hover {
+  color: var(--ink-2);
+  text-decoration: underline;
+}
+.srcpill-wrap:hover .srcpill-only,
+.srcpill-wrap:has(:focus-visible) .srcpill-only {
+  opacity: 1;
+  pointer-events: auto;
+}
+.srcpill-wrap.can-only:hover .n,
+.srcpill-wrap.can-only:has(:focus-visible) .n {
+  visibility: hidden;
+}
 .sdot {
   width: 7px;
   height: 7px;

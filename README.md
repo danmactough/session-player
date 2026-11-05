@@ -67,7 +67,7 @@ New sessions and new messages appear on their own while the app is open.
 
 The left sidebar narrows down the session list next to it.
 
-- **Show one agent or several**: click the agent buttons at the top of the sidebar. `⌥`-click a button to show only that agent.
+- **Show one agent or several**: click the agent buttons at the top of the sidebar. To show only one agent, hover over its button and click **only**, or `⌥`-click the button.
 - **Show one project**: click it. Click it again, or press Esc in the list, to go back to **All projects**.
 - **Show several projects**: `⌘`-click adds or removes a project, `⇧`-click selects a run of them, and `⌘⇧`-click adds a run.
 - **Find a project**: type in the project filter, which appears when you have more than 8 projects. The session list narrows to match.

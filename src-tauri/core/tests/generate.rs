@@ -405,3 +405,13 @@ fn context_does_not_change_the_revision() {
     // An analysis made before context was parsed is still current.
     assert_eq!(generate::revision(&events), generate::revision(&conversation));
 }
+
+#[test]
+fn reports_can_ask_another_model() {
+    let dir = scratch("model");
+    let bin = fake_claude(&dir, &reply(serde_json::json!({ "ok": true })), 0);
+    generate::run_claude_model(&claude(&bin), "sonnet", "S", "x", &serde_json::json!({}), &Arc::new(AtomicBool::new(false))).unwrap();
+    let args: Vec<String> = std::fs::read_to_string(dir.join("args.txt")).unwrap().lines().map(str::to_string).collect();
+    let model = args.iter().position(|a| a == "--model").map(|i| args[i + 1].as_str());
+    assert_eq!(model, Some("sonnet"));
+}

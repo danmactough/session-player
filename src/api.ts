@@ -5,6 +5,8 @@ import type {
   LibraryError,
   Annotation,
   NoteSummary,
+  Report,
+  ReportSummary,
   SessionMeta,
   OnConflict,
   OpenTarget,
@@ -45,7 +47,8 @@ export const api = {
   exportPreview: (path: string, branch?: string, subagents?: string[]) =>
     invoke<ExportPreview>("export_preview", { path, branch: branch ?? null, subagents: subagents ?? null, request: nextExportRequest() }),
   /** Writes the previewed bundle; resolves to the path written. */
-  exportSave: (token: number, dest: string) => invoke<string>("export_save", { token, dest }),
+  /** `exportedBy` is the user's name; the bundle records it as the exporter. */
+  exportSave: (token: number, dest: string, exportedBy: string) => invoke<string>("export_save", { token, dest, exportedBy }),
   exportCancel: () => invoke<void>("export_cancel"),
   importBundle: (path: string, onConflict?: OnConflict) =>
     invoke<ImportReport>("import_bundle", { path, onConflict: onConflict ?? null }),
@@ -62,4 +65,13 @@ export const api = {
   saveAnnotation: (annotation: Annotation) => invoke<Annotation>("save_annotation", { annotation }),
   deleteAnnotation: (id: string) => invoke<void>("delete_annotation", { id }),
   noteSummaries: () => invoke<NoteSummary[]>("note_summaries"),
+  /** Starts a report in the background and resolves to its job id; watch for "report-progress" and "report-done".
+   * `model` is an alias such as "sonnet"; omit it for the default. */
+  generateReport: (sessions: { key: string; title: string }[], model?: string) =>
+    invoke<string>("generate_report", { sessions, model: model ?? null }),
+  cancelReport: (job: string) => invoke<void>("cancel_report", { job }),
+  /** Newest first. */
+  listReports: () => invoke<ReportSummary[]>("list_reports"),
+  getReport: (id: string) => invoke<Report | null>("get_report", { id }),
+  deleteReport: (id: string) => invoke<void>("delete_report", { id }),
 };

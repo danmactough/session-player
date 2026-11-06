@@ -4,7 +4,7 @@ mod terminals;
 // The parsing, indexing, note generation and bundle code lives in session-player-core, which
 // has no Tauri dependency and holds all the integration tests. Re-exported here so the
 // command layer can keep referring to the modules by their short names.
-pub use session_player_core::{annotations, bundle, generate, index, model, parse};
+pub use session_player_core::{annotations, bundle, generate, index, model, parse, reports};
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -31,6 +31,8 @@ struct AppState {
     export: Mutex<PendingExport>,
     /// Sessions (by key) a model is generating notes for, with the flag that cancels each.
     generating: Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>,
+    /// Reports being written, by job id, with the flag that cancels each.
+    reporting: Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>,
     /// Where the `claude` command is and the login shell's environment, once found.
     claude: Mutex<Option<(PathBuf, Vec<(String, String)>)>>,
 }
@@ -327,12 +329,17 @@ async fn export_preview(
 
 /// Writes the bundle from the preview identified by `token` to `dest`.
 #[tauri::command]
-async fn export_save(state: State<'_, Shared>, token: u64, dest: String) -> Result<String, String> {
+async fn export_save(state: State<'_, Shared>, token: u64, dest: String, exported_by: String) -> Result<String, String> {
+    let exported_by = exported_by.trim().to_string();
+    if exported_by.is_empty() {
+        return Err("Set your name before exporting.".into());
+    }
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let Some(built) = state.export.lock().unwrap().take(token) else {
+        let Some(mut built) = state.export.lock().unwrap().take(token) else {
             return Err("This preview is out of date. Review the export again before saving.".to_string());
         };
+        built.exported_by = Some(exported_by);
         let mut dest = PathBuf::from(dest);
         if !bundle::is_bundle_path(&dest) {
             dest.as_mut_os_string().push(format!(".{}", bundle::EXTENSION));
@@ -538,6 +545,30 @@ struct GenerateDone {
     rejected: usize,
 }
 
+/// The `claude` command, set up as it is in the user's terminal. Finding it
+/// and the login shell's environment happens once; the Claude settings are
+/// read every time, so changed settings or a fresh apiKeyHelper key apply.
+fn claude_command(state: &Shared) -> anyhow::Result<generate::Claude> {
+    // A login shell can take seconds to start, so this happens off the main thread, once.
+    let found = {
+        let mut cached = state.claude.lock().unwrap();
+        if cached.is_none() {
+            *cached = find_claude().map(|bin| (bin, login_shell_env()));
+        }
+        cached.clone()
+    };
+    let Some((bin, shell_env)) = found else {
+        anyhow::bail!("Couldn't find the claude command. Install Claude Code and sign in, then try again.");
+    };
+    let config_dir = shell_env
+        .iter()
+        .rev()
+        .find(|(k, v)| k == "CLAUDE_CONFIG_DIR" && !v.is_empty())
+        .map(|(_, v)| PathBuf::from(v))
+        .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".claude"));
+    generate::Claude::new(bin, shell_env, &config_dir)
+}
+
 /// Starts generating metadata and annotations for a session in the
 /// background. Progress arrives as "generate-progress" events and the end as
 /// one "generate-done" event.
@@ -564,25 +595,7 @@ fn generate_notes(app: AppHandle, state: State<Shared>, key: String, path: Strin
         let progress_app = app.clone();
         let progress_key = key.clone();
         let result = (|| -> anyhow::Result<usize> {
-            // A login shell can take seconds to start, so this happens here, once.
-            let found = {
-                let mut cached = state.claude.lock().unwrap();
-                if cached.is_none() {
-                    *cached = find_claude().map(|bin| (bin, login_shell_env()));
-                }
-                cached.clone()
-            };
-            let Some((bin, shell_env)) = found else {
-                anyhow::bail!("Couldn't find the claude command. Install Claude Code and sign in, then try again.");
-            };
-            // Read on every run, so changed settings or a fresh apiKeyHelper key apply.
-            let config_dir = shell_env
-                .iter()
-                .rev()
-                .find(|(k, v)| k == "CLAUDE_CONFIG_DIR" && !v.is_empty())
-                .map(|(_, v)| PathBuf::from(v))
-                .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".claude"));
-            let claude = generate::Claude::new(bin, shell_env, &config_dir)?;
+            let claude = claude_command(&state)?;
             let events = session_events(&path, branch.as_deref()).map_err(anyhow::Error::msg)?;
             let mut ask = |system: &str, input: &str, schema: &serde_json::Value| generate::run_claude(&claude, system, input, schema, &cancel);
             let generated = generate::generate(&events, &mut ask, &mut |done, total| {
@@ -614,6 +627,94 @@ fn cancel_generate(state: State<Shared>, key: String) {
 #[tauri::command]
 fn generating(state: State<Shared>) -> Vec<String> {
     state.generating.lock().unwrap().keys().cloned().collect()
+}
+
+#[derive(Serialize, Clone)]
+struct ReportProgress {
+    job: String,
+    done: usize,
+    total: usize,
+}
+
+#[derive(Serialize, Clone)]
+struct ReportDone {
+    job: String,
+    /// The saved report, when it was written.
+    report: Option<String>,
+    error: Option<String>,
+    cancelled: bool,
+}
+
+/// Starts writing a report on `sessions` in the background with `model`
+/// (an alias such as "sonnet"; empty means the default) and returns its job
+/// id. Progress arrives as "report-progress" events and the end as one
+/// "report-done" event, which names the saved report.
+#[tauri::command]
+fn generate_report(app: AppHandle, state: State<Shared>, sessions: Vec<reports::SessionPick>, model: Option<String>) -> Result<String, String> {
+    if sessions.is_empty() {
+        return Err("Pick at least one session to report on.".into());
+    }
+    let job = annotations::new_id();
+    let cancel = Arc::new(AtomicBool::new(false));
+    state.reporting.lock().unwrap().insert(job.clone(), cancel.clone());
+    let state = state.inner().clone();
+    let model = model.map(|m| m.trim().to_string()).filter(|m| !m.is_empty()).unwrap_or_else(|| reports::DEFAULT_MODEL.to_string());
+    let id = job.clone();
+    std::thread::spawn(move || {
+        // Clears the job's entry even if this thread panics.
+        struct Running(Shared, String);
+        impl Drop for Running {
+            fn drop(&mut self) {
+                self.0.reporting.lock().unwrap().remove(&self.1);
+            }
+        }
+        let running = Running(state.clone(), job.clone());
+        let progress_app = app.clone();
+        let progress_job = job.clone();
+        let result = (|| -> anyhow::Result<String> {
+            let claude = claude_command(&state)?;
+            let conn = index::open(&state.db_path)?;
+            let mut ask = |system: &str, input: &str, schema: &serde_json::Value| generate::run_claude_model(&claude, &model, system, input, schema, &cancel);
+            let report = reports::generate(&conn, &sessions, &mut ask, &mut |done, total| {
+                let _ = progress_app.emit("report-progress", ReportProgress { job: progress_job.clone(), done, total });
+            })?;
+            reports::save_report(&conn, &report)?;
+            Ok(report.id)
+        })();
+        drop(running);
+        let done = match result {
+            Ok(report) => ReportDone { job, report: Some(report), error: None, cancelled: false },
+            Err(e) if generate::is_cancelled(&e) => ReportDone { job, report: None, error: None, cancelled: true },
+            Err(e) => ReportDone { job, report: None, error: Some(format!("{e:#}")), cancelled: false },
+        };
+        let _ = app.emit("report-done", done);
+    });
+    Ok(id)
+}
+
+#[tauri::command]
+fn cancel_report(state: State<Shared>, job: String) {
+    if let Some(flag) = state.reporting.lock().unwrap().get(&job) {
+        flag.store(true, Ordering::SeqCst);
+    }
+}
+
+#[tauri::command]
+fn list_reports(state: State<Shared>) -> Result<Vec<reports::ReportSummary>, String> {
+    let conn = index::open(&state.db_path).map_err(err)?;
+    reports::reports(&conn).map_err(err)
+}
+
+#[tauri::command]
+fn get_report(state: State<Shared>, id: String) -> Result<Option<reports::Report>, String> {
+    let conn = index::open(&state.db_path).map_err(err)?;
+    reports::report(&conn, &id).map_err(err)
+}
+
+#[tauri::command]
+fn delete_report(state: State<Shared>, id: String) -> Result<(), String> {
+    let conn = index::open(&state.db_path).map_err(err)?;
+    reports::delete_report(&conn, &id).map_err(err)
 }
 
 fn serve_image(state: &Shared, uri: &str) -> tauri::http::Response<Vec<u8>> {
@@ -779,6 +880,7 @@ pub fn run() {
                 watcher: Mutex::new(None),
                 export: Mutex::new(PendingExport::default()),
                 generating: Mutex::new(Default::default()),
+                reporting: Mutex::new(Default::default()),
                 claude: Mutex::new(None),
             });
             app.manage(state.clone());
@@ -835,7 +937,12 @@ pub fn run() {
             note_summaries,
             generate_notes,
             cancel_generate,
-            generating
+            generating,
+            generate_report,
+            cancel_report,
+            list_reports,
+            get_report,
+            delete_report
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -851,6 +958,7 @@ mod tests {
             version: bundle::VERSION,
             exported_at: 0,
             exporter: title.into(),
+            exported_by: None,
             sessions: Vec::new(),
             attachments: Vec::new(),
         }
@@ -897,6 +1005,7 @@ mod tests {
             watcher: Mutex::new(None),
             export: Mutex::new(PendingExport::default()),
             generating: Mutex::new(Default::default()),
+            reporting: Mutex::new(Default::default()),
             claude: Mutex::new(None),
         });
         let ok = serve_image(&state, "spimg://localhost/7/1/0");

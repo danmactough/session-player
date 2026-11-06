@@ -271,3 +271,48 @@ export interface OpenTarget {
   label: string;
   url: string;
 }
+
+/** What a report's takeaway or action rests on: an annotation as the report saw it, or a session's outcome. */
+export type Evidence = { type: "annotation"; id: string; version: number; key: string } | { type: "session"; key: string };
+
+export type ActionCategory = "codebase" | "skill" | "instructions" | "environment" | "automation";
+
+export interface ReportSession {
+  key: string;
+  title: string;
+  outcome: Outcome;
+  outcome_note: string | null;
+  components: string[];
+  /** The annotations the report was given, as (id, version). */
+  annotations: { id: string; version: number }[];
+}
+
+/** A saved report on a set of sessions; it never changes after it's written. */
+export interface Report {
+  id: string;
+  created_at: number;
+  title: string;
+  model: string;
+  prompt_version: number;
+  sessions: ReportSession[];
+  stats: {
+    sessions: number;
+    outcomes: Partial<Record<Outcome, number>>;
+    kinds: Partial<Record<AnnotationKind, number>>;
+    annotations: number;
+  };
+  summary: string;
+  takeaways: { text: string; evidence: Evidence[] }[];
+  actions: { title: string; category: ActionCategory; priority: "high" | "medium" | "low"; change: string; evidence: Evidence[] }[];
+  /** Takeaways and actions dropped because they cited nothing the report was given. */
+  rejected: number;
+}
+
+export interface ReportSummary {
+  id: string;
+  created_at: number;
+  title: string;
+  model: string;
+  sessions: number;
+  actions: number;
+}

@@ -104,8 +104,13 @@ impl Claude {
 /// Runs `claude -p` once. `input` (the transcript) is written to stdin;
 /// `cancel` kills the process.
 pub fn run_claude(claude: &Claude, system: &str, input: &str, schema: &Value, cancel: &Arc<AtomicBool>) -> anyhow::Result<ClaudeOutput> {
+    run_claude_model(claude, MODEL, system, input, schema, cancel)
+}
+
+/// `run_claude` with another model alias or name, such as "sonnet" for reports.
+pub fn run_claude_model(claude: &Claude, model: &str, system: &str, input: &str, schema: &Value, cancel: &Arc<AtomicBool>) -> anyhow::Result<ClaudeOutput> {
     let cwd = empty_dir()?;
-    let result = run_in(claude, &cwd, system, input, schema, cancel);
+    let result = run_in(claude, model, &cwd, system, input, schema, cancel);
     let _ = std::fs::remove_dir_all(&cwd);
     result
 }
@@ -118,7 +123,7 @@ fn empty_dir() -> anyhow::Result<PathBuf> {
     Ok(dir)
 }
 
-fn run_in(claude: &Claude, cwd: &Path, system: &str, input: &str, schema: &Value, cancel: &Arc<AtomicBool>) -> anyhow::Result<ClaudeOutput> {
+fn run_in(claude: &Claude, model: &str, cwd: &Path, system: &str, input: &str, schema: &Value, cancel: &Arc<AtomicBool>) -> anyhow::Result<ClaudeOutput> {
     use std::os::unix::process::CommandExt;
     let bin = &claude.bin;
     let mut child = Command::new(bin)
@@ -126,7 +131,7 @@ fn run_in(claude: &Claude, cwd: &Path, system: &str, input: &str, schema: &Value
         // A group of its own, so cancelling stops anything it started too.
         .process_group(0)
         .current_dir(cwd)
-        .args(["-p", "--model", MODEL, "--output-format", "json"])
+        .args(["-p", "--model", model, "--output-format", "json"])
         .args(["--json-schema", &schema.to_string()])
         .args(["--tools", "", "--setting-sources", ""])
         .args(["--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence"])
@@ -195,7 +200,7 @@ fn run_in(claude: &Claude, cwd: &Path, system: &str, input: &str, schema: &Value
         .get("modelUsage")
         .and_then(Value::as_object)
         .and_then(|m| m.keys().next().cloned())
-        .unwrap_or_else(|| MODEL.to_string());
+        .unwrap_or_else(|| model.to_string());
     Ok(ClaudeOutput { structured, model })
 }
 

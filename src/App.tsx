@@ -1082,7 +1082,14 @@ export default function App() {
           }}
         />
       )}
-      {exporting && <ExportSheet session={exporting} onClose={() => setExporting(null)} />}
+      {exporting && (
+        <ExportSheet
+          session={exporting}
+          authorName={p.authorName}
+          onAuthorName={(authorName) => update({ authorName })}
+          onClose={() => setExporting(null)}
+        />
+      )}
       {importing && (
         <ImportSheet
           state={importing.state}

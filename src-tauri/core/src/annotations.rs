@@ -54,7 +54,7 @@ pub fn create_tables(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Outcome {
     #[default]
@@ -358,7 +358,7 @@ fn write_version(tx: &Connection, a: &mut Annotation) -> anyhow::Result<()> {
 }
 
 /// Removes the annotation's versions that are neither current nor cited by a report.
-fn drop_unused_versions(tx: &Connection, id: &str) -> anyhow::Result<()> {
+pub(crate) fn drop_unused_versions(tx: &Connection, id: &str) -> anyhow::Result<()> {
     tx.execute(
         "DELETE FROM annotation_versions WHERE id=?1
            AND version IS NOT (SELECT json_extract(json, '$.version') FROM annotations WHERE id=?1)

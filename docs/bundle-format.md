@@ -10,12 +10,15 @@ The file is one UTF-8 JSON object:
   "version": 2,
   "exported_at": 1767261600000,
   "exporter": "Session Player 0.7.0",
+  "exported_by": "Dan",
   "sessions": [ /* session objects; the first is the one exported */ ],
   "attachments": [ /* attachment objects */ ]
 }
 ```
 
 Timestamps are milliseconds since the Unix epoch, in UTC.
+
+`exported_by` is the name of the person who exported the bundle; the app won't export without one. It is optional, so bundles written before it existed still import.
 
 ## Sessions
 
@@ -70,7 +73,7 @@ Each annotation marks a moment in the session; how the session went as a whole i
 
 A bundle carries only each annotation's current text, without the version number the app keeps for it; a version found in a bundle is ignored. When an import changes an annotation, the recipient's app saves the change as a new version.
 
-`key` is empty in a bundle; import files metadata and annotations under the imported session. A pi branch exports only the annotations about events on that branch. Import rejects a bundle with an annotation that points at no event.
+`key` is empty in a bundle; import files metadata and annotations under the imported session. An annotation by a person with no name (`{type: "person", name: null}`) was written by the exporter before they set a name, so import gives it the bundle's `exported_by`; the file itself keeps it as it was. A pi branch exports only the annotations about events on that branch. Import rejects a bundle with an annotation that points at no event.
 
 On import, a new session's metadata and annotations are added. When a session is replaced after a conflict, the bundle's metadata replaces the library's, and each annotation replaces the one with the same `id`; annotations the recipient added stay. Keeping the library's copy, or re-importing unchanged content, leaves the recipient's notes as they are. Readers of an older version of this format ignore `meta` and `annotations`, so the format version is unchanged.
 

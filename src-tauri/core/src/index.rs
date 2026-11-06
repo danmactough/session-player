@@ -44,6 +44,7 @@ pub fn open(db_path: &Path) -> anyhow::Result<Connection> {
             path UNINDEXED, title, body, tokenize='porter unicode61');",
     )?;
     crate::annotations::create_tables(&conn)?;
+    crate::reports::create_tables(&conn)?;
     let version: Option<String> = conn
         .query_row("SELECT value FROM settings WHERE key='index_version'", [], |r| r.get(0))
         .optional()?;

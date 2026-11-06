@@ -156,7 +156,7 @@ These notes are stored in the app, not in the agent's files.
 
 ### Share a session
 
-**Send**: click **Export…** in a transcript's header and leave ticked any subagents you want to include. Before saving, the app lists exactly what goes into the file and what stays out. It saves a `.spsession` file that anyone with Session Player can import.
+**Send**: click **Export…** in a transcript's header and leave ticked any subagents you want to include. Before saving, the app lists exactly what goes into the file and what stays out. It saves a `.spsession` file that anyone with Session Player can import. Exporting needs your name: if Settings doesn't have one yet, the export sheet asks for it. The file records your name, and the recipient sees it as the author of annotations you wrote before you set a name.
 
 **Receive**: click **Import…** at the bottom of the sidebar, or press `⌘⇧I`. Imported sessions are marked "imported". They can be read, searched and exported, but not resumed. To delete one, click **Remove…** in its header.
 
@@ -261,6 +261,7 @@ src-tauri/core/src/            no Tauri dependency, so its tests need no GUI lib
   bundle.rs                    export/import of .spsession bundles, the imported-session library
   annotations.rs               session metadata and annotations, kept apart from the index tables
   generate.rs                  suggesting metadata and annotations with Claude Haiku via the claude CLI
+  reports.rs                   reports on sets of sessions: takeaways and recommended actions, kept for good
 src-tauri/src/
   lib.rs                       Tauri commands, background indexing, file watcher, spimg:// image protocol
   apps.rs                      desktop apps that can open a session
@@ -338,6 +339,13 @@ Until you pick an action, the button uses the agent's own app.
 - It runs with the variables your login shell exports and the `env` block of your Claude settings (`~/.claude/settings.json` and `settings.local.json`, or under `$CLAUDE_CONFIG_DIR`). When those name credentials of their own (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, an `apiKeyHelper`, or Bedrock or Vertex), Analyze uses only them, so an LLM gateway such as LiteLLM gets its base URL, token, `ANTHROPIC_CUSTOM_HEADERS` and model mappings. Otherwise it uses your Claude Code sign-in.
 - A field you empty stays empty until you fill it in yourself. Results generated from an earlier version of a growing transcript are marked as out of date. An annotation whose event isn't in the transcript any more is marked "event not found", not dropped.
 - Long sessions are sent in parts and the results merged. Analysis runs in the background and can be cancelled.
+
+#### Reports
+
+- A report reads the outcomes, components and annotations of a set of sessions (not their titles or transcripts) and writes a title, a summary, key takeaways and recommended actions. Each action has a category (codebase, skill, instructions, environment or automation), a priority and the change to make.
+- It runs the `claude` command the same way Analyze does, with Claude Sonnet unless another model is chosen. Sessions are numbered `s1`…, and annotations `a1`…, so every takeaway and action cites what it rests on; one citing nothing it was given is dropped. Large sets are sent in groups of whole sessions and the results merged.
+- Reports are saved in the app's database for good and never change. Each records the version of every annotation it was given, so editing or deleting an annotation later doesn't change what the report shows. Deleting a report releases versions no other report cites.
+- Code: `src-tauri/core/src/reports.rs`.
 
 #### Bundles
 

@@ -1,7 +1,7 @@
 // Dev-only stand-in for the Tauri backend so the UI can be previewed in a
 // plain browser (`npm run dev`, then open http://localhost:1420). All data
 // here is synthetic. Loaded from main.tsx only when not running inside Tauri.
-import type { Annotation, AnnotationKind, Outcome, SessionEvent, SessionMeta, SessionRow, Source } from "./types";
+import type { Annotation, AnnotationKind, Evidence, Outcome, Report, SessionEvent, SessionMeta, SessionRow, Source } from "./types";
 import { sessionKey } from "./lib/notes";
 
 declare const __APP_VERSION__: string;
@@ -149,6 +149,50 @@ function transcript(s: SessionRow, prefix = "e", turns = s.user_turns, setup = t
 }
 
 const devMeta = new Map<string, SessionMeta>();
+/** Saved reports, newest first. */
+let devReports: Report[] = [];
+
+/** A report built from the synthetic notes, shaped like the backend's. */
+function devReport(picked: { key: string; title: string }[]): Report {
+  const sessions = picked.map(({ key, title }) => {
+    const meta = devMeta.get(key);
+    return {
+      key,
+      title,
+      outcome: meta?.outcome ?? ("unknown" as Outcome),
+      outcome_note: meta?.outcome_note ?? null,
+      components: meta?.components ?? [],
+      annotations: devNotes.filter((a) => a.key === key).map((a) => ({ id: a.id, version: a.version ?? 1 })),
+    };
+  });
+  const cited = devNotes.filter((a) => sessions.some((s) => s.key === a.key));
+  const evidence = (kinds: AnnotationKind[]): Evidence[] =>
+    cited.filter((a) => kinds.includes(a.kind)).map((a) => ({ type: "annotation", id: a.id, version: a.version ?? 1, key: a.key }));
+  const outcomes: Partial<Record<Outcome, number>> = {};
+  for (const s of sessions) outcomes[s.outcome] = (outcomes[s.outcome] ?? 0) + 1;
+  const kinds: Partial<Record<AnnotationKind, number>> = {};
+  for (const a of cited) kinds[a.kind] = (kinds[a.kind] ?? 0) + 1;
+  return {
+    id: `dev-report-${Date.now()}`,
+    created_at: Date.now(),
+    title: "Tool errors and missing context slow sessions down",
+    model: "claude-sonnet-5-5",
+    prompt_version: 1,
+    sessions,
+    stats: { sessions: sessions.length, outcomes, kinds, annotations: cited.length },
+    summary: "Synthetic summary: most of these sessions hit tool errors, and a few went wrong because the agent lacked context it needed.",
+    takeaways: [
+      { text: "Synthetic takeaway: failed tool calls recur across sessions.", evidence: evidence(["tool_error"]) },
+      { text: "Synthetic takeaway: the agent misses project conventions.", evidence: evidence(["missing_context", "ignored_instruction"]) },
+    ].filter((t) => t.evidence.length),
+    actions: [
+      { title: "Document the test setup", category: "instructions" as const, priority: "high" as const, change: "Synthetic change: add a Testing section to AGENTS.md.", evidence: evidence(["missing_context", "ignored_instruction"]) },
+      { title: "Script the flaky retry", category: "automation" as const, priority: "medium" as const, change: "Synthetic change: add a retry script.", evidence: evidence(["tool_error", "agent_stuck"]) },
+    ].filter((a) => a.evidence.length),
+    rejected: 0,
+  };
+}
+
 /** Sessions being "analyzed", and whether each was cancelled. */
 const devGenerating = new Map<string, boolean>();
 let devNotes: Annotation[] = [];
@@ -274,6 +318,26 @@ const handlers: Record<string, Handler> = {
     return null;
   },
   generating: () => [...devGenerating.keys()],
+  // Pretends to write a report in about two seconds.
+  generate_report: ({ sessions }) => {
+    const job = `dev-job-${Date.now()}`;
+    const emit = (event: string, payload: unknown) => listeners[event]?.forEach((id) => callbacks[id]?.({ event, id, payload }));
+    setTimeout(() => emit("report-progress", { job, done: 0, total: 1 }), 100);
+    setTimeout(() => {
+      const report = devReport(sessions as { key: string; title: string }[]);
+      devReports = [report, ...devReports];
+      emit("report-done", { job, report: report.id, error: null, cancelled: false });
+    }, 2000);
+    return job;
+  },
+  cancel_report: () => null,
+  list_reports: () =>
+    devReports.map((r) => ({ id: r.id, created_at: r.created_at, title: r.title, model: r.model, sessions: r.sessions.length, actions: r.actions.length })),
+  get_report: ({ id }) => devReports.find((r) => r.id === id) ?? null,
+  delete_report: ({ id }) => {
+    devReports = devReports.filter((r) => r.id !== id);
+    return null;
+  },
   session_notes: ({ key }) => ({ revision: devMeta.get(String(key))?.generated_by ? "dev" : null, meta: devMeta.get(String(key)) ?? null, annotations: devNotes.filter((a) => a.key === key).map((a) => ({ ...a, anchors: a.anchors.map((r) => ({ ...r, found: true })) })) }),
   save_meta: ({ meta }) => {
     const m = { ...(meta as SessionMeta), updated_at: Date.now() };

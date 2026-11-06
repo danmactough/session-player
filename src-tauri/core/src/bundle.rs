@@ -11,7 +11,7 @@ use base64::Engine;
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
-use crate::annotations::{self, Annotation, EventRef, SessionMeta};
+use crate::annotations::{self, Annotation, Author, EventRef, SessionMeta};
 use crate::model::{ContextSource, Event, EventKind, Parsed, Source, Tokens};
 use crate::parse;
 
@@ -27,6 +27,10 @@ pub struct Bundle {
     pub exported_at: i64,
     /// The app and version that wrote the bundle.
     pub exporter: String,
+    /// The name of the person who exported it. Annotations a person wrote
+    /// without a name set are theirs, so import attributes those to this name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exported_by: Option<String>,
     /// The session the user exported comes first; any others are its subagents.
     pub sessions: Vec<BundledSession>,
     pub attachments: Vec<Attachment>,
@@ -150,6 +154,8 @@ pub fn build(conn: &Connection, req: ExportRequest, exporter: &str) -> anyhow::R
         version: VERSION,
         exported_at: chrono::Utc::now().timestamp_millis(),
         exporter: exporter.into(),
+        // Set when the user saves the previewed bundle.
+        exported_by: None,
         sessions,
         attachments,
     })
@@ -786,7 +792,7 @@ pub fn import(conn: &Connection, library: &Path, path: &Path, on_conflict: Optio
         return Ok(report);
     }
     // Each write carries the copy it replaces, to tell the recipient's edits apart.
-    let mut writes: Vec<(PathBuf, Bundle, Option<BundledSession>)> = Vec::new();
+    let mut writes: Vec<(PathBuf, Bundle, Option<Bundle>)> = Vec::new();
     for s in &bundle.sessions {
         if !has_conversation(s) {
             report.empty.push(s.id.clone());
@@ -797,6 +803,7 @@ pub fn import(conn: &Connection, library: &Path, path: &Path, on_conflict: Optio
             version: bundle.version,
             exported_at: bundle.exported_at,
             exporter: bundle.exporter.clone(),
+            exported_by: bundle.exported_by.clone(),
             sessions: vec![s.clone()],
             attachments: bundle.attachments.iter().filter(|a| a.session == s.id).cloned().collect(),
         };
@@ -810,7 +817,8 @@ pub fn import(conn: &Connection, library: &Path, path: &Path, on_conflict: Optio
                 report.unchanged.push(s.id.clone());
                 continue;
             }
-            previous = existing.sessions.first().cloned();
+            let existing_title = existing.sessions[0].title.clone();
+            previous = Some(existing);
             match on_conflict {
                 Some(OnConflict::Replace) => {}
                 Some(OnConflict::Keep) => {
@@ -820,7 +828,7 @@ pub fn import(conn: &Connection, library: &Path, path: &Path, on_conflict: Optio
                 None => {
                     report.conflicts.push(Conflict {
                         id: s.id.clone(),
-                        existing_title: existing.sessions[0].title.clone(),
+                        existing_title,
                         incoming_title: s.title.clone(),
                     });
                     continue;
@@ -836,7 +844,8 @@ pub fn import(conn: &Connection, library: &Path, path: &Path, on_conflict: Optio
     for (dest, single, previous) in writes {
         write(&single, &dest)?;
         let s = &single.sessions[0];
-        report.kept_notes += import_notes(conn, &format!("bundle:{}", s.id), s, previous.as_ref())?;
+        let previous = previous.as_ref().and_then(|p| Some((p.sessions.first()?, p.exported_by.as_deref())));
+        report.kept_notes += import_notes(conn, &format!("bundle:{}", s.id), s, single.exported_by.as_deref(), previous)?;
         report.imported.push(s.id.clone());
     }
     Ok(report)
@@ -845,14 +854,21 @@ pub fn import(conn: &Connection, library: &Path, path: &Path, on_conflict: Optio
 /// Files a session's metadata and annotations under `key`, and returns how
 /// many the recipient had changed and so kept. A record is replaced only if
 /// it is still as the earlier import (`previous`) left it; with no earlier
-/// import, the bundle's is taken.
-fn import_notes(conn: &Connection, key: &str, s: &BundledSession, previous: Option<&BundledSession>) -> anyhow::Result<usize> {
+/// import, the bundle's is taken. `exported_by` names the person whose
+/// unnamed annotations these are; `previous` carries its own.
+fn import_notes(
+    conn: &Connection,
+    key: &str,
+    s: &BundledSession,
+    exported_by: Option<&str>,
+    previous: Option<(&BundledSession, Option<&str>)>,
+) -> anyhow::Result<usize> {
     let mut kept = 0;
     let bare_meta = |m: &SessionMeta| SessionMeta { key: String::new(), updated_at: 0, ..m.clone() };
     if let Some(meta) = &s.meta {
         let untouched = match (annotations::meta(conn, key)?, previous) {
             (None, _) | (_, None) => true,
-            (Some(current), Some(p)) => p.meta.as_ref().map(bare_meta) == Some(bare_meta(&current)),
+            (Some(current), Some((p, _))) => p.meta.as_ref().map(bare_meta) == Some(bare_meta(&current)),
         };
         if untouched {
             annotations::store_meta(conn, &SessionMeta { key: key.to_string(), ..meta.clone() })?;
@@ -862,14 +878,14 @@ fn import_notes(conn: &Connection, key: &str, s: &BundledSession, previous: Opti
     }
     let bare = |a: &Annotation| Annotation { key: String::new(), version: 0, anchors: a.anchors.iter().map(|r| EventRef { found: false, elsewhere: false, ..r.clone() }).collect(), ..a.clone() };
     for a in &s.annotations {
-        let incoming = Annotation { key: key.to_string(), ..a.clone() };
+        let incoming = Annotation { key: key.to_string(), ..attributed(a, exported_by) };
         match annotations::annotation(conn, &a.id)? {
             None => annotations::put_annotation(conn, &incoming)?,
             // The same annotation on another session, such as the local
             // session this bundle was exported from: a copy, with an id of its own.
             Some(other) if other.key != key => annotations::put_annotation(conn, &Annotation { id: annotations::new_id(), ..incoming })?,
             Some(current) => {
-                let untouched = previous.is_none_or(|p| p.annotations.iter().any(|old| old.id == a.id && bare(old) == bare(&current)));
+                let untouched = previous.is_none_or(|(p, by)| p.annotations.iter().any(|old| old.id == a.id && bare(&attributed(old, by)) == bare(&current)));
                 if untouched {
                     annotations::put_annotation(conn, &incoming)?;
                 } else {
@@ -879,6 +895,16 @@ fn import_notes(conn: &Connection, key: &str, s: &BundledSession, previous: Opti
         }
     }
     Ok(kept)
+}
+
+/// The annotation with the exporter's name filled in when a person wrote it
+/// with no name set. Every person's annotation in a bundle is the exporter's,
+/// or carries the name of whoever wrote it.
+fn attributed(a: &Annotation, exported_by: Option<&str>) -> Annotation {
+    match (&a.author, exported_by.map(str::trim).filter(|n| !n.is_empty())) {
+        (Author::Person { name: None }, Some(name)) => Annotation { author: Author::Person { name: Some(name.to_string()) }, ..a.clone() },
+        _ => a.clone(),
+    }
 }
 
 /// Deletes an imported session from the library, along with the subagents

@@ -189,7 +189,7 @@ pub fn store_meta(conn: &Connection, meta: &SessionMeta) -> anyhow::Result<()> {
 }
 
 /// What an annotation marks. The list is a starting point (issue #11).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
     ToolError,
@@ -477,25 +477,35 @@ pub fn session_key(row: &SessionRow) -> String {
     format!("{origin}:{}:{}", row.source, row.native_id)
 }
 
-/// What the session list needs to show and filter by.
-#[derive(Debug, Serialize)]
+/// What the session list needs to show and filter by, and what the
+/// Analysis view adds up across the sessions shown.
+#[derive(Debug, Default, Serialize)]
 pub struct Summary {
     pub key: String,
     pub outcome: Outcome,
     pub components: Vec<String>,
     /// The kinds of the session's annotations, each once.
     pub kinds: Vec<Kind>,
+    /// How many of the session's annotations have each kind.
+    pub kind_counts: HashMap<Kind, usize>,
+    pub person_annotations: usize,
+    pub model_annotations: usize,
+    /// The model's annotations by confidence ("low", "medium", "high").
+    pub confidence: HashMap<String, usize>,
+    /// Analyze has run on the session.
+    pub analyzed: bool,
 }
 
 pub fn summaries(conn: &Connection) -> anyhow::Result<Vec<Summary>> {
     let mut out: HashMap<String, Summary> = HashMap::new();
-    let blank = |key: &str| Summary { key: key.to_string(), outcome: Outcome::Unknown, components: Vec::new(), kinds: Vec::new() };
+    let blank = |key: &str| Summary { key: key.to_string(), ..Default::default() };
     let mut stmt = conn.prepare("SELECT json FROM session_meta")?;
     for json in stmt.query_map([], |r| r.get::<_, String>(0))? {
         let meta: SessionMeta = serde_json::from_str(&json?)?;
         let s = out.entry(meta.key.clone()).or_insert_with(|| blank(&meta.key));
         s.outcome = meta.outcome;
         s.components = meta.components;
+        s.analyzed |= meta.generated_by.is_some();
     }
     let mut stmt = conn.prepare("SELECT json FROM annotations")?;
     for json in stmt.query_map([], |r| r.get::<_, String>(0))? {
@@ -503,6 +513,17 @@ pub fn summaries(conn: &Connection) -> anyhow::Result<Vec<Summary>> {
         let s = out.entry(a.key.clone()).or_insert_with(|| blank(&a.key));
         if !s.kinds.contains(&a.kind) {
             s.kinds.push(a.kind);
+        }
+        *s.kind_counts.entry(a.kind).or_default() += 1;
+        match a.author {
+            Author::Person { .. } => s.person_annotations += 1,
+            Author::Model { .. } => {
+                s.model_annotations += 1;
+                s.analyzed = true;
+                if let Some(c) = a.confidence {
+                    *s.confidence.entry(c).or_default() += 1;
+                }
+            }
         }
     }
     let mut list: Vec<Summary> = out.into_values().collect();

@@ -142,6 +142,8 @@ Each session can record how it went. Click **Analyze** to have Claude Haiku fill
 
 **Use them**: the list under the transcript's title shows every annotation, and **Show** jumps to its place in the transcript. The ↑ and ↓ annotation arrows step through them. Use the **Outcome** and **Annotation type** filters under the session list's heading to find matching sessions. You can choose several options in each filter, and a session must match both filters. The transcript's annotation list has its own **Annotation type** filter.
 
+**See them across sessions**: click **Analysis** in the sidebar. It counts the sessions the list shows: how many were analyzed or annotated, how many have each outcome, and how many annotations of each type there are, who wrote them, and how confident Analyze was. Click an outcome or annotation type to narrow the list to it, and click it again to clear that filter. Picking a session goes back to its transcript.
+
 **Change the outcome or components**: click **Edit**.
 
 **Analyze** needs Claude Code installed, and the app asks before it first sends a transcript to Anthropic. Everything Analyze writes can be edited or deleted. Running it again replaces only what nobody has edited.

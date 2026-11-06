@@ -9,6 +9,7 @@ import { MultiMenu } from "./components/MultiMenu";
 const OUTCOMES = Object.keys(OUTCOME_LABEL) as Outcome[];
 import { basename, relTime, setHome, SOURCE_LABEL, tildify } from "./lib/format";
 import { SessionList } from "./components/SessionList";
+import { AnalysisView } from "./components/AnalysisView";
 import { Transcript } from "./components/Transcript";
 import { SettingsSheet } from "./components/SettingsSheet";
 import { ShortcutsSheet } from "./components/ShortcutsSheet";
@@ -71,6 +72,8 @@ interface Prefs {
   summaryCollapsed: boolean;
   /** Ask GitHub for a newer release when the app opens and periodically after that. */
   autoCheckUpdates: boolean;
+  /** What the right-hand pane shows: the selected session, or the Analysis view. */
+  view: "session" | "analysis";
 }
 const DEFAULT_PREFS: Prefs = {
   projects: [],
@@ -91,6 +94,7 @@ const DEFAULT_PREFS: Prefs = {
   generateConsent: false,
   summaryCollapsed: false,
   autoCheckUpdates: true,
+  view: "session",
 };
 
 export default function App() {
@@ -465,14 +469,14 @@ export default function App() {
   const select = useCallback(
     (path: string) => {
       setFocus(null);
-      update({ selected: path });
+      update({ selected: path, view: "session" });
     },
     [update],
   );
   const open = useCallback(
     (path: string, focusChild?: string) => {
       setFocus(focusChild ?? null);
-      update({ selected: path });
+      update({ selected: path, view: "session" });
     },
     [update],
   );
@@ -630,6 +634,17 @@ export default function App() {
             <span className="sdot err" />
             Only with errors
             <span className="n">{errorSessions}</span>
+          </button>
+          <button
+            className={`srcpill mode-pill ${p.view === "analysis" ? "on" : ""}`}
+            onClick={() => update({ view: p.view === "analysis" ? "session" : "analysis" })}
+            aria-pressed={p.view === "analysis"}
+            title="Show counts of outcomes and annotation types for the sessions in the list"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+              <path d="M4 20V10M10 20V4M16 20v-7M22 20H2" />
+            </svg>
+            Analysis
           </button>
         </div>
 
@@ -812,7 +827,17 @@ export default function App() {
       </section>
 
       <main className="detail">
-        {selected ? (
+        {p.view === "analysis" ? (
+          <AnalysisView
+            sessions={list}
+            notes={notes}
+            outcomeFilter={p.outcomeFilter}
+            kindFilter={p.kindFilter}
+            // Clicking the only value chosen clears it; anything else narrows the list to that value.
+            onOutcome={(o) => update({ outcomeFilter: p.outcomeFilter.length === 1 && p.outcomeFilter[0] === o ? [] : [o] })}
+            onKind={(k) => update({ kindFilter: p.kindFilter.length === 1 && p.kindFilter[0] === k ? [] : [k] })}
+          />
+        ) : selected ? (
           <Transcript
             key={selected.path}
             session={selected}

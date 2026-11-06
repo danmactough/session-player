@@ -1,7 +1,8 @@
 // Dev-only stand-in for the Tauri backend so the UI can be previewed in a
 // plain browser (`npm run dev`, then open http://localhost:1420). All data
 // here is synthetic. Loaded from main.tsx only when not running inside Tauri.
-import type { Annotation, SessionEvent, SessionMeta, SessionRow, Source } from "./types";
+import type { Annotation, AnnotationKind, Outcome, SessionEvent, SessionMeta, SessionRow, Source } from "./types";
+import { sessionKey } from "./lib/notes";
 
 const HOME = "/Users/demo";
 const now = Date.now();
@@ -146,6 +147,38 @@ function transcript(s: SessionRow, prefix = "e", turns = s.user_turns, setup = t
 const devMeta = new Map<string, SessionMeta>();
 let devNotes: Annotation[] = [];
 
+// A few analyzed sessions, so outcome badges, the note filters and the
+// Analysis view have something to show.
+const SEEDED: [number, Outcome, AnnotationKind[]][] = [
+  [0, "succeeded", ["key_decision", "tool_error"]],
+  [1, "failed", ["agent_stuck", "agent_stuck", "tool_error"]],
+  [2, "partial", ["ignored_instruction", "missing_context"]],
+  [3, "succeeded", ["tool_error"]],
+  [6, "failed", ["wrong_assumption", "human_frustration", "human_intervention"]],
+  [7, "succeeded", ["automatable"]],
+  [10, "partial", ["environment", "tool_error", "tool_error"]],
+];
+for (const [i, outcome, kinds] of SEEDED) {
+  const key = sessionKey(sessions[i]);
+  const generated_by = { model: "claude-haiku-5-5", at: now - H, revision: "dev" };
+  devMeta.set(key, { key, outcome, outcome_note: null, components: [], updated_at: now - H, generated: ["outcome"], generated_by, cleared: [] });
+  kinds.forEach((kind, j) => {
+    const byPerson = j === 0 && i % 2 === 0;
+    devNotes.push({
+      id: `dev-seed-${i}-${j}`,
+      version: 1,
+      key,
+      kind,
+      note: `Synthetic ${kind.replace(/_/g, " ")} note.`,
+      anchors: [{ anchor: `e${j + 1}`, kind: "assistant", ts: null }],
+      author: byPerson ? { type: "person", name: "Demo" } : { type: "model", model: "claude-haiku-5-5" },
+      created_at: now - H,
+      updated_at: now - H,
+      confidence: byPerson ? undefined : (["high", "medium", "low"] as const)[(i + j) % 3],
+    });
+  });
+}
+
 type Handler = (args: Record<string, unknown>) => unknown;
 const handlers: Record<string, Handler> = {
   list_sessions: () => sessions,
@@ -236,6 +269,13 @@ const handlers: Record<string, Handler> = {
     outcome: devMeta.get(key)?.outcome ?? "unknown",
     components: devMeta.get(key)?.components ?? [],
     kinds: [...new Set(devNotes.filter((a) => a.key === key).map((a) => a.kind))],
+    kind_counts: devNotes.filter((a) => a.key === key).reduce<Record<string, number>>((c, a) => ({ ...c, [a.kind]: (c[a.kind] ?? 0) + 1 }), {}),
+    person_annotations: devNotes.filter((a) => a.key === key && a.author.type === "person").length,
+    model_annotations: devNotes.filter((a) => a.key === key && a.author.type === "model").length,
+    confidence: devNotes
+      .filter((a) => a.key === key && a.confidence)
+      .reduce<Record<string, number>>((c, a) => ({ ...c, [a.confidence!]: (c[a.confidence!] ?? 0) + 1 }), {}),
+    analyzed: !!devMeta.get(key)?.generated_by || devNotes.some((a) => a.key === key && a.author.type === "model"),
   })),
   library_errors: () => [{ path: `${HOME}/Library/Application Support/com.danmactough.sessionplayer/library/Y2xhdWRlOmRlbW8.spsession`, error: "Y2xhdWRlOmRlbW8.spsession is damaged: bundle is malformed" }],
   import_bundle: () => ({ imported: ["claude:demo"], unchanged: [], kept: [], conflicts: [], empty: [], kept_notes: 0 }),

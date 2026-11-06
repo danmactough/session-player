@@ -325,3 +325,30 @@ fn annotations_saved_before_versions_existed_become_version_1() {
     let edited = notes::save_annotation(&conn, notes::Annotation { note: "edited".into(), ..old }).unwrap();
     assert_eq!((edited.version, versions(&conn, "old-1")), (2, vec![2]));
 }
+
+#[test]
+fn summaries_count_annotations_by_kind_author_and_confidence() {
+    let (_, conn) = temp_db("summary-counts");
+    let at = || vec![event_ref("e1", "user", None)];
+    let model = || notes::Author::Model { model: "claude-haiku-5-5".into() };
+    for (kind, author, confidence) in [
+        (notes::Kind::ToolError, person(), None),
+        (notes::Kind::ToolError, model(), Some("high")),
+        (notes::Kind::MissingContext, model(), Some("low")),
+    ] {
+        let mut a = notes::Annotation::new(KEY, kind, "x", at(), author);
+        a.confidence = confidence.map(String::from);
+        notes::save_annotation(&conn, a).unwrap();
+    }
+    notes::save_meta(&conn, &notes::SessionMeta { key: "local:claude:by-hand".into(), outcome: notes::Outcome::Failed, ..Default::default() }).unwrap();
+
+    let list = notes::summaries(&conn).unwrap();
+    let s = list.iter().find(|s| s.key == KEY).unwrap();
+    assert_eq!((s.kind_counts[&notes::Kind::ToolError], s.kind_counts[&notes::Kind::MissingContext]), (2, 1));
+    assert_eq!((s.person_annotations, s.model_annotations), (1, 2));
+    assert_eq!((s.confidence["high"], s.confidence["low"]), (1, 1));
+    assert!(s.analyzed, "a model's annotations mean Analyze ran");
+    let by_hand = list.iter().find(|s| s.key == "local:claude:by-hand").unwrap();
+    assert!(!by_hand.analyzed);
+    assert_eq!(by_hand.outcome, notes::Outcome::Failed);
+}

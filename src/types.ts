@@ -256,6 +256,14 @@ export interface NoteSummary {
   outcome: Outcome;
   components: string[];
   kinds: AnnotationKind[];
+  /** How many of the session's annotations have each kind. */
+  kind_counts: Partial<Record<AnnotationKind, number>>;
+  person_annotations: number;
+  model_annotations: number;
+  /** The model's annotations by confidence: "low", "medium", "high". */
+  confidence: Record<string, number>;
+  /** Analyze has run on the session. */
+  analyzed: boolean;
 }
 
 export interface OpenTarget {

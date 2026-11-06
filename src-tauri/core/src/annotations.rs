@@ -12,15 +12,46 @@ use serde::{Deserialize, Serialize};
 use crate::model::{Event, EventKind, SessionRow};
 
 /// Creates the tables if needed. Called whenever the database is opened.
+///
+/// `annotations` holds each annotation's current version. Every save that
+/// changes an annotation adds a row to `annotation_versions`, and a row there
+/// never changes, so a report can cite an (id, version) and always find the
+/// same text. A version is kept only while something refers to it: it is the
+/// annotation's current version, or `report_citations` cites it. A deleted
+/// annotation leaves `annotations` but keeps its cited versions.
 pub fn create_tables(conn: &Connection) -> rusqlite::Result<()> {
+    let versioned: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='annotation_versions')",
+        [],
+        |r| r.get(0),
+    )?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS session_meta (key TEXT PRIMARY KEY, json TEXT NOT NULL);
          CREATE TABLE IF NOT EXISTS annotations (
             id TEXT PRIMARY KEY, key TEXT NOT NULL, json TEXT NOT NULL);
          CREATE INDEX IF NOT EXISTS annotations_key ON annotations(key);
+         CREATE TABLE IF NOT EXISTS report_citations (
+            report_id TEXT NOT NULL, annotation_id TEXT NOT NULL, version INTEGER NOT NULL,
+            PRIMARY KEY (report_id, annotation_id, version));
+         CREATE INDEX IF NOT EXISTS report_citations_annotation ON report_citations(annotation_id, version);
          CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
             key UNINDEXED, item UNINDEXED, text, tokenize='porter unicode61');",
-    )
+    )?;
+    if !versioned {
+        // Annotations saved before versions existed become version 1. The
+        // table is made in the same transaction, so a failed migration runs again.
+        conn.execute_batch(
+            "BEGIN;
+             CREATE TABLE annotation_versions (
+                id TEXT NOT NULL, version INTEGER NOT NULL, key TEXT NOT NULL, json TEXT NOT NULL,
+                PRIMARY KEY (id, version));
+             UPDATE annotations SET json=json_set(json, '$.version', 1) WHERE json_extract(json, '$.version') IS NULL;
+             INSERT OR IGNORE INTO annotation_versions(id, version, key, json)
+                SELECT id, json_extract(json, '$.version'), key, json FROM annotations;
+             COMMIT;",
+        )?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -215,6 +246,10 @@ pub struct EventRef {
 pub struct Annotation {
     /// Empty until saved; never changes after that.
     pub id: String,
+    /// 0 until saved. Set by the database: each change saves a new version,
+    /// so a value sent in from outside (the UI, a bundle) is ignored.
+    #[serde(default, skip_serializing_if = "is_unsaved")]
+    pub version: u32,
     pub key: String,
     pub kind: Kind,
     pub note: String,
@@ -236,10 +271,15 @@ pub struct Annotation {
     pub revision: Option<String>,
 }
 
+fn is_unsaved(version: &u32) -> bool {
+    *version == 0
+}
+
 impl Annotation {
     pub fn new(key: &str, kind: Kind, note: &str, anchors: Vec<EventRef>, author: Author) -> Annotation {
         Annotation {
             id: String::new(),
+            version: 0,
             key: key.into(),
             kind,
             note: note.into(),
@@ -264,12 +304,17 @@ pub fn new_id() -> String {
 }
 
 /// Creates the annotation (when `id` is empty) or updates the saved one,
-/// returning it as stored. Changing a model's annotation marks it as
-/// edited, so regenerating keeps it.
+/// returning it as stored. A change saves a new version; saving it unchanged
+/// doesn't. Changing a model's annotation marks it as edited, so
+/// regenerating keeps it.
 pub fn save_annotation(conn: &Connection, mut a: Annotation) -> anyhow::Result<Annotation> {
     // An annotation marks a moment; how the session as a whole went is its metadata.
     if a.anchors.is_empty() {
         anyhow::bail!("An annotation needs an event to point at");
+    }
+    for r in &mut a.anchors {
+        r.found = false;
+        r.elsewhere = false;
     }
     let tx = conn.unchecked_transaction()?;
     if a.id.is_empty() {
@@ -277,31 +322,51 @@ pub fn save_annotation(conn: &Connection, mut a: Annotation) -> anyhow::Result<A
         a.created_at = now();
         a.updated_at = a.created_at;
     } else {
-        let existing: Option<String> = tx.query_row("SELECT json FROM annotations WHERE id=?1", [&a.id], |r| r.get(0)).optional()?;
-        let Some(existing) = existing else { anyhow::bail!("This annotation no longer exists") };
-        let existing: Annotation = serde_json::from_str(&existing)?;
+        let Some(existing) = annotation(&tx, &a.id)? else { anyhow::bail!("This annotation no longer exists") };
         a.created_at = existing.created_at;
         a.key = existing.key.clone();
         a.author = existing.author.clone();
+        a.version = existing.version;
         let same_anchors = a.anchors.len() == existing.anchors.len()
             && a.anchors.iter().zip(&existing.anchors).all(|(x, y)| x.anchor == y.anchor && x.kind == y.kind && x.ts == y.ts && x.entry == y.entry);
         let changed = a.kind != existing.kind || a.note != existing.note || !same_anchors;
         a.edited = existing.edited || (changed && matches!(a.author, Author::Model { .. }));
         a.updated_at = if changed { now().max(a.created_at) } else { existing.updated_at };
+        if a == existing {
+            return Ok(existing);
+        }
     }
-    for r in &mut a.anchors {
-        r.found = false;
-        r.elsewhere = false;
-    }
+    write_version(&tx, &mut a)?;
+    tx.commit()?;
+    Ok(a)
+}
+
+/// Saves `a` as the annotation's next version and makes it current.
+fn write_version(tx: &Connection, a: &mut Annotation) -> anyhow::Result<()> {
+    // Counts deleted annotations' kept versions too, so a re-imported one doesn't reuse a number.
+    a.version = tx.query_row("SELECT COALESCE(MAX(version), 0) + 1 FROM annotation_versions WHERE id=?1", [&a.id], |r| r.get(0))?;
+    let json = serde_json::to_string(&a)?;
+    tx.execute("INSERT INTO annotation_versions(id, version, key, json) VALUES(?1, ?2, ?3, ?4)", params![a.id, a.version, a.key, json])?;
     tx.execute(
         // An upsert keeps the row's rowid, which orders annotations made in the same millisecond.
         "INSERT INTO annotations(id, key, json) VALUES(?1, ?2, ?3) ON CONFLICT(id) DO UPDATE SET json=excluded.json",
-        params![a.id, a.key, serde_json::to_string(&a)?],
+        params![a.id, a.key, json],
     )?;
     tx.execute("DELETE FROM notes_fts WHERE item=?1", [&a.id])?;
     tx.execute("INSERT INTO notes_fts(key, item, text) VALUES(?1, ?2, ?3)", params![a.key, a.id, a.note])?;
-    tx.commit()?;
-    Ok(a)
+    drop_unused_versions(tx, &a.id)
+}
+
+/// Removes the annotation's versions that are neither current nor cited by a report.
+fn drop_unused_versions(tx: &Connection, id: &str) -> anyhow::Result<()> {
+    tx.execute(
+        "DELETE FROM annotation_versions WHERE id=?1
+           AND version IS NOT (SELECT json_extract(json, '$.version') FROM annotations WHERE id=?1)
+           AND NOT EXISTS (SELECT 1 FROM report_citations c
+                           WHERE c.annotation_id=?1 AND c.version=annotation_versions.version)",
+        [id],
+    )?;
+    Ok(())
 }
 
 pub fn annotation(conn: &Connection, id: &str) -> anyhow::Result<Option<Annotation>> {
@@ -320,26 +385,46 @@ pub fn annotations(conn: &Connection, key: &str) -> anyhow::Result<Vec<Annotatio
     Ok(list)
 }
 
+/// One version of an annotation, current or kept because a report cites it.
+pub fn annotation_version(conn: &Connection, id: &str, version: u32) -> anyhow::Result<Option<Annotation>> {
+    let json: Option<String> = conn
+        .query_row("SELECT json FROM annotation_versions WHERE id=?1 AND version=?2", params![id, version], |r| r.get(0))
+        .optional()?;
+    Ok(json.map(|j| serde_json::from_str(&j)).transpose()?)
+}
+
 /// Stores an annotation as given (id, author and times included), for one
-/// that arrives in an imported bundle.
+/// that arrives in an imported bundle. It becomes a new version when it
+/// differs from the one stored; the bundle's version number is ignored.
 pub fn put_annotation(conn: &Connection, a: &Annotation) -> anyhow::Result<()> {
+    let mut a = a.clone();
+    for r in &mut a.anchors {
+        r.found = false;
+        r.elsewhere = false;
+    }
     let tx = conn.unchecked_transaction()?;
-    tx.execute(
+    if let Some(existing) = annotation(&tx, &a.id)? {
         // Never moves an annotation from one session to another.
-        "INSERT INTO annotations(id, key, json) VALUES(?1, ?2, ?3)
-         ON CONFLICT(id) DO UPDATE SET json=excluded.json WHERE annotations.key=excluded.key",
-        params![a.id, a.key, serde_json::to_string(a)?],
-    )?;
-    tx.execute("DELETE FROM notes_fts WHERE item=?1", [&a.id])?;
-    tx.execute("INSERT INTO notes_fts(key, item, text) VALUES(?1, ?2, ?3)", params![a.key, a.id, a.note])?;
+        if existing.key != a.key {
+            return Ok(());
+        }
+        a.version = existing.version;
+        if a == existing {
+            return Ok(());
+        }
+    }
+    write_version(&tx, &mut a)?;
     tx.commit()?;
     Ok(())
 }
 
+/// Deletes the annotation. Versions a report cites are kept, so the report
+/// can still show them; everything else about it is removed.
 pub fn delete_annotation(conn: &Connection, id: &str) -> anyhow::Result<()> {
     let tx = conn.unchecked_transaction()?;
     tx.execute("DELETE FROM annotations WHERE id=?1", [id])?;
     tx.execute("DELETE FROM notes_fts WHERE item=?1", [id])?;
+    drop_unused_versions(&tx, id)?;
     tx.commit()?;
     Ok(())
 }

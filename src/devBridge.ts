@@ -223,7 +223,7 @@ const handlers: Record<string, Handler> = {
   },
   save_annotation: ({ annotation }) => {
     const a = annotation as Annotation;
-    const saved = a.id ? { ...a, updated_at: Date.now() } : { ...a, id: `dev-${Date.now()}`, created_at: Date.now(), updated_at: Date.now() };
+    const saved = a.id ? { ...a, version: (a.version ?? 0) + 1, updated_at: Date.now() } : { ...a, id: `dev-${Date.now()}`, version: 1, created_at: Date.now(), updated_at: Date.now() };
     devNotes = [...devNotes.filter((x) => x.id !== saved.id), saved];
     return saved;
   },

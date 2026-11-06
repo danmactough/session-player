@@ -272,6 +272,7 @@ src/
 - A file watcher re-indexes changed files about 1.5s after an agent writes to them.
 - Search uses SQLite FTS5 full-text search over prompts, replies and tool inputs.
 - Annotations and analysis are stored in the app's database, apart from the index tables, and survive **Rebuild index**.
+- Each change to an annotation saves a new version, and a saved version never changes, so a report can cite one. A version is kept only while it is the current one or a report cites it. Deleting an annotation that a report cites keeps the cited versions for the report and hides the annotation everywhere else.
 
 #### Titles
 

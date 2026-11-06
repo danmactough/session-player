@@ -68,6 +68,8 @@ Each annotation marks a moment in the session; how the session went as a whole i
 | `edited` | For a model's annotation: someone changed it, so regenerating keeps it |
 | `rationale`, `confidence`, `revision` | For a model's annotation: why it was made, how sure the model was (`low`, `medium`, `high`), and the transcript it was made from |
 
+A bundle carries only each annotation's current text, without the version number the app keeps for it; a version found in a bundle is ignored. When an import changes an annotation, the recipient's app saves the change as a new version.
+
 `key` is empty in a bundle; import files metadata and annotations under the imported session. A pi branch exports only the annotations about events on that branch. Import rejects a bundle with an annotation that points at no event.
 
 On import, a new session's metadata and annotations are added. When a session is replaced after a conflict, the bundle's metadata replaces the library's, and each annotation replaces the one with the same `id`; annotations the recipient added stay. Keeping the library's copy, or re-importing unchanged content, leaves the recipient's notes as they are. Readers of an older version of this format ignore `meta` and `annotations`, so the format version is unchanged.

@@ -233,6 +233,8 @@ export type Author = { type: "person"; name: string | null } | { type: "model"; 
 export interface Annotation {
   /** Empty until saved. */
   id: string;
+  /** Missing until saved. Each change saves a new version; the backend numbers them. */
+  version?: number;
   key: string;
   kind: AnnotationKind;
   note: string;

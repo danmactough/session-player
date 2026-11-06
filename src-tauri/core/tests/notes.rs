@@ -226,3 +226,102 @@ fn an_annotation_on_one_of_several_context_documents_stays_on_it() {
     notes::resolve(&mut list, &events, None);
     assert_eq!((list[0].anchors[0].anchor.as_str(), list[0].anchors[0].found), (repo.anchor.as_deref().unwrap(), true));
 }
+
+fn cite(conn: &rusqlite::Connection, report: &str, a: &notes::Annotation) {
+    conn.execute("INSERT INTO report_citations(report_id, annotation_id, version) VALUES(?1, ?2, ?3)", rusqlite::params![report, a.id, a.version]).unwrap();
+}
+
+fn versions(conn: &rusqlite::Connection, id: &str) -> Vec<u32> {
+    let mut stmt = conn.prepare("SELECT version FROM annotation_versions WHERE id=?1 ORDER BY version").unwrap();
+    stmt.query_map([id], |r| r.get(0)).unwrap().collect::<Result<_, _>>().unwrap()
+}
+
+#[test]
+fn each_change_saves_a_new_version_and_only_cited_old_versions_are_kept() {
+    let (_, conn) = temp_db("versions");
+    let first = notes::save_annotation(&conn, notes::Annotation::new(KEY, notes::Kind::ToolError, "one", vec![event_ref("e1", "user", None)], person())).unwrap();
+    assert_eq!(first.version, 1);
+
+    // Saving it unchanged, as the UI does with resolved anchors, adds no version.
+    let mut same = first.clone();
+    same.anchors[0].found = true;
+    assert_eq!(notes::save_annotation(&conn, same).unwrap().version, 1);
+
+    // An uncited version is dropped once it is replaced.
+    let second = notes::save_annotation(&conn, notes::Annotation { note: "two".into(), ..first.clone() }).unwrap();
+    assert_eq!((second.version, versions(&conn, &first.id)), (2, vec![2]));
+
+    // A cited version is kept, unchanged, after later edits; a version sent in is ignored.
+    cite(&conn, "r1", &second);
+    let third = notes::save_annotation(&conn, notes::Annotation { note: "three".into(), version: 9, ..second.clone() }).unwrap();
+    assert_eq!((third.version, versions(&conn, &first.id)), (3, vec![2, 3]));
+    assert_eq!(notes::annotation_version(&conn, &first.id, 2).unwrap().unwrap().note, "two");
+    assert_eq!(notes::annotation(&conn, &first.id).unwrap().unwrap().note, "three");
+}
+
+#[test]
+fn deleting_keeps_only_the_versions_a_report_cites() {
+    let (_, conn) = temp_db("delete-versions");
+    let new = |note: &str| notes::save_annotation(&conn, notes::Annotation::new(KEY, notes::Kind::Other, note, vec![event_ref("e1", "user", None)], person())).unwrap();
+
+    let uncited = new("never cited");
+    notes::delete_annotation(&conn, &uncited.id).unwrap();
+    assert!(versions(&conn, &uncited.id).is_empty());
+
+    let cited = new("cited");
+    cite(&conn, "r1", &cited);
+    let later = notes::save_annotation(&conn, notes::Annotation { note: "edited after the report".into(), ..cited.clone() }).unwrap();
+    notes::delete_annotation(&conn, &cited.id).unwrap();
+    assert_eq!(versions(&conn, &cited.id), [1]);
+    assert_eq!(notes::annotation(&conn, &cited.id).unwrap(), None);
+    assert!(notes::annotations(&conn, KEY).unwrap().is_empty());
+    assert_eq!(notes::annotation_version(&conn, &cited.id, later.version).unwrap(), None);
+    assert_eq!(notes::annotation_version(&conn, &cited.id, 1).unwrap().unwrap().note, "cited");
+    assert!(notes::search(&conn, "cited").unwrap().is_empty());
+
+    // Arriving again in a bundle, it continues after the kept version instead of reusing its number.
+    let mut incoming = cited.clone();
+    incoming.version = 0;
+    incoming.note = "back from a bundle".into();
+    notes::put_annotation(&conn, &incoming).unwrap();
+    assert_eq!(notes::annotation(&conn, &cited.id).unwrap().unwrap().version, 2);
+    assert_eq!(versions(&conn, &cited.id), [1, 2]);
+}
+
+#[test]
+fn an_imported_annotation_adds_a_version_only_when_it_differs() {
+    let (_, conn) = temp_db("import-versions");
+    let saved = notes::save_annotation(&conn, notes::Annotation::new(KEY, notes::Kind::Other, "mine", vec![event_ref("e1", "user", None)], person())).unwrap();
+    let unnumbered = notes::Annotation { version: 0, ..saved.clone() };
+    notes::put_annotation(&conn, &unnumbered).unwrap();
+    assert_eq!(versions(&conn, &saved.id), [1]);
+
+    notes::put_annotation(&conn, &notes::Annotation { note: "theirs".into(), ..unnumbered.clone() }).unwrap();
+    let now = notes::annotation(&conn, &saved.id).unwrap().unwrap();
+    assert_eq!((now.version, now.note.as_str()), (2, "theirs"));
+
+    // Never moves an annotation to another session.
+    notes::put_annotation(&conn, &notes::Annotation { key: "local:claude:other".into(), note: "elsewhere".into(), ..unnumbered }).unwrap();
+    assert_eq!(notes::annotation(&conn, &saved.id).unwrap().unwrap().note, "theirs");
+}
+
+#[test]
+fn annotations_saved_before_versions_existed_become_version_1() {
+    let path = std::env::temp_dir().join(format!("sp-notes-migrate-{}.sqlite", std::process::id()));
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+    }
+    let old = notes::Annotation { id: "old-1".into(), created_at: 1, updated_at: 1, ..notes::Annotation::new(KEY, notes::Kind::Other, "from 0.13", vec![event_ref("e1", "user", None)], person()) };
+    let json = serde_json::to_string(&old).unwrap();
+    assert!(!json.contains("\"version\""));
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch("CREATE TABLE annotations (id TEXT PRIMARY KEY, key TEXT NOT NULL, json TEXT NOT NULL);").unwrap();
+        conn.execute("INSERT INTO annotations(id, key, json) VALUES('old-1', ?1, ?2)", [KEY, json.as_str()]).unwrap();
+    }
+    let conn = index::open(&path).unwrap();
+    assert_eq!(notes::annotation(&conn, "old-1").unwrap().unwrap().version, 1);
+    assert_eq!(versions(&conn, "old-1"), [1]);
+    let edited = notes::save_annotation(&conn, notes::Annotation { note: "edited".into(), ..old }).unwrap();
+    assert_eq!((edited.version, versions(&conn, "old-1")), (2, vec![2]));
+}

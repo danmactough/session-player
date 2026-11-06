@@ -364,6 +364,8 @@ impl BundledSession {
             .filter(|a| a.anchors.is_empty() || a.anchors.iter().any(|r| r.found))
             .map(|mut a| {
                 a.key = String::new();
+                // A bundle is a snapshot: it carries only the current version, unnumbered.
+                a.version = 0;
                 restamp(&mut a.revision);
                 for r in &mut a.anchors {
                     r.found = false;
@@ -858,7 +860,7 @@ fn import_notes(conn: &Connection, key: &str, s: &BundledSession, previous: Opti
             kept += 1;
         }
     }
-    let bare = |a: &Annotation| Annotation { key: String::new(), anchors: a.anchors.iter().map(|r| EventRef { found: false, elsewhere: false, ..r.clone() }).collect(), ..a.clone() };
+    let bare = |a: &Annotation| Annotation { key: String::new(), version: 0, anchors: a.anchors.iter().map(|r| EventRef { found: false, elsewhere: false, ..r.clone() }).collect(), ..a.clone() };
     for a in &s.annotations {
         let incoming = Annotation { key: key.to_string(), ..a.clone() };
         match annotations::annotation(conn, &a.id)? {

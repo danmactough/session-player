@@ -6,13 +6,16 @@ const OUTCOMES: Outcome[] = ["succeeded", "partial", "failed", "unknown"];
 const CONFIDENCES = ["high", "medium", "low"] as const;
 
 interface Props {
-  /** The sessions the list shows; every figure counts only these. */
+  /** The sessions counted: the ones picked in the list, or else all the list shows. */
   sessions: SessionRow[];
+  scope: "selection" | "list";
   notes: Map<string, NoteSummary>;
   outcomeFilter: Outcome[];
   kindFilter: AnnotationKind[];
   onOutcome: (o: Outcome) => void;
   onKind: (k: AnnotationKind) => void;
+  /** Picks the listed sessions Analyze hasn't run on, to queue them. */
+  onPickUnanalyzed: () => void;
 }
 
 interface Stats {
@@ -68,7 +71,7 @@ function tally(sessions: SessionRow[], notes: Map<string, NoteSummary>): Stats {
 
 const pct = (n: number, of: number) => (of ? Math.round((n / of) * 100) : 0);
 
-export function AnalysisView({ sessions, notes, outcomeFilter, kindFilter, onOutcome, onKind }: Props) {
+export function AnalysisView({ sessions, scope, notes, outcomeFilter, kindFilter, onOutcome, onKind, onPickUnanalyzed }: Props) {
   const st = useMemo(() => tally(sessions, notes), [sessions, notes]);
   const maxKind = Math.max(1, ...st.kinds.map((k) => k.annotations));
   const maxOutcome = Math.max(1, ...OUTCOMES.map((o) => st.outcomes[o]));
@@ -76,10 +79,11 @@ export function AnalysisView({ sessions, notes, outcomeFilter, kindFilter, onOut
   return (
     <div className="stats-view">
       <header className="stats-head" data-tauri-drag-region>
-        <h1 data-tauri-drag-region>Analysis</h1>
+        <h1 data-tauri-drag-region>Statistics</h1>
         <p className="dim" data-tauri-drag-region>
-          Counts cover the {st.sessions} {st.sessions === 1 ? "session" : "sessions"} the list shows. Click an outcome or annotation type to
-          narrow the list to it.
+          {scope === "selection"
+            ? `Counts cover the ${st.sessions} selected ${st.sessions === 1 ? "session" : "sessions"}. Press Esc to count every session in the list again.`
+            : `Counts cover the ${st.sessions} ${st.sessions === 1 ? "session" : "sessions"} the list shows. Click an outcome or annotation type to narrow the list to it.`}
         </p>
       </header>
 
@@ -89,6 +93,14 @@ export function AnalysisView({ sessions, notes, outcomeFilter, kindFilter, onOut
         <Tile label="With annotations" value={st.annotated} of={st.sessions} />
         <Tile label="Annotations" value={st.annotations} />
       </div>
+      {scope === "list" && st.analyzed < st.sessions && (
+        <p className="stats-note">
+          <button className="pick-link" onClick={onPickUnanalyzed}>
+            Select the {st.sessions - st.analyzed} not analyzed
+          </button>
+          <span className="dim"> to queue them for Analyze.</span>
+        </p>
+      )}
 
       <section className="stats-section">
         <h2>Outcomes</h2>

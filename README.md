@@ -142,11 +142,15 @@ Each session can record how it went. Click **Analyze** to have Claude Haiku fill
 
 **Use them**: the list under the transcript's title shows every annotation, and **Show** jumps to its place in the transcript. The ↑ and ↓ annotation arrows step through them. Use the **Outcome** and **Annotation type** filters under the session list's heading to find matching sessions. You can choose several options in each filter, and a session must match both filters. The transcript's annotation list has its own **Annotation type** filter.
 
-**See them across sessions**: click **Analysis** in the sidebar. It counts the sessions the list shows: how many were analyzed or annotated, how many have each outcome, and how many annotations of each type there are, who wrote them, and how confident Analyze was. Click an outcome or annotation type to narrow the list to it, and click it again to clear that filter. Picking a session goes back to its transcript.
+**See them across sessions**: switch the **Sessions / Analysis** slider at the top of the sidebar to **Analysis**. Its statistics count the sessions the list shows, or only the sessions you select: how many were analyzed or annotated, how many have each outcome, how many annotations of each type there are, who wrote them, and how confident Analyze was. Click an outcome or annotation type to narrow the list to it, and click it again to clear that filter.
+
+Each view keeps its own projects, filters, search, expanded rows and scroll position, so switching back to **Sessions** finds the list and the open transcript exactly as you left them. The Sessions view always has one session open.
+
+**Analyze several sessions**: in Analysis, click a session to select it, ⌘-click to add or remove one, ⇧-click to select a run of them, or press ⌘A to select every session in the list. Press Esc or click an empty part of the list to clear the selection. While sessions are selected, the bar under the list shows **Analyze**, and can also select every session shown, or only those not analyzed yet. **Analyze** queues them and runs them one at a time. When some of them were analyzed before, the app asks whether to **Analyze Again** or analyze them **Only If Changed**, which skips a session whose transcript hasn't changed since its last analysis. While the queue runs, a spinner and count show at the bottom of the sidebar. Click it to see each session's result; × cancels one and **Cancel all** stops the rest. The queue isn't kept when the app quits.
 
 **Change the outcome or components**: click **Edit**.
 
-**Analyze** needs Claude Code installed, and the app asks before it first sends a transcript to Anthropic. Everything Analyze writes can be edited or deleted. Running it again replaces only what nobody has edited.
+**Analyze** needs Claude Code installed. Before it sends anything, it shows a notice that transcripts go to Anthropic, with **OK** and **Cancel**. Tick **Don't show this again** and click OK to stop seeing it; **Settings › Annotations** can turn it back on. Everything Analyze writes can be edited or deleted. Running it again replaces only what nobody has edited.
 
 These notes are stored in the app, not in the agent's files.
 

@@ -4,6 +4,10 @@
 import type { Annotation, AnnotationKind, Outcome, SessionEvent, SessionMeta, SessionRow, Source } from "./types";
 import { sessionKey } from "./lib/notes";
 
+declare const __APP_VERSION__: string;
+// One minor version ahead, so Settings › Check now can preview the update banner.
+const NEXT_VERSION = __APP_VERSION__.replace(/^(\d+)\.(\d+)\.\d+.*/, (_, major, minor) => `${major}.${Number(minor) + 1}.0`);
+
 const HOME = "/Users/demo";
 const now = Date.now();
 const H = 3_600_000;
@@ -145,6 +149,8 @@ function transcript(s: SessionRow, prefix = "e", turns = s.user_turns, setup = t
 }
 
 const devMeta = new Map<string, SessionMeta>();
+/** Sessions being "analyzed", and whether each was cancelled. */
+const devGenerating = new Map<string, boolean>();
 let devNotes: Annotation[] = [];
 
 // A few analyzed sessions, so outcome badges, the note filters and the
@@ -245,10 +251,30 @@ const handlers: Record<string, Handler> = {
   export_save: ({ dest }) => dest,
   export_cancel: () => null,
   remove_imported: () => null,
-  generate_notes: () => null,
-  cancel_generate: () => null,
-  generating: () => [],
-  session_notes: ({ key }) => ({ revision: null, meta: devMeta.get(String(key)) ?? null, annotations: devNotes.filter((a) => a.key === key).map((a) => ({ ...a, anchors: a.anchors.map((r) => ({ ...r, found: true })) })) }),
+  // Pretends to analyze in two parts over about two seconds, then records an outcome.
+  generate_notes: ({ key }) => {
+    const k = String(key);
+    if (devGenerating.has(k)) throw new Error("Already generating notes for this session");
+    devGenerating.set(k, false);
+    const emit = (event: string, payload: unknown) => listeners[event]?.forEach((id) => callbacks[id]?.({ event, id, payload }));
+    setTimeout(() => emit("generate-progress", { key: k, done: 1, total: 2 }), 900);
+    setTimeout(() => {
+      const cancelled = devGenerating.get(k);
+      devGenerating.delete(k);
+      if (!cancelled) {
+        const generated_by = { model: "claude-haiku-5-5", at: Date.now(), revision: "dev" };
+        devMeta.set(k, { key: k, outcome: "succeeded", outcome_note: null, components: [], updated_at: Date.now(), generated: ["outcome"], generated_by, cleared: [] });
+      }
+      emit("generate-done", { key: k, error: null, cancelled, rejected: 0 });
+    }, 1800);
+    return null;
+  },
+  cancel_generate: ({ key }) => {
+    if (devGenerating.has(String(key))) devGenerating.set(String(key), true);
+    return null;
+  },
+  generating: () => [...devGenerating.keys()],
+  session_notes: ({ key }) => ({ revision: devMeta.get(String(key))?.generated_by ? "dev" : null, meta: devMeta.get(String(key)) ?? null, annotations: devNotes.filter((a) => a.key === key).map((a) => ({ ...a, anchors: a.anchors.map((r) => ({ ...r, found: true })) })) }),
   save_meta: ({ meta }) => {
     const m = { ...(meta as SessionMeta), updated_at: Date.now() };
     devMeta.set(m.key, m);
@@ -292,14 +318,65 @@ const handlers: Record<string, Handler> = {
     return handler;
   },
   "plugin:event|unlisten": () => null,
-  "plugin:app|version": () => "0.12.0",
+  // Confirmation dialogs (such as Analyze's consent) answer yes, so flows can be previewed.
+  // Shows the dialog in the page, since the browser has no native one with custom buttons.
+  // Set window.__dialogAnswer to a button's index to answer without showing it (for scripted checks).
+  "plugin:dialog|message": ({ message, title, buttons }) => {
+    const b = buttons as { OkCustom?: string; OkCancelCustom?: [string, string]; YesNoCancelCustom?: [string, string, string] } | string | undefined;
+    const labels =
+      typeof b === "object"
+        ? (b.YesNoCancelCustom ?? b.OkCancelCustom ?? (b.OkCustom ? [b.OkCustom] : ["OK"]))
+        : b === "YesNo"
+          ? ["Yes", "No"]
+          : b === "YesNoCancel"
+            ? ["Yes", "No", "Cancel"]
+            : b === "OkCancel"
+              ? ["Ok", "Cancel"]
+              : ["Ok"];
+    const scripted = (window as { __dialogAnswer?: number }).__dialogAnswer;
+    if (scripted !== undefined) return labels[Math.min(scripted, labels.length - 1)];
+    return devDialog(String(title ?? ""), String(message), labels);
+  },
+  "plugin:app|version": () => __APP_VERSION__,
   // Settings > Check now always finds this release, so the update banner can be previewed.
-  "plugin:updater|check": () => ({ rid: 1, currentVersion: "0.12.0", version: "0.13.0", date: null, body: "", rawJson: {} }),
+  "plugin:updater|check": () => ({ rid: 1, currentVersion: __APP_VERSION__, version: NEXT_VERSION, date: null, body: "", rawJson: {} }),
   "plugin:updater|download": () => 2,
   "plugin:updater|install": () => console.log("install update"),
   "plugin:process|restart": () => console.log("restart"),
   "plugin:resources|close": () => null,
 };
+
+/** A plain in-page stand-in for the native message dialog; resolves to the label clicked. */
+function devDialog(title: string, message: string, labels: string[]): Promise<string> {
+  return new Promise((resolve) => {
+    const back = document.createElement("div");
+    back.style.cssText = "position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.25)";
+    const box = document.createElement("div");
+    box.style.cssText = "width:340px;padding:18px;border-radius:10px;background:var(--raised);color:var(--ink);box-shadow:0 12px 40px rgba(0,0,0,.25);font:13px var(--sans)";
+    const h = document.createElement("div");
+    h.style.cssText = "font-weight:600;margin-bottom:6px";
+    h.textContent = title;
+    const p = document.createElement("div");
+    p.style.cssText = "color:var(--ink-2);line-height:1.45;margin-bottom:14px";
+    p.textContent = message;
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;flex-direction:column;gap:6px";
+    labels.forEach((label, i) => {
+      const btn = document.createElement("button");
+      btn.textContent = label;
+      btn.className = i === 0 ? "primary" : "ghost";
+      btn.style.cssText = "padding:5px 10px;border-radius:6px;border:1px solid var(--line)";
+      btn.onclick = () => {
+        back.remove();
+        resolve(label);
+      };
+      row.append(btn);
+    });
+    box.append(h, p, row);
+    back.append(box);
+    document.body.append(back);
+  });
+}
 
 let cb = 0;
 const callbacks: Record<number, (e: unknown) => void> = {};

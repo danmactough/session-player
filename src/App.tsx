@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { ask, open as openDialog } from "@tauri-apps/plugin-dialog";
+import { message, open as openDialog } from "@tauri-apps/plugin-dialog";
 import { api } from "./api";
 import type { AnnotationKind, IndexStats, NoteSummary, OnConflict, Outcome, SearchHit, SessionRow, SortKey, Source } from "./types";
 import { KINDS, KIND_LABEL, OUTCOME_LABEL, sessionKey } from "./lib/notes";
@@ -8,7 +8,10 @@ import { MultiMenu } from "./components/MultiMenu";
 
 const OUTCOMES = Object.keys(OUTCOME_LABEL) as Outcome[];
 import { basename, relTime, setHome, SOURCE_LABEL, tildify } from "./lib/format";
-import { SessionList } from "./components/SessionList";
+import { SessionList, type ClickHow, type ListMemo } from "./components/SessionList";
+import { QueueStatus } from "./components/QueueStatus";
+import { AnalyzeNotice } from "./components/AnalyzeNotice";
+import { useAnalyzeQueue } from "./lib/useAnalyzeQueue";
 import { AnalysisView } from "./components/AnalysisView";
 import { Transcript } from "./components/Transcript";
 import { SettingsSheet } from "./components/SettingsSheet";
@@ -24,6 +27,7 @@ import { useUpdater } from "./lib/useUpdater";
 import { ancestors, branchChildren, branchRows, branchSourcePath, buildTree, type ListRow } from "./lib/tree";
 
 const ALL_SOURCES: Source[] = ["claude", "codex", "pi"];
+const NO_PICKS = new Set<string>();
 const SORTS: { key: SortKey; label: string }[] = [
   { key: "recent", label: "Recent" },
   { key: "oldest", label: "Oldest" },
@@ -66,14 +70,43 @@ interface Prefs {
   kindFilter: AnnotationKind[];
   /** Shown as the author of annotations. */
   authorName: string;
-  /** The user agreed that Analyze sends the transcript to Anthropic. */
-  generateConsent: boolean;
+  /** The user ticked "Don't show this again" on the notice Analyze shows before sending transcripts. */
+  hideAnalyzeNotice: boolean;
   /** The summary under a transcript's title is hidden. */
   summaryCollapsed: boolean;
   /** Ask GitHub for a newer release when the app opens and periodically after that. */
   autoCheckUpdates: boolean;
   /** What the right-hand pane shows: the selected session, or the Analysis view. */
-  view: "session" | "analysis";
+  view: View;
+  /** Each view's own sidebar and list choices (the keys in LIST_KEYS), so
+   * switching views and back finds everything as it was. */
+  lists: Record<View, ListPrefs>;
+}
+
+type View = "session" | "analysis";
+// Read and written through `p` and `update` as if they were top-level
+// prefs; they belong to the view showing.
+const LIST_KEYS = ["projects", "sort", "sources", "errorsOnly", "selected", "outcomeFilter", "kindFilter"] as const;
+type ListPrefs = Pick<Prefs, (typeof LIST_KEYS)[number]>;
+const pickList = (from: Prefs): ListPrefs => ({
+  projects: from.projects,
+  sort: from.sort,
+  sources: from.sources,
+  errorsOnly: from.errorsOnly,
+  selected: from.selected,
+  outcomeFilter: from.outcomeFilter,
+  kindFilter: from.kindFilter,
+});
+
+/** State that lasts only while the app runs, kept apart for each view. */
+function usePerView<T>(view: View, init: () => T): [T, (next: T | ((prev: T) => T)) => void] {
+  const [all, setAll] = useState<Record<View, T>>(() => ({ session: init(), analysis: init() }));
+  const set = useCallback(
+    (next: T | ((prev: T) => T)) =>
+      setAll((a) => ({ ...a, [view]: typeof next === "function" ? (next as (prev: T) => T)(a[view]) : next })),
+    [view],
+  );
+  return [all[view], set];
 }
 const DEFAULT_PREFS: Prefs = {
   projects: [],
@@ -91,19 +124,22 @@ const DEFAULT_PREFS: Prefs = {
   outcomeFilter: [],
   kindFilter: [],
   authorName: "",
-  generateConsent: false,
+  hideAnalyzeNotice: false,
   summaryCollapsed: false,
   autoCheckUpdates: true,
   view: "session",
+  lists: { session: {} as ListPrefs, analysis: {} as ListPrefs },
 };
+DEFAULT_PREFS.lists = { session: pickList(DEFAULT_PREFS), analysis: pickList(DEFAULT_PREFS) };
 
 export default function App() {
   const [rawSessions, setSessions] = useState<SessionRow[] | null>(null);
   const [prefs, setPrefs] = useState<Prefs | null>(null);
-  const [query, setQuery] = useState("");
+  const view: View = prefs?.view ?? "session";
+  const [query, setQuery] = usePerView(view, () => "");
   // Like Slack: a search started inside a project is scoped to it until the
   // user widens it to all projects.
-  const [searchAll, setSearchAll] = useState(false);
+  const [searchAll, setSearchAll] = usePerView(view, () => false);
   const [hits, setHits] = useState<Map<string, SearchHit> | null>(null);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [stats, setStats] = useState<IndexStats | null>(null);
@@ -120,13 +156,17 @@ export default function App() {
   const [help, setHelp] = useState(false);
   const [exporting, setExporting] = useState<SessionRow | null>(null);
   const [importing, setImporting] = useState<{ path: string; state: ImportState } | null>(null);
-  const overlay = sheet || help || !!exporting || !!importing;
+  // Resolves the promise of an Analyze notice waiting for OK or Cancel.
+  const [noticeAsk, setNoticeAsk] = useState<{ count: number; resolve: (ok: boolean) => void } | null>(null);
+  const overlay = sheet || help || !!exporting || !!importing || !!noticeAsk;
   const [version, setVersion] = useState(0);
-  const [projectFilter, setProjectFilter] = useState("");
+  const [projectFilter, setProjectFilter] = usePerView(view, () => "");
   const projectFilterRef = useRef<HTMLInputElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   // Sessions whose subagents, forks and branches are shown in the list.
-  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  const [expanded, setExpanded] = usePerView<Set<string>>(view, () => new Set());
+  // Where each view's session list and project list were scrolled to, restored on switching back.
+  const scrollMemo = useRef<Record<View, { list: ListMemo; projects?: number }>>({ session: { list: {} }, analysis: { list: {} } });
 
   const importBundle = useCallback(async (path: string, onConflict?: OnConflict) => {
     const file = basename(path);
@@ -182,7 +222,12 @@ export default function App() {
         // A single selected project used to be stored as `project`.
         if (!Array.isArray(saved.projects)) saved.projects = saved.project ? [saved.project] : [];
         delete saved.project;
-        setPrefs({ ...DEFAULT_PREFS, ...saved });
+        // The Analyze notice used to be agreed to once, with no way to see it again.
+        delete saved.generateConsent;
+        const merged: Prefs = { ...DEFAULT_PREFS, ...saved };
+        // Lists were shared by both views before each view kept its own.
+        if (!saved.lists) merged.lists = { session: pickList(merged), analysis: { ...pickList(merged), selected: null } };
+        setPrefs(merged);
       })
       .catch(() => setPrefs(DEFAULT_PREFS));
     reload();
@@ -216,8 +261,15 @@ export default function App() {
   }, [reload, chooseBundle, reloadNotes, showNotice]);
 
   const update = useCallback((patch: Partial<Prefs>) => {
-    setPrefs((p) => {
-      const next = { ...(p ?? DEFAULT_PREFS), ...patch };
+    setPrefs((prev) => {
+      const cur = prev ?? DEFAULT_PREFS;
+      const listPatch: Partial<ListPrefs> = {};
+      const rest: Partial<Prefs> = {};
+      for (const [k, v] of Object.entries(patch)) {
+        if ((LIST_KEYS as readonly string[]).includes(k)) (listPatch as Record<string, unknown>)[k] = v;
+        else (rest as Record<string, unknown>)[k] = v;
+      }
+      const next: Prefs = { ...cur, ...rest, lists: { ...cur.lists, [cur.view]: { ...cur.lists[cur.view], ...listPatch } } };
       void api.setSetting("prefs", JSON.stringify(next));
       return next;
     });
@@ -240,7 +292,8 @@ export default function App() {
     return () => clearTimeout(t);
   }, [query, version]);
 
-  const p = prefs ?? DEFAULT_PREFS;
+  const stored = prefs ?? DEFAULT_PREFS;
+  const p: Prefs = { ...stored, ...stored.lists[stored.view] };
   const updater = useUpdater({ autoCheck: prefs !== null && p.autoCheckUpdates, onNotice: showNotice });
   const { checkNow } = updater;
   useEffect(() => {
@@ -361,8 +414,17 @@ export default function App() {
 
   useEffect(() => {
     if (!searching) setSearchAll(false);
-  }, [searching]);
-  useEffect(() => setSearchAll(false), [p.projects]);
+  }, [searching, setSearchAll]);
+  const lastView = useRef(view);
+  useEffect(() => {
+    // Switching views brings back that view's projects; only a new choice of projects resets the scope.
+    if (lastView.current !== view) {
+      lastView.current = view;
+      return;
+    }
+    setSearchAll(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [p.projects]);
 
   const matchesQuery = useMemo(() => {
     const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
@@ -384,7 +446,7 @@ export default function App() {
   const clearSearch = useCallback(() => {
     setQuery("");
     searchRef.current?.focus();
-  }, []);
+  }, [setQuery]);
 
   const list = useMemo(() => {
     let out = scoped ? base.filter(inSelection) : filtered;
@@ -429,7 +491,9 @@ export default function App() {
   // Every openable row: real sessions plus one per pi branch.
   const allRows = useMemo(() => (sessions ?? []).flatMap((s) => [s, ...branchRows(s)]), [sessions]);
   const byPath = useMemo(() => new Map(allRows.map((s) => [s.path, s])), [allRows]);
-  const selected = p.selected ? byPath.get(p.selected) : undefined;
+  // The transcript always shows the Sessions view's session, even while Analysis covers it.
+  const sessionSelected = stored.lists.session.selected;
+  const selected = sessionSelected ? byPath.get(sessionSelected) : undefined;
 
   // Opening a nested session (from a link or a saved selection) expands its parents.
   useEffect(() => {
@@ -446,7 +510,7 @@ export default function App() {
       else next.add(path);
       return next;
     });
-  }, []);
+  }, [setExpanded]);
 
   const family = useMemo(() => {
     if (!selected || !sessions) return { parent: undefined, children: [] as SessionRow[] };
@@ -469,17 +533,64 @@ export default function App() {
   const select = useCallback(
     (path: string) => {
       setFocus(null);
-      update({ selected: path, view: "session" });
+      update({ selected: path });
     },
     [update],
   );
   const open = useCallback(
     (path: string, focusChild?: string) => {
       setFocus(focusChild ?? null);
-      update({ selected: path, view: "session" });
+      update({ selected: path });
     },
     [update],
   );
+
+  // The Sessions view always has a session open: the first in the list when
+  // none is chosen yet, or the chosen one is gone.
+  useEffect(() => {
+    if (view !== "session" || selected || !rows.length) return;
+    select(rows[0].s.path);
+  }, [view, selected, rows, select]);
+
+  // Sessions picked in the Analysis view, by path. The Sessions view has only
+  // its one open session.
+  const [picked, setPicked] = useState<Set<string>>(() => new Set());
+  const pickAnchor = useRef<string | null>(null);
+  const clickRow = useCallback(
+    (path: string, how: ClickHow) => {
+      if (view === "session") {
+        select(path);
+        return;
+      }
+      // Like Finder: a click selects one session, ⌘-click adds or removes one,
+      // and ⇧-click selects the run from the last session clicked.
+      const paths = rows.map((r) => r.s.path);
+      const from = paths.indexOf(pickAnchor.current ?? "");
+      if (how.range && from >= 0) {
+        const to = paths.indexOf(path);
+        setPicked(new Set(paths.slice(Math.min(from, to), Math.max(from, to) + 1)));
+        return;
+      }
+      pickAnchor.current = path;
+      if (how.toggle) {
+        setPicked((prev) => {
+          const next = new Set(prev);
+          if (next.has(path)) next.delete(path);
+          else next.add(path);
+          return next;
+        });
+        return;
+      }
+      setPicked(new Set([path]));
+    },
+    [view, rows, select],
+  );
+  const clearPicked = useCallback(() => {
+    pickAnchor.current = null;
+    setPicked(new Set());
+  }, []);
+  const pickedRows = useMemo(() => [...picked].map((path) => byPath.get(path)).filter((s): s is SessionRow => !!s), [picked, byPath]);
+  const queue = useAnalyzeQueue();
 
   // Keyboard: j/k or arrows move through the list, / or ⌘K focuses search,
   // ? lists the shortcuts. Keep ShortcutsSheet in step with this.
@@ -506,6 +617,15 @@ export default function App() {
         searchRef.current?.select();
         return;
       }
+      if (view === "analysis" && !typing && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "a") {
+        e.preventDefault();
+        setPicked(new Set(rows.map((r) => r.s.path)));
+        return;
+      }
+      if (e.key === "Escape" && !typing && view === "analysis" && picked.size > 0) {
+        clearPicked();
+        return;
+      }
       if (typing && e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
       // ⌘↑ / ⌘↓ and ⌥↑ / ⌥↓ scroll the transcript instead.
       if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -513,14 +633,18 @@ export default function App() {
       if (!dir || !rows.length) return;
       if (typing && (e.target as HTMLElement) !== searchRef.current) return;
       e.preventDefault();
-      const i = rows.findIndex((r) => r.s.path === p.selected);
+      // In Analysis, j/k move a single selection from the last session clicked.
+      const current = view === "analysis" ? pickAnchor.current : p.selected;
+      const i = rows.findIndex((r) => r.s.path === current);
       // Wraps from the last session to the first and back.
       const next = rows[i < 0 ? 0 : (i + dir + rows.length) % rows.length];
-      if (next) select(next.s.path);
+      if (!next) return;
+      if (view === "analysis") clickRow(next.s.path, { toggle: false, range: false });
+      else select(next.s.path);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [rows, p.selected, select, overlay]);
+  }, [rows, p.selected, select, overlay, picked.size, view, clickRow, clearPicked]);
 
   const toggleSource = (s: Source) => {
     const has = p.sources.includes(s);
@@ -571,10 +695,47 @@ export default function App() {
 
   const empty = sessions !== null && sessions.length === 0;
 
+  const confirmGenerate = useCallback(
+    (count = 1) => (p.hideAnalyzeNotice ? Promise.resolve(true) : new Promise<boolean>((resolve) => setNoticeAsk({ count, resolve }))),
+    [p.hideAnalyzeNotice],
+  );
+  const analyzePicked = useCallback(async () => {
+    if (!pickedRows.length || !(await confirmGenerate(pickedRows.length))) return;
+    let reanalyze = false;
+    const analyzed = pickedRows.filter((s) => notes.get(sessionKey(s))?.analyzed).length;
+    if (analyzed > 0) {
+      const again = "Analyze Again";
+      const changed = "Only If Changed";
+      const choice = await message(
+        `Analyze has already run on ${analyzed === pickedRows.length ? (analyzed === 1 ? "this session" : analyzed === 2 ? "both of these sessions" : `all ${analyzed} of these sessions`) : `${analyzed} of these ${pickedRows.length} sessions`}. Analyze ${analyzed === 1 ? "it" : "them"} again, or only if ${analyzed === 1 ? "its transcript has" : "a transcript has"} changed since? Only what Analyze wrote and no one edited is replaced.`,
+        { title: "Analyze sessions again?", kind: "info", buttons: { yes: again, no: changed, cancel: "Cancel" } },
+      );
+      if (choice !== again && choice !== changed) return;
+      reanalyze = choice === again;
+    }
+    queue.enqueue(pickedRows, reanalyze);
+    clearPicked();
+  }, [pickedRows, confirmGenerate, queue, notes, clearPicked]);
+  const unanalyzed = useMemo(() => list.filter((s) => !notes.get(sessionKey(s))?.analyzed), [list, notes]);
+
   return (
     <div className="app">
       <aside className="rail">
         <div className="rail-top" data-tauri-drag-region>
+          <div
+            className={`view-switch ${p.view === "analysis" ? "right" : ""}`}
+            role="radiogroup"
+            aria-label="View"
+            title="Switch between reading sessions and the Analysis view"
+          >
+            <span className="view-thumb" aria-hidden="true" />
+            <button role="radio" aria-checked={p.view === "session"} className={p.view === "session" ? "on" : ""} onClick={() => update({ view: "session" })}>
+              Sessions
+            </button>
+            <button role="radio" aria-checked={p.view === "analysis"} className={p.view === "analysis" ? "on" : ""} onClick={() => update({ view: "analysis" })}>
+              Analysis
+            </button>
+          </div>
           <span className="brand" data-tauri-drag-region>
             session<span className="brand-dot">·</span>player
           </span>
@@ -635,17 +796,6 @@ export default function App() {
             Only with errors
             <span className="n">{errorSessions}</span>
           </button>
-          <button
-            className={`srcpill mode-pill ${p.view === "analysis" ? "on" : ""}`}
-            onClick={() => update({ view: p.view === "analysis" ? "session" : "analysis" })}
-            aria-pressed={p.view === "analysis"}
-            title="Show counts of outcomes and annotation types for the sessions in the list"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
-              <path d="M4 20V10M10 20V4M16 20v-7M22 20H2" />
-            </svg>
-            Analysis
-          </button>
         </div>
 
         <div className="rail-section">
@@ -686,6 +836,10 @@ export default function App() {
           </div>
         )}
         <ProjectNav
+          // One per view, so each comes back scrolled where it was left.
+          key={view}
+          initialScroll={scrollMemo.current[view].projects}
+          onScrollTop={(top) => (scrollMemo.current[view].projects = top)}
           projects={visibleProjects}
           total={filtered.length}
           selected={p.projects}
@@ -717,6 +871,12 @@ export default function App() {
           <button className="ghost help-button" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts" onClick={() => setHelp(true)}>
             ?
           </button>
+          {queue.items.length > 0 && (
+            <QueueStatus
+              items={queue.items}
+              onOpen={(path) => (view === "analysis" ? clickRow(path, { toggle: false, range: false }) : select(path))}
+              onCancel={queue.cancel} onCancelAll={queue.cancelAll} onClear={queue.clearFinished} />
+          )}
           <div className={`rail-status ${notice.shown ? "on" : ""}`} role="status" title={notice.text}>
             {notice.text}
           </div>
@@ -813,9 +973,13 @@ export default function App() {
           </div>
         ) : (
           <SessionList
+            key={view}
+            memo={scrollMemo.current[view].list}
             rows={rows}
-            selected={p.selected}
-            onSelect={select}
+            selected={view === "session" ? p.selected : null}
+            picked={view === "analysis" ? picked : NO_PICKS}
+            onBlankClick={view === "analysis" ? clearPicked : undefined}
+            onSelect={clickRow}
             onToggle={toggleExpanded}
             hits={hits}
             showProject={!(scoped && p.projects.length === 1)}
@@ -824,65 +988,100 @@ export default function App() {
             resetKey={sessionListKey}
           />
         )}
+        {/* At the bottom, so showing it doesn't move the rows being clicked. */}
+        {view === "analysis" && picked.size > 0 && (
+          <div className="pick-bar" role="toolbar" aria-label="Selected sessions">
+            <div className="pick-row">
+              <span className="pick-count">{picked.size} selected</span>
+              <button className="primary pick-analyze" onClick={() => void analyzePicked()} disabled={!pickedRows.length}>
+                Analyze {pickedRows.length}
+              </button>
+              <button className="clear-link" onClick={clearPicked} title="Clear the selection (Esc)">
+                Clear
+              </button>
+            </div>
+            <div className="pick-row">
+              <button className="pick-link" onClick={() => setPicked(new Set(list.map((s) => s.path)))}>
+                Select all {list.length}
+              </button>
+              <button className="pick-link" onClick={() => setPicked(new Set(unanalyzed.map((s) => s.path)))} disabled={!unanalyzed.length}>
+                Select {unanalyzed.length} not analyzed
+              </button>
+            </div>
+          </div>
+        )}
       </section>
 
       <main className="detail">
-        {p.view === "analysis" ? (
+        {view === "analysis" && (
           <AnalysisView
-            sessions={list}
+            // Picked sessions narrow the counts the way picking projects narrows the list.
+            sessions={pickedRows.length ? pickedRows : list}
+            scope={pickedRows.length ? "selection" : "list"}
             notes={notes}
             outcomeFilter={p.outcomeFilter}
             kindFilter={p.kindFilter}
             // Clicking the only value chosen clears it; anything else narrows the list to that value.
             onOutcome={(o) => update({ outcomeFilter: p.outcomeFilter.length === 1 && p.outcomeFilter[0] === o ? [] : [o] })}
             onKind={(k) => update({ kindFilter: p.kindFilter.length === 1 && p.kindFilter[0] === k ? [] : [k] })}
+            onPickUnanalyzed={() => setPicked(new Set(unanalyzed.map((s) => s.path)))}
           />
-        ) : selected ? (
-          <Transcript
-            key={selected.path}
-            session={selected}
-            parent={family.parent}
-            children={family.children}
-            highlight={query.trim()}
-            onOpen={open}
-            focus={focus}
-            keyboard={!overlay}
-            countExits={p.countExits}
-            openWith={p.openWith[selected.source]}
-            onOpenWith={(choice) => update({ openWith: { ...p.openWith, [selected.source]: choice } })}
-            authorName={p.authorName.trim() || null}
-            collapsed={p.summaryCollapsed}
-            onCollapse={(summaryCollapsed) => update({ summaryCollapsed })}
-            confirmGenerate={async () => {
-              if (p.generateConsent) return true;
-              const ok = await ask(
-                "Analyze sends this session's transcript to Anthropic, through the claude command and your Claude Code sign-in, so Claude Haiku can find the outcome, components and annotations. Nothing is sent until you analyze a session.",
-                { title: "Send this transcript to Anthropic?", kind: "info", okLabel: "Analyze", cancelLabel: "Cancel" },
-              );
-              if (ok) update({ generateConsent: true });
-              return ok;
-            }}
-            onNotesChanged={() => {
-              reloadNotes();
-              // Re-runs the full-text search, which covers notes.
-              setVersion((v) => v + 1);
-            }}
-            onExport={() => setExporting(selected)}
-          />
-        ) : (
-          <div className="placeholder" data-tauri-drag-region>
-            <div className="ph-mark">¶</div>
-            <p>Pick a session to read it.</p>
-            {sessions && sessions.length > 0 && (
-              <p className="dim">
-                Last activity {relTime(Math.max(...sessions.map((s) => s.updated_at ?? 0)))} · j / k to move · / to search · ? for shortcuts
-              </p>
-            )}
-          </div>
         )}
+        {/* Stays mounted under Analysis, so switching back finds the transcript exactly as it was left. */}
+        <div className={`detail-session ${view === "analysis" ? "offstage" : ""}`} inert={view === "analysis"}>
+          {selected ? (
+            <Transcript
+              key={selected.path}
+              session={selected}
+              parent={family.parent}
+              children={family.children}
+              highlight={query.trim()}
+              onOpen={open}
+              focus={focus}
+              keyboard={!overlay && view === "session"}
+              countExits={p.countExits}
+              openWith={p.openWith[selected.source]}
+              onOpenWith={(choice) => update({ openWith: { ...p.openWith, [selected.source]: choice } })}
+              authorName={p.authorName.trim() || null}
+              collapsed={p.summaryCollapsed}
+              onCollapse={(summaryCollapsed) => update({ summaryCollapsed })}
+              confirmGenerate={confirmGenerate}
+              onNotesChanged={() => {
+                reloadNotes();
+                // Re-runs the full-text search, which covers notes.
+                setVersion((v) => v + 1);
+              }}
+              onExport={() => setExporting(selected)}
+            />
+          ) : (
+            <div className="placeholder" data-tauri-drag-region>
+              <div className="ph-mark">¶</div>
+              <p>Pick a session to read it.</p>
+              {sessions && sessions.length > 0 && (
+                <p className="dim">
+                  Last activity {relTime(Math.max(...sessions.map((s) => s.updated_at ?? 0)))} · j / k to move · / to search · ? for shortcuts
+                </p>
+              )}
+            </div>
+          )}
+        </div>
       </main>
 
       {help && <ShortcutsSheet onClose={() => setHelp(false)} />}
+      {noticeAsk && (
+        <AnalyzeNotice
+          count={noticeAsk.count}
+          onOk={(dontShowAgain) => {
+            if (dontShowAgain) update({ hideAnalyzeNotice: true });
+            noticeAsk.resolve(true);
+            setNoticeAsk(null);
+          }}
+          onCancel={() => {
+            noticeAsk.resolve(false);
+            setNoticeAsk(null);
+          }}
+        />
+      )}
       {exporting && <ExportSheet session={exporting} onClose={() => setExporting(null)} />}
       {importing && (
         <ImportSheet
@@ -905,6 +1104,8 @@ export default function App() {
           onTheme={(theme) => update({ theme })}
           authorName={p.authorName}
           onAuthorName={(authorName) => update({ authorName })}
+          showAnalyzeNotice={!p.hideAnalyzeNotice}
+          onShowAnalyzeNotice={(show) => update({ hideAnalyzeNotice: !show })}
           hideSubagents={!p.showSub}
           onHideSubagents={(hide) => update({ showSub: !hide })}
           autoCheckUpdates={p.autoCheckUpdates}

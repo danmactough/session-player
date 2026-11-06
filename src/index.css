@@ -162,15 +162,19 @@ mark {
   min-height: 0;
 }
 .rail-top {
-  height: 52px;
+  height: 62px;
   display: flex;
-  align-items: flex-end;
-  justify-content: flex-end;
-  padding: 0 16px 6px;
+  /* The top padding leaves room for the window buttons; the slider and the
+     app name are centered on each other in the row below them. */
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 34px 10px 4px 12px;
 }
 .brand {
+  flex: none;
   font: 11px var(--mono);
-  letter-spacing: 0.04em;
+  letter-spacing: 0.02em;
   color: var(--muted);
   text-transform: lowercase;
 }
@@ -832,6 +836,9 @@ mark {
   padding: 9px 18px 10px;
   border-left: 2px solid transparent;
   transition: background 0.1s;
+  /* A ⌘- or ⇧-click focuses the row, and WebKit draws its focus ring; rows
+     are moved through with j/k, never tabbed to, so the ring adds nothing. */
+  outline: none;
 }
 .srow:hover {
   background: var(--hover);
@@ -947,9 +954,20 @@ mark {
 
 /* ---------- detail ---------- */
 .detail {
+  position: relative;
   min-width: 0;
   min-height: 0;
   background: var(--bg);
+}
+.detail-session {
+  height: 100%;
+}
+/* Kept laid out (so its scroll position and measurements survive) but out of sight and reach. */
+.detail-session.offstage {
+  position: absolute;
+  inset: 0;
+  visibility: hidden;
+  pointer-events: none;
 }
 .placeholder {
   height: 100%;
@@ -2027,9 +2045,13 @@ mark {
 .details-form label,
 .setting-field {
   display: grid;
-  gap: 3px;
-  font-size: 11.5px;
-  color: var(--muted);
+  gap: 6px;
+  margin-bottom: 16px;
+  font-size: 13px;
+  color: var(--ink);
+}
+.setting-field .setting-note {
+  margin-top: 0;
 }
 .details-form input,
 .details-form textarea,
@@ -2056,7 +2078,7 @@ mark {
   display: flex;
   gap: 8px;
 }
-.setting-field {
+.setting-field input {
   max-width: 320px;
 }
 .annotation {
@@ -2676,17 +2698,10 @@ mark {
 }
 
 /* ---------- analysis ---------- */
-.mode-pill {
-  color: var(--muted);
-}
-.mode-pill.on {
-  background: var(--hover);
-  color: var(--ink);
-}
 .stats-view {
   height: 100%;
   overflow-y: auto;
-  padding: 28px 36px 48px;
+  padding: 28px clamp(18px, 4vw, 36px) 48px;
   max-width: 860px;
 }
 .stats-head h1 {
@@ -2702,7 +2717,8 @@ mark {
 }
 .stat-tiles {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  /* Wraps to two rows when the window is narrow. */
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
   gap: 10px;
   margin: 22px 0 8px;
 }
@@ -2740,7 +2756,7 @@ mark {
 }
 .bars-key {
   display: grid;
-  grid-template-columns: 180px 1fr 56px 72px;
+  grid-template-columns: minmax(96px, 2fr) 3fr 52px 64px;
   padding: 0 8px 2px;
   font: 10px var(--mono);
   text-transform: uppercase;
@@ -2755,7 +2771,7 @@ mark {
 }
 .bar-row {
   display: grid;
-  grid-template-columns: 180px 1fr 56px 72px;
+  grid-template-columns: minmax(96px, 2fr) 3fr 52px 64px;
   align-items: center;
   width: 100%;
   padding: 5px 8px;
@@ -2845,4 +2861,248 @@ mark {
   font: 12px var(--mono);
   color: var(--ink);
   font-variant-numeric: tabular-nums;
+}
+
+/* ---------- selection and Analyze queue ---------- */
+.srow.picked {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-left-color: var(--accent);
+}
+.srow.picked:hover {
+  background: color-mix(in srgb, var(--accent) 17%, transparent);
+}
+.pick-bar {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 18px;
+  border-top: 1px solid var(--line);
+  background: var(--raised);
+  font-size: 12px;
+}
+.pick-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.pick-count {
+  color: var(--ink);
+  font-weight: 500;
+}
+.pick-analyze {
+  padding: 3px 10px;
+}
+.pick-link {
+  color: var(--ink-2);
+  text-decoration: underline;
+  text-decoration-color: var(--line);
+  text-underline-offset: 3px;
+}
+.pick-link:hover:not(:disabled) {
+  color: var(--ink);
+  text-decoration-color: currentColor;
+}
+.pick-link:disabled {
+  color: var(--faint);
+  text-decoration: none;
+}
+.stats-note {
+  margin: 4px 0 0;
+  font-size: 12px;
+}
+
+/* Sessions / Analysis: a two-position slider; the thumb slides under the chosen side. */
+.view-switch {
+  position: relative;
+  display: inline-grid;
+  grid-template-columns: 1fr 1fr;
+  padding: 2px;
+  border-radius: 999px;
+  background: var(--line-2);
+  border: 1px solid var(--line);
+}
+.view-thumb {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 2px;
+  width: calc(50% - 2px);
+  border-radius: 999px;
+  background: var(--raised);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+  transition: transform 0.18s ease;
+}
+.view-switch.right .view-thumb {
+  transform: translateX(100%);
+}
+.view-switch button {
+  position: relative;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font: 11px var(--sans);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.view-switch button.on {
+  color: var(--ink);
+}
+.view-switch button:not(.on):hover {
+  color: var(--ink-2);
+}
+
+/* The Analyze queue's footer status and its popover. */
+.queue-status {
+  position: relative;
+  margin-left: auto;
+}
+.queue-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 6px;
+  border-radius: 5px;
+  font: 11px var(--mono);
+  color: var(--muted);
+}
+.queue-button:hover,
+.queue-button[aria-expanded="true"] {
+  background: var(--hover);
+  color: var(--ink);
+}
+.queue-button.has-failed {
+  color: var(--err);
+}
+.spinner {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1.5px solid var(--line);
+  border-top-color: var(--accent);
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.queue-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+.queue-dot.ok {
+  background: var(--ok);
+}
+.queue-dot.err {
+  background: var(--err);
+}
+.queue-pop {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 8px);
+  z-index: 30;
+  width: 340px;
+  max-height: 360px;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--raised);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16);
+}
+.queue-head {
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line-2);
+  font: 10.5px var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.queue-head .clear-link {
+  font: 12px var(--sans);
+  letter-spacing: 0;
+  text-transform: none;
+}
+.queue-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+  overflow-y: auto;
+}
+.queue-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px 0 12px;
+}
+.queue-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 4px 0;
+  text-align: left;
+}
+.queue-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+.queue-open:hover .queue-name {
+  color: var(--ink);
+}
+.queue-state {
+  flex: none;
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 11px var(--mono);
+  color: var(--muted);
+}
+.queue-running .queue-state,
+.queue-checking .queue-state {
+  color: var(--accent);
+}
+.queue-done .queue-state {
+  color: var(--ok);
+}
+.queue-failed .queue-state {
+  color: var(--err);
+}
+.queue-cancel {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  color: var(--faint);
+}
+.queue-cancel:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+/* The notice Analyze shows before sending transcripts. */
+.notice-sheet {
+  width: 440px;
+}
+.notice-sheet h2 {
+  margin: 0;
+  font: 400 22px/1.2 var(--serif);
+}
+.notice-check {
+  margin: 4px 0 18px;
+}
+.notice-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }

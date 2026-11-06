@@ -27,6 +27,8 @@ interface Props {
   onHideSubagents: (hide: boolean) => void;
   authorName: string;
   onAuthorName: (name: string) => void;
+  showAnalyzeNotice: boolean;
+  onShowAnalyzeNotice: (show: boolean) => void;
   autoCheckUpdates: boolean;
   onAutoCheckUpdates: (on: boolean) => void;
   checkingForUpdates: boolean;
@@ -49,6 +51,8 @@ export function SettingsSheet({
   onHideSubagents,
   authorName,
   onAuthorName,
+  showAnalyzeNotice,
+  onShowAnalyzeNotice,
   autoCheckUpdates,
   onAutoCheckUpdates,
   checkingForUpdates,
@@ -180,8 +184,19 @@ export function SettingsSheet({
 
         <h3 className="settings-head">Annotations</h3>
         <label className="setting-field">
-          Your name
-          <input value={authorName} onChange={(e) => onAuthorName(e.target.value)} placeholder="Shown on annotations you add" />
+          <span>Your name</span>
+          <input value={authorName} onChange={(e) => onAuthorName(e.target.value)} />
+          <span className="setting-note">Shown as the author of annotations you add. Annotations from Analyze show the model instead.</span>
+        </label>
+        <label className="setting-toggle">
+          <input type="checkbox" checked={showAnalyzeNotice} onChange={(e) => onShowAnalyzeNotice(e.target.checked)} />
+          <span>
+            Show the notice before Analyze sends transcripts
+            <span className="setting-note">
+              Explains that Analyze sends transcripts to Anthropic, and asks before it does. Ticking &ldquo;Don&rsquo;t show
+              this again&rdquo; on the notice turns this off.
+            </span>
+          </span>
         </label>
 
         <h3 className="settings-head">Imported sessions</h3>

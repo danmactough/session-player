@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import type { Source } from "../types";
 import { basename, dirname, tildify } from "../lib/format";
 import { useScrollAnchor } from "../lib/useScrollAnchor";
@@ -21,13 +21,16 @@ interface Props {
   resetKey: unknown;
   /** Called with the full new order after a drag; omit to disable dragging. */
   onReorder?: (order: string[]) => void;
+  /** Where to start scrolled to, when coming back to a list left earlier. */
+  initialScroll?: number;
+  onScrollTop?: (top: number) => void;
 }
 
 const SOURCES: Source[] = ["claude", "codex", "pi"];
 // Pointer travel before a press becomes a drag, so clicks still select.
 const DRAG_THRESHOLD = 4;
 
-export function ProjectNav({ projects, total, selected, onSelect, onHide, onReorder, resetKey }: Props) {
+export function ProjectNav({ projects, total, selected, onSelect, onHide, onReorder, resetKey, initialScroll, onScrollTop }: Props) {
   const navRef = useRef<HTMLElement>(null);
   const [drag, setDrag] = useState<{ project: string; index: number } | null>(null);
   const dragRef = useRef<{ project: string; index: number } | null>(null);
@@ -63,6 +66,11 @@ export function ProjectNav({ projects, total, selected, onSelect, onHide, onReor
   };
 
   useScrollAnchor(navRef, [projects], resetKey);
+  useLayoutEffect(() => {
+    if (initialScroll && navRef.current) navRef.current.scrollTop = initialScroll;
+    // Only when the list first appears.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const dropIndex = (clientY: number) => {
     const items = navRef.current?.querySelectorAll<HTMLElement>(".proj-item[data-draggable]") ?? [];
@@ -133,6 +141,7 @@ export function ProjectNav({ projects, total, selected, onSelect, onHide, onReor
       className={`projects ${drag ? "dragging" : ""}`}
       ref={navRef}
       tabIndex={-1}
+      onScroll={onScrollTop && ((e) => onScrollTop(e.currentTarget.scrollTop))}
       onKeyDown={(e) => {
         // Esc here (after clicking a project) goes back to All projects. It
         // only applies inside this list, so Esc keeps its meaning elsewhere;

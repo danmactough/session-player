@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { api } from "../api";
 import type { QueueItem } from "../lib/useAnalyzeQueue";
 
 interface Props {
@@ -32,8 +33,8 @@ const isActive = (i: QueueItem) => i.status === "waiting" || i.status === "check
 
 /**
  * The batch Analyze queue, in the notice tray at the bottom of the left
- * column: a spinner and progress while it runs, and how many failed if any
- * did. Clicking it shows each session's result.
+ * column: a spinner and progress while it runs, then how it went, until
+ * cleared. Clicking it shows each session's result.
  */
 export function QueueStatus({ items, onOpen, onCancel, onCancelAll, onClear }: Props) {
   const [open, setOpen] = useState(false);
@@ -96,6 +97,9 @@ export function QueueStatus({ items, onOpen, onCancel, onCancelAll, onClear }: P
         <div className="queue-pop" role="dialog" aria-label="Analyze queue">
           <header className="queue-head">
             <span className="queue-title">{busy ? `Analyzing ${Math.min(finished + 1, items.length)} of ${items.length}` : summary}</span>
+            <button className="clear-link" onClick={() => void api.openAnalyzeLog()} title="Open the Analyze log">
+              Log
+            </button>
             {busy ? (
               <button className="clear-link" onClick={onCancelAll}>
                 Cancel all

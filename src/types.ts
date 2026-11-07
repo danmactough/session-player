@@ -193,11 +193,9 @@ export interface SessionMeta {
   /** Repository paths or packages worked on, such as "packages/api". */
   components: string[];
   updated_at: number;
-  /** Fields ("outcome", "components") still holding what a model generated; regenerating may replace them. */
+  /** Fields ("outcome", "components") still holding what a model generated. */
   generated: string[];
   generated_by: { model: string; at: number; revision: string } | null;
-  /** Fields a person emptied on purpose; generating leaves them empty. */
-  cleared: string[];
 }
 
 export type AnnotationKind =

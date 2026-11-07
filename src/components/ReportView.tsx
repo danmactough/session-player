@@ -23,6 +23,7 @@ export function ReportView({ id, onOpenSession, canOpenSession, onDeleted }: Pro
   const [report, setReport] = useState<Report | null | undefined>(undefined);
   const [cited, setCited] = useState<Map<string, CitedAnnotation>>(() => new Map());
   const [notice, setNotice] = useState<string | null>(null);
+  const [showFocus, setShowFocus] = useState(false);
 
   useEffect(() => {
     let live = true;
@@ -89,9 +90,9 @@ export function ReportView({ id, onOpenSession, canOpenSession, onDeleted }: Pro
             {report.focus && (
               <>
                 {" · "}
-                <span className="report-focus" title={report.focus}>
+                <button className="pick-link report-focus" onClick={() => setShowFocus((v) => !v)} aria-expanded={showFocus}>
                   Custom prompt
-                </span>
+                </button>
               </>
             )}
           </p>
@@ -119,6 +120,7 @@ export function ReportView({ id, onOpenSession, canOpenSession, onDeleted }: Pro
               </svg>
             }
           />
+          {showFocus && report.focus && <p className="report-focus-text">{report.focus}</p>}
           {notice && <p className="report-notice">{notice}</p>}
         </header>
 
@@ -162,7 +164,7 @@ export function ReportView({ id, onOpenSession, canOpenSession, onDeleted }: Pro
               <li key={s.key}>
                 <button className="report-session" onClick={() => onOpenSession(s.key)} disabled={!canOpenSession(s.key)} title={canOpenSession(s.key) ? "Open in Transcripts" : "This session is no longer in the list"}>
                   <span className="t">{s.title}</span>
-                  {s.outcome !== "unknown" && <span className={`outcome outcome-${s.outcome}`}>{OUTCOME_LABEL[s.outcome]}</span>}
+                  <span className={`outcome outcome-${s.outcome}`}>{OUTCOME_LABEL[s.outcome]}</span>
                   <span className="dim">
                     {s.annotations.length} {s.annotations.length === 1 ? "annotation" : "annotations"}
                   </span>

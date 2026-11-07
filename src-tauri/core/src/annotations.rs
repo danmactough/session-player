@@ -80,9 +80,6 @@ pub struct SessionMeta {
     /// no one has edited yet.
     pub generated: Vec<String>,
     pub generated_by: Option<Generation>,
-    /// Fields a person emptied on purpose; generating leaves them empty
-    /// until someone fills them in again.
-    pub cleared: Vec<String>,
 }
 
 /// Which model made the suggestions, when, and from which transcript.
@@ -95,7 +92,7 @@ pub struct Generation {
     pub revision: String,
 }
 
-/// The fields `SessionMeta::generated` and `cleared` can name, in display order.
+/// The fields `SessionMeta::generated` can name, in display order.
 pub const META_FIELDS: [&str; 2] = ["outcome", "components"];
 
 pub fn field_is_empty(meta: &SessionMeta, name: &str) -> bool {
@@ -119,8 +116,6 @@ pub fn meta_field(meta: &SessionMeta, name: &str) -> serde_json::Value {
 impl SessionMeta {
     fn is_empty(&self) -> bool {
         META_FIELDS.iter().all(|f| field_is_empty(self, f))
-            // Kept so generating doesn't refill what a person emptied.
-            && self.cleared.is_empty()
     }
 
     fn search_text(&self) -> String {
@@ -153,16 +148,6 @@ pub fn save_meta(conn: &Connection, meta: &SessionMeta) -> anyhow::Result<()> {
             .as_ref()
             .is_some_and(|old| old.generated.contains(name) && meta_field(old, name) == meta_field(&edited, name))
     });
-    // Emptying a field records that; filling it lifts it.
-    meta.cleared = existing.as_ref().map(|old| old.cleared.clone()).unwrap_or_default();
-    for name in META_FIELDS {
-        let filled = |m: &SessionMeta| !field_is_empty(m, name);
-        if filled(&meta) {
-            meta.cleared.retain(|c| c != name);
-        } else if existing.as_ref().is_some_and(filled) && !meta.cleared.iter().any(|c| c == name) {
-            meta.cleared.push(name.to_string());
-        }
-    }
     store_meta(conn, &meta)
 }
 
@@ -172,7 +157,6 @@ pub fn store_meta(conn: &Connection, meta: &SessionMeta) -> anyhow::Result<()> {
     let mut meta = meta.clone();
     meta.components = meta.components.iter().map(|c| c.trim().to_string()).filter(|c| !c.is_empty() && c != ".").collect();
     meta.generated.retain(|f| META_FIELDS.contains(&f.as_str()));
-    meta.cleared.retain(|f| META_FIELDS.contains(&f.as_str()));
     let tx = conn.unchecked_transaction()?;
     tx.execute("DELETE FROM session_meta WHERE key=?1", [&meta.key])?;
     tx.execute("DELETE FROM notes_fts WHERE key=?1 AND item='meta'", [&meta.key])?;

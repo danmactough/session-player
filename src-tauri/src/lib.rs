@@ -4,7 +4,7 @@ mod terminals;
 // The parsing, indexing, note generation and bundle code lives in session-player-core, which
 // has no Tauri dependency and holds all the integration tests. Re-exported here so the
 // command layer can keep referring to the modules by their short names.
-pub use session_player_core::{annotations, bundle, generate, index, model, parse, reports};
+pub use session_player_core::{annotations, bundle, generate, index, model, parse, reports, runlog};
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,6 +20,8 @@ use model::{Event, SessionRow};
 
 struct AppState {
     db_path: PathBuf,
+    /// The log of Analyze and report runs; see `runlog`.
+    log_path: PathBuf,
     /// Images from the most recently opened session, served over spimg:// so
     /// large screenshots stay out of the IPC payload. Keyed by a generation
     /// number that changes with every load.
@@ -566,7 +568,19 @@ fn claude_command(state: &Shared) -> anyhow::Result<generate::Claude> {
         .find(|(k, v)| k == "CLAUDE_CONFIG_DIR" && !v.is_empty())
         .map(|(_, v)| PathBuf::from(v))
         .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".claude"));
-    generate::Claude::new(bin, shell_env, &config_dir)
+    let mut claude = generate::Claude::new(bin, shell_env, &config_dir)?;
+    claude.log = Some(state.log_path.clone());
+    Ok(claude)
+}
+
+/// What the app shows of an error: its first line. The rest (claude's own
+/// output) is in the log.
+fn first_line(e: &anyhow::Error) -> String {
+    format!("{e:#}").lines().next().unwrap_or_default().to_string()
+}
+
+fn focus_label(focus: Option<&str>) -> &'static str {
+    if focus.is_some_and(|f| !f.trim().is_empty()) { "your own focus" } else { "the built-in focus" }
 }
 
 /// Starts generating metadata and annotations for a session in the
@@ -583,6 +597,7 @@ fn generate_notes(app: AppHandle, state: State<Shared>, key: String, path: Strin
         running.insert(key.clone(), cancel.clone());
     }
     let state = state.inner().clone();
+    runlog::append(&state.log_path, &format!("Analyze {key} started, with {}\n{path}{}", focus_label(focus.as_deref()), branch.as_deref().map(|b| format!(" (branch {b})")).unwrap_or_default()));
     std::thread::spawn(move || {
         // Clears the session's entry even if this thread panics, so it can be generated again.
         struct Running(Shared, String);
@@ -594,7 +609,7 @@ fn generate_notes(app: AppHandle, state: State<Shared>, key: String, path: Strin
         let running = Running(state.clone(), key.clone());
         let progress_app = app.clone();
         let progress_key = key.clone();
-        let result = (|| -> anyhow::Result<usize> {
+        let result = (|| -> anyhow::Result<(usize, String)> {
             let claude = claude_command(&state)?;
             let events = session_events(&path, branch.as_deref()).map_err(anyhow::Error::msg)?;
             let mut ask = |system: &str, input: &str, schema: &serde_json::Value| generate::run_claude(&claude, system, input, schema, &cancel);
@@ -603,13 +618,32 @@ fn generate_notes(app: AppHandle, state: State<Shared>, key: String, path: Strin
             })?;
             let conn = index::open(&state.db_path)?;
             generate::apply(&conn, &key, &generated, &events)?;
-            Ok(generated.rejected)
+            let mut summary = format!(
+                "outcome {} ({}), {} components, {} annotations saved",
+                format!("{:?}", generated.outcome).to_lowercase(),
+                if generated.outcome_note.is_some() { "with a reason" } else { "NO REASON GIVEN" },
+                generated.components.len(),
+                generated.annotations.len()
+            );
+            if generated.rejected > 0 {
+                summary.push_str(&format!(", {} dropped for citing events that don't exist or for missing fields", generated.rejected));
+            }
+            Ok((generated.rejected, summary))
         })();
         drop(running);
         let done = match result {
-            Ok(rejected) => GenerateDone { key, error: None, cancelled: false, rejected },
-            Err(e) if generate::is_cancelled(&e) => GenerateDone { key, error: None, cancelled: true, rejected: 0 },
-            Err(e) => GenerateDone { key, error: Some(format!("{e:#}")), cancelled: false, rejected: 0 },
+            Ok((rejected, summary)) => {
+                runlog::append(&state.log_path, &format!("Analyze {key} done: {summary}"));
+                GenerateDone { key, error: None, cancelled: false, rejected }
+            }
+            Err(e) if generate::is_cancelled(&e) => {
+                runlog::append(&state.log_path, &format!("Analyze {key} cancelled"));
+                GenerateDone { key, error: None, cancelled: true, rejected: 0 }
+            }
+            Err(e) => {
+                runlog::append(&state.log_path, &format!("Analyze {key} FAILED: {e:#}"));
+                GenerateDone { key, error: Some(first_line(&e)), cancelled: false, rejected: 0 }
+            }
         };
         let _ = app.emit("generate-done", done);
     });
@@ -673,6 +707,10 @@ fn generate_report(app: AppHandle, state: State<Shared>, sessions: Vec<reports::
     let state = state.inner().clone();
     let model = model.map(|m| m.trim().to_string()).filter(|m| !m.is_empty()).unwrap_or_else(|| reports::DEFAULT_MODEL.to_string());
     let id = job.clone();
+    runlog::append(
+        &state.log_path,
+        &format!("Report {job} started on {} sessions with {model} and {}", sessions.len(), focus_label(focus.as_deref())),
+    );
     std::thread::spawn(move || {
         // Clears the job's entry even if this thread panics.
         struct Running(Shared, String);
@@ -696,9 +734,18 @@ fn generate_report(app: AppHandle, state: State<Shared>, sessions: Vec<reports::
         })();
         drop(running);
         let done = match result {
-            Ok(report) => ReportDone { job, report: Some(report), error: None, cancelled: false },
-            Err(e) if generate::is_cancelled(&e) => ReportDone { job, report: None, error: None, cancelled: true },
-            Err(e) => ReportDone { job, report: None, error: Some(format!("{e:#}")), cancelled: false },
+            Ok(report) => {
+                runlog::append(&state.log_path, &format!("Report {job} done, saved as {report}"));
+                ReportDone { job, report: Some(report), error: None, cancelled: false }
+            }
+            Err(e) if generate::is_cancelled(&e) => {
+                runlog::append(&state.log_path, &format!("Report {job} cancelled"));
+                ReportDone { job, report: None, error: None, cancelled: true }
+            }
+            Err(e) => {
+                runlog::append(&state.log_path, &format!("Report {job} FAILED: {e:#}"));
+                ReportDone { job, report: None, error: Some(first_line(&e)), cancelled: false }
+            }
         };
         let _ = app.emit("report-done", done);
     });
@@ -810,6 +857,18 @@ async fn open_in_terminal(app: String, source: String, native_id: String, path: 
     .map_err(err)?
 }
 
+/// Opens the log of Analyze and report runs in the app the Mac uses for
+/// logs (Console, unless changed).
+#[tauri::command]
+fn open_analyze_log(state: State<Shared>) -> Result<(), String> {
+    let path = &state.log_path;
+    if !path.exists() {
+        runlog::append(path, "Log started");
+    }
+    std::process::Command::new("open").arg(path).spawn().map_err(err)?;
+    Ok(())
+}
+
 #[tauri::command]
 fn reveal(path: String) -> Result<(), String> {
     std::process::Command::new("open").arg("-R").arg(&path).spawn().map_err(err)?;
@@ -901,11 +960,13 @@ pub fn run() {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
             let db_path = dir.join("index.sqlite");
+            let log_path = app.path().app_log_dir()?.join("analyze.log");
             let conn = index::open(&db_path)?;
             index::seed_roots(&conn)?;
             drop(conn);
             let state: Shared = Arc::new(AppState {
                 db_path,
+                log_path,
                 images: Mutex::new((0, Vec::new())),
                 running: AtomicBool::new(false),
                 pending: AtomicBool::new(false),
@@ -971,6 +1032,7 @@ pub fn run() {
             generate_notes,
             cancel_generate,
             default_prompts,
+            open_analyze_log,
             generating,
             generate_report,
             cancel_report,
@@ -1034,6 +1096,7 @@ mod tests {
     fn serves_cached_image_for_current_generation_only() {
         let state: Shared = Arc::new(AppState {
             db_path: PathBuf::new(),
+            log_path: PathBuf::new(),
             images: Mutex::new((7, vec![vec![], vec!["data:image/png;base64,aGVsbG8=".into()]])),
             running: AtomicBool::new(false),
             pending: AtomicBool::new(false),

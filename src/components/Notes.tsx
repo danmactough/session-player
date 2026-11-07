@@ -16,7 +16,6 @@ const blank = (key: string): SessionMeta => ({
   updated_at: 0,
   generated: [],
   generated_by: null,
-  cleared: [],
 });
 
 /**

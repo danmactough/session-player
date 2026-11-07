@@ -62,12 +62,9 @@ fn metadata_is_saved_edited_and_kept_through_an_index_rebuild() {
     let conn = index::open(&path).unwrap();
     assert_eq!(notes::meta(&conn, KEY).unwrap().unwrap().components, ["packages/auth", "apps/web"]);
 
-    // Clearing every field (blank components count as empty) keeps only
-    // which fields were cleared, so generating won't fill them again.
+    // Clearing every field (blank components count as empty) removes the details.
     notes::save_meta(&conn, &notes::SessionMeta { key: KEY.into(), components: vec![" ".into()], ..Default::default() }).unwrap();
-    let cleared = notes::meta(&conn, KEY).unwrap().unwrap();
-    assert_eq!((cleared.outcome, cleared.components.len()), (notes::Outcome::Unknown, 0));
-    assert_eq!(cleared.cleared, ["outcome", "components"]);
+    assert_eq!(notes::meta(&conn, KEY).unwrap(), None);
 
     // A session that never had any details stores nothing.
     let other = "local:claude:never";

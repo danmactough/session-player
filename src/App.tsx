@@ -686,16 +686,8 @@ export default function App() {
   }, [setPicked]);
   const pickedRows = useMemo(() => [...picked].map((path) => byPath.get(path)).filter((s): s is SessionRow => !!s), [picked, byPath]);
   const queue = useAnalyzeQueue();
-  // A queue that finished without failures says "Done" in the notice tray, as
-  // indexing does, then goes; one with failures stays in the tray until it's
-  // cleared, so the errors can be read.
-  const queueFinished = queue.items.length > 0 && queue.items.every((i) => !["waiting", "checking", "running", "failed"].includes(i.status));
-  const { clearFinished } = queue;
-  useEffect(() => {
-    if (!queueFinished) return;
-    showNotice("Analyze · Done", NOTICE_MS);
-    clearFinished();
-  }, [queueFinished, clearFinished, showNotice]);
+  // A finished queue stays in the notice tray, saying how it went, until it's
+  // cleared, so each session's result can still be read.
 
   // Choosing sessions to analyze: Analyze in the Actions menu (⌘Y) turns the
   // session list into the same multi-select Statistics and Insights use, with
@@ -874,7 +866,7 @@ export default function App() {
       const again = "Analyze Again";
       const changed = "Only If Changed";
       const choice = await message(
-        `Analyze has already run on ${analyzed === rows.length ? (analyzed === 1 ? "this session" : analyzed === 2 ? "both of these sessions" : `all ${analyzed} of these sessions`) : `${analyzed} of these ${rows.length} sessions`}. Analyze ${analyzed === 1 ? "it" : "them"} again, or only if ${analyzed === 1 ? "its transcript has" : "a transcript has"} changed since? Only what Analyze wrote and no one edited is replaced.`,
+        `Analyze has already run on ${analyzed === rows.length ? (analyzed === 1 ? "this session" : analyzed === 2 ? "both of these sessions" : `all ${analyzed} of these sessions`) : `${analyzed} of these ${rows.length} sessions`}. Analyze ${analyzed === 1 ? "it" : "them"} again, or only if ${analyzed === 1 ? "its transcript has" : "a transcript has"} changed since? Analyze replaces the outcome and components, even ones you wrote; annotations people wrote or edited are kept.`,
         { title: "Analyze sessions again?", kind: "info", buttons: { yes: again, no: changed, cancel: "Cancel" } },
       );
       if (choice !== again && choice !== changed) return;

@@ -211,7 +211,7 @@ const SEEDED: [number, Outcome, AnnotationKind[]][] = [
 for (const [i, outcome, kinds] of SEEDED) {
   const key = sessionKey(sessions[i]);
   const generated_by = { model: "claude-haiku-5-5", at: now - H, revision: "dev" };
-  devMeta.set(key, { key, outcome, outcome_note: null, components: [], updated_at: now - H, generated: ["outcome"], generated_by, cleared: [] });
+  devMeta.set(key, { key, outcome, outcome_note: null, components: [], updated_at: now - H, generated: ["outcome"], generated_by });
   kinds.forEach((kind, j) => {
     const byPerson = j === 0 && i % 2 === 0;
     devNotes.push({
@@ -308,7 +308,7 @@ const handlers: Record<string, Handler> = {
       devGenerating.delete(k);
       if (!cancelled) {
         const generated_by = { model: "claude-haiku-5-5", at: Date.now(), revision: "dev" };
-        devMeta.set(k, { key: k, outcome: "succeeded", outcome_note: null, components: [], updated_at: Date.now(), generated: ["outcome"], generated_by, cleared: [] });
+        devMeta.set(k, { key: k, outcome: "succeeded", outcome_note: null, components: [], updated_at: Date.now(), generated: ["outcome"], generated_by });
       }
       emit("generate-done", { key: k, error: null, cancelled, rejected: 0 });
     }, 1800);
@@ -319,6 +319,10 @@ const handlers: Record<string, Handler> = {
     return null;
   },
   generating: () => [...devGenerating.keys()],
+  open_analyze_log: () => {
+    console.log("open analyze log");
+    return null;
+  },
   default_prompts: () => ({
     analyze:
       "The analysis is for a team that studies how coding agents are used. Mark the moments that explain how the session went: where the agent went wrong or got stuck, where the user had to step in, and the decisions that shaped the result. Prefer a few well-supported annotations over many weak ones.",

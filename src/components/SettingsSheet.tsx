@@ -198,6 +198,15 @@ export function SettingsSheet({
             </span>
           </span>
         </label>
+        <div className="setting-field">
+          <span>Analyze log</span>
+          <button className="ghost setting-button" onClick={() => void api.openAnalyzeLog()}>
+            Open Log
+          </button>
+          <span className="setting-note">
+            Each Analyze and report run, and each call to claude. When one fails, the log has claude&rsquo;s own error output.
+          </span>
+        </div>
 
         <h3 className="settings-head">Imported sessions</h3>
         <p className="sheet-note">

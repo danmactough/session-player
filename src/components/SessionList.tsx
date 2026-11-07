@@ -211,7 +211,8 @@ const Row = memo(function Row({
       <div className="srow-title">
         {kind === "branch" ? <BranchIcon className="branch-glyph" /> : <span className={`sdot src-${s.source}`} title={s.source} />}
         <span className="t">{s.title}</span>
-        {note && note.outcome !== "unknown" && <span className={`outcome outcome-${note.outcome}`}>{OUTCOME_LABEL[note.outcome]}</span>}
+        {/* An analyzed session shows its outcome even when Analyze couldn't tell, so it doesn't look unanalyzed. */}
+        {note && (note.outcome !== "unknown" || note.analyzed) && <span className={`outcome outcome-${note.outcome}`}>{OUTCOME_LABEL[note.outcome]}</span>}
       </div>
       {hit && <Snippet text={hit.snippet} />}
       <div className="srow-meta">

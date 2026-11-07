@@ -3528,9 +3528,17 @@ button.report-row:hover {
   bottom: calc(100% + 4px);
 }
 .report-focus {
-  text-decoration: underline dotted;
-  text-underline-offset: 3px;
-  cursor: help;
+  font: inherit;
+}
+.report-focus-text {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--hover);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink-2);
+  white-space: pre-wrap;
 }
 /* Their padding belongs on the button inside, not on the pair. */
 .split-button.build-start,
@@ -3542,4 +3550,17 @@ button.report-row:hover {
 }
 .split-button.pick-analyze .split-main {
   padding: 3px 10px;
+}
+.queue-head {
+  gap: 12px;
+}
+.setting-button {
+  justify-self: start;
+}
+.report-job-log {
+  font-size: 12px;
+}
+.queue-head .queue-title {
+  flex: 1;
+  min-width: 0;
 }

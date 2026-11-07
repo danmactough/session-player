@@ -2,6 +2,7 @@ import type { ReportSummary } from "../types";
 import type { ReportJob } from "../lib/useReports";
 import { relTime } from "../lib/format";
 import { modelName } from "../lib/reportMarkdown";
+import { api } from "../api";
 
 interface Props {
   reports: ReportSummary[];
@@ -59,6 +60,11 @@ export function ReportList({ reports, jobs, preparing, onCancelPreparing, select
               ×
             </button>
           </div>
+          {j.error && (
+            <button className="pick-link report-job-log" onClick={() => void api.openAnalyzeLog()}>
+              Open log
+            </button>
+          )}
           <div className="report-row-meta">
             {j.error ?? (j.progress && j.progress.total > 1 ? `Part ${Math.min(j.progress.done + 1, j.progress.total)} of ${j.progress.total}` : "Reading the notes…")}
           </div>

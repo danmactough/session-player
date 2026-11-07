@@ -62,6 +62,8 @@ export const api = {
   generateNotes: (key: string, path: string, branch?: string, focus?: string) =>
     invoke<void>("generate_notes", { key, path, branch: branch ?? null, focus: focus ?? null }),
   /** The built-in focus text for Analyze and for reports. */
+  /** Opens the log of Analyze and report runs, which has claude's own output when a run fails. */
+  openAnalyzeLog: () => invoke<void>("open_analyze_log"),
   defaultPrompts: () => invoke<{ analyze: string; report: string }>("default_prompts"),
   cancelGenerate: (key: string) => invoke<void>("cancel_generate", { key }),
   generating: () => invoke<string[]>("generating"),

@@ -31,7 +31,7 @@ fn fake_claude(dir: &Path, reply: &str, delay_secs: u32) -> PathBuf {
 }
 
 fn claude(bin: &Path) -> generate::Claude {
-    generate::Claude { bin: bin.to_path_buf(), env: vec![("SP_TEST_ENV".into(), "passed".into())], api_key_helper: None }
+    generate::Claude { bin: bin.to_path_buf(), env: vec![("SP_TEST_ENV".into(), "passed".into())], api_key_helper: None, log: None }
 }
 
 fn reply(structured: serde_json::Value) -> String {
@@ -180,7 +180,7 @@ fn temp_db(name: &str) -> rusqlite::Connection {
 }
 
 #[test]
-fn regenerating_keeps_what_people_wrote_or_edited() {
+fn regenerating_keeps_annotations_people_wrote_or_edited() {
     let conn = temp_db("apply");
     let events = fixture_events();
     notes::save_meta(&conn, &notes::SessionMeta { key: KEY.into(), components: vec!["mine".into()], ..Default::default() }).unwrap();
@@ -192,9 +192,9 @@ fn regenerating_keeps_what_people_wrote_or_edited() {
     let first = generate::generate(&events, None, &mut stub(answer(), &mut calls), &mut |_, _| {}).unwrap();
     generate::apply(&conn, KEY, &first, &events).unwrap();
     let meta = notes::meta(&conn, KEY).unwrap().unwrap();
-    assert_eq!(meta.components, ["mine"], "a person's components stay");
+    assert_eq!(meta.components, ["packages/auth", "apps/web"], "Analyze's components replace a person's");
     assert_eq!(meta.outcome, notes::Outcome::Failed);
-    assert_eq!(meta.generated, ["outcome"]);
+    assert_eq!(meta.generated, ["outcome", "components"]);
     assert_eq!(meta.generated_by.as_ref().unwrap().model, "claude-haiku-5-5");
     let list = notes::annotations(&conn, KEY).unwrap();
     assert_eq!(list.len(), 2);
@@ -202,7 +202,8 @@ fn regenerating_keeps_what_people_wrote_or_edited() {
     assert!(!tool_error.edited);
     assert_eq!(tool_error.confidence.as_deref(), Some("high"));
 
-    // A person edits the generated outcome and the tool error annotation.
+    // A person edits the generated outcome and the tool error annotation;
+    // Analyze replaces the outcome but keeps the edited annotation.
     let mut edited = meta.clone();
     edited.outcome_note = Some("Never got past the first run".into());
     notes::save_meta(&conn, &edited).unwrap();
@@ -216,8 +217,8 @@ fn regenerating_keeps_what_people_wrote_or_edited() {
     let regenerated = generate::generate(&events, None, &mut stub(second, &mut calls), &mut |_, _| {}).unwrap();
     generate::apply(&conn, KEY, &regenerated, &events).unwrap();
     let meta = notes::meta(&conn, KEY).unwrap().unwrap();
-    assert_eq!((meta.outcome, meta.outcome_note.as_deref()), (notes::Outcome::Failed, Some("Never got past the first run")));
-    assert!(meta.generated.is_empty());
+    assert_eq!((meta.outcome, meta.outcome_note.as_deref()), (notes::Outcome::Succeeded, Some("One test run; nothing changed")));
+    assert_eq!(meta.generated, ["outcome", "components"]);
     let kinds: Vec<_> = notes::annotations(&conn, KEY).unwrap().iter().map(|a| a.kind).collect();
     assert_eq!(kinds, [notes::Kind::HumanFrustration, notes::Kind::ToolError, notes::Kind::KeyDecision]);
     assert!(notes::annotations(&conn, KEY).unwrap().iter().any(|a| a.id == mine.id));
@@ -274,37 +275,34 @@ fn only_a_change_marks_a_generated_annotation_as_edited() {
 }
 
 #[test]
-fn a_field_a_person_cleared_stays_empty() {
-    let conn = temp_db("cleared");
+fn analyze_replaces_what_a_person_wrote_or_emptied() {
+    let conn = temp_db("replaces");
     let events = fixture_events();
     let mut calls = Vec::new();
     let g = generate::generate(&events, None, &mut stub(answer(), &mut calls), &mut |_, _| {}).unwrap();
-    generate::apply(&conn, KEY, &g, &events).unwrap();
-    let mut meta = notes::meta(&conn, KEY).unwrap().unwrap();
-    meta.components = vec![];
-    notes::save_meta(&conn, &meta).unwrap();
-    assert_eq!(notes::meta(&conn, KEY).unwrap().unwrap().cleared, ["components"]);
 
-    generate::apply(&conn, KEY, &g, &events).unwrap();
-    let meta = notes::meta(&conn, KEY).unwrap().unwrap();
-    assert!(meta.components.is_empty());
-    assert_eq!(meta.generated, ["outcome"]);
-
-    // Filling it in again lifts that.
-    let mut refilled = meta.clone();
-    refilled.components = vec!["mine".into()];
-    notes::save_meta(&conn, &refilled).unwrap();
-    assert!(notes::meta(&conn, KEY).unwrap().unwrap().cleared.is_empty());
-
-    // Emptying every field still remembers which ones were emptied.
-    let mut all_clear = notes::meta(&conn, KEY).unwrap().unwrap();
-    all_clear.components = vec![];
-    all_clear.outcome = notes::Outcome::Unknown;
-    all_clear.outcome_note = None;
-    notes::save_meta(&conn, &all_clear).unwrap();
+    // A person's own outcome and components.
+    let mine = notes::SessionMeta {
+        key: KEY.into(),
+        outcome: notes::Outcome::Succeeded,
+        outcome_note: Some("Worked for me".into()),
+        components: vec!["mine".into()],
+        ..Default::default()
+    };
+    notes::save_meta(&conn, &mine).unwrap();
     generate::apply(&conn, KEY, &g, &events).unwrap();
     let meta = notes::meta(&conn, KEY).unwrap().unwrap();
-    assert_eq!((meta.outcome, meta.outcome_note, meta.components.len()), (notes::Outcome::Unknown, None, 0));
+    assert_eq!((meta.outcome, meta.outcome_note.as_deref()), (notes::Outcome::Failed, Some("One test run; nothing changed")));
+    assert_eq!(meta.components, ["packages/auth", "apps/web"]);
+    assert_eq!(meta.generated, ["outcome", "components"]);
+
+    // A person emptied every field.
+    notes::save_meta(&conn, &notes::SessionMeta { key: KEY.into(), ..Default::default() }).unwrap();
+    assert_eq!(notes::meta(&conn, KEY).unwrap(), None);
+    generate::apply(&conn, KEY, &g, &events).unwrap();
+    let meta = notes::meta(&conn, KEY).unwrap().unwrap();
+    assert_eq!(meta.outcome, notes::Outcome::Failed);
+    assert_eq!(meta.components, ["packages/auth", "apps/web"]);
 }
 
 fn config_dir(name: &str, settings: serde_json::Value, local: Option<serde_json::Value>) -> PathBuf {
@@ -343,7 +341,7 @@ fn claude_gets_the_shell_environment_and_the_env_from_its_settings() {
 fn args_for(name: &str, env: Vec<(String, String)>, api_key_helper: Option<&str>) -> Vec<String> {
     let dir = scratch(name);
     let bin = fake_claude(&dir, &reply(serde_json::json!({})), 0);
-    let claude = generate::Claude { bin, env, api_key_helper: api_key_helper.map(str::to_string) };
+    let claude = generate::Claude { bin, env, api_key_helper: api_key_helper.map(str::to_string), log: None };
     generate::run_claude(&claude, "S", "x", &serde_json::json!({}), &Arc::new(AtomicBool::new(false))).unwrap();
     std::fs::read_to_string(dir.join("args.txt")).unwrap().lines().map(str::to_string).collect()
 }
@@ -433,4 +431,35 @@ fn analyze_sends_the_default_focus_or_the_users_own() {
     assert!(!systems[2].contains(generate::DEFAULT_FOCUS));
     // The rules stay whatever the focus.
     assert!(systems[2].contains("Reply only with the JSON the schema describes."));
+}
+
+#[test]
+fn a_failed_call_logs_claudes_output_but_the_error_starts_with_one_line() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = scratch("log");
+    let bin = dir.join("claude");
+    std::fs::write(&bin, "#!/bin/sh\ncat > /dev/null\necho 'API Error: 529 overloaded' >&2\necho 'retry later' >&2\necho 'partial output'\nexit 1\n").unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let log = dir.join("logs/analyze.log");
+    let mut c = claude(&bin);
+    c.log = Some(log.clone());
+    let cancel = Arc::new(AtomicBool::new(false));
+    let err = generate::run_claude(&c, "SYSTEM", "input", &serde_json::json!({"type": "object"}), &cancel).unwrap_err();
+    let message = format!("{err:#}");
+    assert_eq!(message.lines().next(), Some("claude failed (exit status: 1): API Error: 529 overloaded"));
+
+    let text = std::fs::read_to_string(&log).unwrap();
+    assert!(text.contains("claude --model haiku: FAILED after"), "{text}");
+    assert!(text.contains("\n    stderr:\n    API Error: 529 overloaded\n    retry later"), "{text}");
+    assert!(text.contains("\n    stdout:\n    partial output"), "{text}");
+
+    // A good call logs the model's reply.
+    let ok = fake_claude(&dir, &reply(serde_json::json!({ "ok": true })), 0);
+    let mut c = claude(&ok);
+    c.log = Some(log.clone());
+    generate::run_claude(&c, "SYSTEM", "input", &serde_json::json!({"type": "object"}), &cancel).unwrap();
+    let text = std::fs::read_to_string(&log).unwrap();
+    let last = &text[text.rfind("claude --model haiku: answered in").expect("logged")..];
+    assert!(last.starts_with("claude --model haiku: answered in"), "{last}");
+    assert!(last.contains(" as claude-haiku-5-5, 5 characters in\n    reply:\n    {\n      \"ok\": true\n    }\n"), "{last}");
 }

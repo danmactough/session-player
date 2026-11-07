@@ -113,7 +113,7 @@ The ↑ and ↓ error arrows next to the find box step through a session's error
 
 ### Continue a session
 
-The split button in a transcript's header either copies the command that resumes the session or opens it in another app. Click ▾ to choose an action, then click the button or press `⌘O` to run it. Your choice is remembered for each agent.
+The **⋯** button at the top right of a transcript holds its actions. The first one either copies the command that resumes the session or opens it in another app; choose which under **Resume or open with**, then click it or press `⌘O` to run it. Your choice is remembered for each agent. The same menu has **Export…**, **Reveal file** and **Copy path**, and **Remove…** for an imported session.
 
 | Action | Available for |
 |---|---|
@@ -132,7 +132,7 @@ macOS asks once for permission to control each terminal. You can also show a ses
   <img src="docs/images/annotation-light.png" alt="A transcript scrolled to an annotated reply, with a Key decision note shown directly below it and arrows for stepping through the session's annotations">
 </picture>
 
-Each session can record how it went. Click **Analyze** to have Claude Haiku fill this in, or add it yourself:
+Each session can record how it went. Use **Analyze…** in the session list's **⋯** Actions menu (`⌘Y`) to have Claude Haiku fill this in, or add it yourself:
 
 - **Outcome**: succeeded, partial, failed or unknown, with the reason.
 - **Components**: the parts of the codebase it worked on, such as `packages/api`.
@@ -140,15 +140,19 @@ Each session can record how it went. Click **Analyze** to have Claude Haiku fill
 
 **Add an annotation**: hover over a message and click **+** in the margin, or open a tool call and click **Annotate this call**. Pick a type, then add a note.
 
-**Use them**: the list under the transcript's title shows every annotation, and **Show** jumps to its place in the transcript. The ↑ and ↓ annotation arrows step through them. Use the **Outcome** and **Annotation type** filters under the session list's heading to find matching sessions. You can choose several options in each filter, and a session must match both filters. The transcript's annotation list has its own **Annotation type** filter.
+**Use them**: the list under the transcript's title shows every annotation, and **Show** jumps to its place in the transcript. The ↑ and ↓ annotation arrows step through them. Use the **Filter** menu under the session list's heading to find matching sessions: hover **Analyzed**, **Outcome** or **Annotation type** and tick the options you want. You can tick several options in each group, and a session must match every group. The button shows how many options are ticked, and the **×** beside it clears them all. The transcript's annotation list has its own **Annotation type** filter.
 
-**See them across sessions**: switch the **Sessions / Analysis** slider at the top of the sidebar to **Analysis**. Its statistics count the sessions the list shows, or only the sessions you select: how many were analyzed or annotated, how many have each outcome, how many annotations of each type there are, who wrote them, and how confident Analyze was. Click an outcome or annotation type to narrow the list to it, and click it again to clear that filter.
+**Views**: the icons down the window's left edge switch between **Transcripts** (reading sessions), **Statistics** and **Insights**; the gear and the question mark at the bottom open Settings and the keyboard shortcuts.
 
-Each view keeps its own projects, filters, search, expanded rows and scroll position, so switching back to **Sessions** finds the list and the open transcript exactly as you left them. The Sessions view always has one session open.
+**See them across sessions**: click **Statistics**. Its counts cover the sessions the list shows, or only the sessions you select: how many were analyzed or annotated, how many have each outcome, how many annotations of each type there are, who wrote them, and how confident Analyze was. Click an outcome or annotation type to narrow the list to it, and click it again to clear that filter.
 
-**Analyze several sessions**: in Analysis, click a session to select it, ⌘-click to add or remove one, ⇧-click to select a run of them, or press ⌘A to select every session in the list. Press Esc or click an empty part of the list to clear the selection. While sessions are selected, the bar under the list shows **Analyze**, and can also select every session shown, or only those not analyzed yet. **Analyze** queues them and runs them one at a time. When some of them were analyzed before, the app asks whether to **Analyze Again** or analyze them **Only If Changed**, which skips a session whose transcript hasn't changed since its last analysis. While the queue runs, a spinner and count show at the bottom of the sidebar. Click it to see each session's result; × cancels one and **Cancel all** stops the rest. The queue isn't kept when the app quits.
+Each view keeps its own projects, filters, search, expanded rows and scroll position, so switching back to **Transcripts** finds the list and the open transcript exactly as you left them. Transcripts always has one session open.
 
-**Write a report**: in Analysis, select sessions and click **Report** in the bar under the list. A model (Claude Sonnet) reads their outcomes, components and annotations and writes a summary, key takeaways and recommended actions: changes to the codebase, skills, prompts and instruction files, the environment, or work to automate. The **Statistics / Reports** switch at the top of the list shows saved reports, newest first; a report being written shows there with its progress. Each takeaway and action lists what it rests on: click one to see the annotation or outcome as the report saw it (marked if it has been edited or deleted since), and **Open in Sessions** to go to that session. A report never changes once written; write another to include newer notes. **Copy as Markdown** and **Save as .md…** export it, and **Delete…** removes it.
+**Analyze sessions**: choose **Analyze…** from the **⋯** Actions button above the session list, or press `⌘Y`. The open session (in Transcripts) or the sessions already selected (in Statistics) start selected. Change the selection as in Insights: click one, ⌘-click to add or remove one, ⇧-click a run, or ⌘A for every session the list shows under its filters and search. **Filter › Analyzed › Not analyzed** narrows the list to sessions not analyzed yet. Click **Analyze • (n)** in the bar under the list to queue them and run them one at a time, or **Cancel** (or Esc) to leave without analyzing. When some of them were analyzed before, the app asks whether to **Analyze Again** or analyze them **Only If Changed**, which skips a session whose transcript hasn't changed since its last analysis. While the queue runs, a spinner and "Analyzing 3/10" show in the small tray at the bottom of the left column, where "Indexed" appears. Click it to see each session's result; × cancels one and **Cancel all** stops the rest. When every session is done, the tray says "Analyze · Done" briefly, then goes; if any failed, it shows how many until you open it and click **Clear**. The queue isn't kept when the app quits.
+
+**Select sessions in Statistics**: click a session to count only it, ⌘-click to add or remove one, ⇧-click to select a run, or ⌘A for every session in the list. Press Esc or click an empty part of the list to count the whole list again.
+
+**Write a report**: click **Insights**. Under **New Insight Report**, click **Create**; the button then reads **Select**. Choose sessions in the list that appears (click, ⌘-click, ⇧-click or ⌘A for all; the Filter menu and **Recent** / **Oldest** sort work as elsewhere). Once some are chosen the button reads **Get insights**: click it. Sessions that haven't been analyzed are analyzed first (the report list shows "Analyzing N sessions first"), then the report is written on all of them. Tick **Also re-analyze sessions that already have an analysis** to analyze every chosen session again first; the app remembers that choice. A model (Claude Sonnet) reads their outcomes, components and annotations and writes a summary, key takeaways and recommended actions: changes to the codebase, skills, prompts and instruction files, the environment, or work to automate. Insights lists saved reports under **Build a report**, sorted by **Recent** or **Oldest**; a report being written shows there with its progress, and opens when it's done. A report you open fills the space to the right. Each takeaway and action lists what it rests on: click one to see the annotation or outcome as the report saw it (marked if it has been edited or deleted since), and **Open in Transcripts** to go to that session. A report never changes once written; write another to include newer notes. The **⋯** button at the top right of a report has **Copy as Markdown** and **Save as .md…** to export it, and **Delete…** to remove it.
 
 **Change the outcome or components**: click **Edit**.
 
@@ -158,17 +162,17 @@ These notes are stored in the app, not in the agent's files.
 
 ### Share a session
 
-**Send**: click **Export…** in a transcript's header and leave ticked any subagents you want to include. Before saving, the app lists exactly what goes into the file and what stays out. It saves a `.spsession` file that anyone with Session Player can import. Exporting needs your name: if Settings doesn't have one yet, the export sheet asks for it. The file records your name, and the recipient sees it as the author of annotations you wrote before you set a name.
+**Send**: open the session, click the **⋯** button at the top right of the transcript, choose **Export…**, and leave ticked any subagents you want to include. Before saving, the app lists exactly what goes into the file and what stays out. It saves a `.spsession` file that anyone with Session Player can import. Exporting needs your name: if Settings doesn't have one yet, the export sheet asks for it. The file records your name, and the recipient sees it as the author of annotations you wrote before you set a name.
 
-**Receive**: click **Import…** at the bottom of the sidebar, or press `⌘⇧I`. Imported sessions are marked "imported". They can be read, searched and exported, but not resumed. To delete one, click **Remove…** in its header.
+**Receive**: choose **Import…** from the **⋯** Actions button above the session list, or press `⌘⇧I`. Imported sessions are marked "imported". They can be read, searched and exported, but not resumed. To delete one, choose **Remove…** from the **⋯** menu at the top right of its transcript.
 
 ### Settings
 
-Open **Settings** with `⌘,`, the gear in the bottom-left corner, or **Session Player → Settings…**.
+Open **Settings** with `⌘,`, the gear at the bottom of the window's left edge, or **Session Player → Settings…**.
 
 ### Keyboard shortcuts
 
-Press `?`, or click the **?** button next to the gear, to see every keyboard shortcut.
+Press `?`, or click the question mark under the gear at the bottom of the window's left edge, to see every keyboard shortcut.
 
 ---
 

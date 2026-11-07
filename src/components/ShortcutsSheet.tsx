@@ -37,11 +37,12 @@ const GROUPS: { title: string; keys: { keys: string[][]; what: string }[] }[] = 
     ],
   },
   {
-    title: "Analysis",
+    title: "Statistics and Insights",
     keys: [
       { keys: [["⌘", "click"]], what: "Add or remove a session from the selection" },
       { keys: [["⇧", "click"]], what: "Select a run of sessions" },
       { keys: [["⌘", "A"]], what: "Select every session in the list" },
+      { keys: [["⌘", "Y"]], what: "Choose sessions to analyze" },
       { keys: [["Esc"]], what: "Clear the selection (or click an empty part of the list)" },
     ],
   },

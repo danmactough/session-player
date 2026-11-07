@@ -31,9 +31,9 @@ function statusText(i: QueueItem): string {
 const isActive = (i: QueueItem) => i.status === "waiting" || i.status === "checking" || i.status === "running";
 
 /**
- * The batch Analyze queue, kept out of the way in the sidebar's footer: a
- * spinner while it runs, a tally once it's done. Clicking it shows each
- * session's result.
+ * The batch Analyze queue, in the notice tray at the bottom of the left
+ * column: a spinner and progress while it runs, and how many failed if any
+ * did. Clicking it shows each session's result.
  */
 export function QueueStatus({ items, onOpen, onCancel, onCancelAll, onClear }: Props) {
   const [open, setOpen] = useState(false);
@@ -75,7 +75,7 @@ export function QueueStatus({ items, onOpen, onCancel, onCancelAll, onClear }: P
   return (
     <div className="queue-status" ref={ref}>
       <button
-        className={`ghost queue-button ${failed ? "has-failed" : ""}`}
+        className={`queue-button ${failed ? "has-failed" : ""}`}
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
         title={busy ? `Analyzing ${Math.min(finished + 1, items.length)} of ${items.length}` : summary}
@@ -83,12 +83,12 @@ export function QueueStatus({ items, onOpen, onCancel, onCancelAll, onClear }: P
         {busy ? (
           <>
             <span className="spinner" aria-hidden="true" />
-            {finished}/{items.length}
+            Analyzing {finished}/{items.length}
           </>
         ) : (
           <>
             <span className={`queue-dot ${failed ? "err" : "ok"}`} aria-hidden="true" />
-            {failed ? `${failed} failed` : "Analyzed"}
+            Analyze · {failed ? `${failed} failed` : "Done"}
           </>
         )}
       </button>

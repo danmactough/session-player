@@ -201,7 +201,7 @@ export function SettingsSheet({
 
         <h3 className="settings-head">Imported sessions</h3>
         <p className="sheet-note">
-          To remove an imported session, open it and click Remove… in its header. Files in the library that can&rsquo;t
+          To remove an imported session, open it and choose Remove… from the ⋯ menu at the top right of its transcript. Files in the library that can&rsquo;t
           be read are listed here.
         </p>
         <ul className="roots">

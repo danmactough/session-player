@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 /**
  * Shown before Analyze sends anything, from a transcript's Analyze button or
- * the Analysis view's queue. "Don't show this again" takes effect only when
+ * the Statistics view's queue. "Don't show this again" takes effect only when
  * the user also clicks OK; Settings can bring the notice back.
  */
 export function AnalyzeNotice({ count, onOk, onCancel }: { count: number; onOk: (dontShowAgain: boolean) => void; onCancel: () => void }) {

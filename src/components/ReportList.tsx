@@ -6,6 +6,9 @@ import { modelName } from "../lib/reportMarkdown";
 interface Props {
   reports: ReportSummary[];
   jobs: ReportJob[];
+  /** A report waiting for its sessions to be analyzed first. */
+  preparing: { sessions: number; analyzing: number } | null;
+  onCancelPreparing: () => void;
   selected: string | null;
   onSelect: (id: string) => void;
   onCancel: (job: string) => void;
@@ -14,18 +17,30 @@ interface Props {
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
-/** The middle column of the Analysis view's Reports tab: reports being written, then saved reports, newest first. */
-export function ReportList({ reports, jobs, selected, onSelect, onCancel, onDismiss }: Props) {
-  if (!reports.length && !jobs.length) {
+/** Insights' left column: reports being written, then saved reports. */
+export function ReportList({ reports, jobs, preparing, onCancelPreparing, selected, onSelect, onCancel, onDismiss }: Props) {
+  if (!reports.length && !jobs.length && !preparing) {
     return (
       <div className="empty">
         <p>No reports yet.</p>
-        <p className="dim">Switch to Statistics, select sessions in the list, and click Report.</p>
+        <p className="dim">Click Create above to start one.</p>
       </div>
     );
   }
   return (
     <div className="list-scroll report-list">
+      {preparing && (
+        <div className="report-row report-job">
+          <div className="report-row-title">
+            <span className="spinner" aria-hidden="true" />
+            <span className="t">Analyzing {plural(preparing.analyzing, "session", "sessions")} first</span>
+            <button className="queue-cancel" onClick={onCancelPreparing} aria-label="Cancel" title="Cancel">
+              ×
+            </button>
+          </div>
+          <div className="report-row-meta">Then a report on {plural(preparing.sessions, "session", "sessions")}</div>
+        </div>
+      )}
       {jobs.map((j) => (
         <div key={j.job} className={`report-row report-job ${j.error ? "failed" : ""}`}>
           <div className="report-row-title">

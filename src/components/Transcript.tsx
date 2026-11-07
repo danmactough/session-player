@@ -8,7 +8,6 @@ import { buildBlocks, blockText, type Block, type ToolStep } from "../lib/blocks
 import {
   SOURCE_LABEL,
   basename,
-  bytes,
   clock,
   compact,
   duration,
@@ -22,7 +21,7 @@ import { Analysis, AnnotationEditor, AnnotationItem } from "./Notes";
 import { blockEvents, ref, sessionKey } from "../lib/notes";
 import { RemoteImages } from "../lib/remoteImages";
 import { BranchIcon } from "./BranchIcon";
-import { OpenButton } from "./OpenButton";
+import { TranscriptMenu } from "./TranscriptMenu";
 import { SourceIcon } from "./AppIcon";
 
 interface Props {
@@ -38,7 +37,7 @@ interface Props {
   keyboard: boolean;
   /** Treat shell commands that exited with a failing status as errors. */
   countExits: boolean;
-  /** The chosen resume/open action (see OpenButton). */
+  /** The chosen resume/open action (see TranscriptMenu). */
   openWith: string | undefined;
   onOpenWith: (id: string) => void;
   onExport: () => void;
@@ -47,7 +46,6 @@ interface Props {
   /** Metadata or annotations changed, so the list's titles and filters should refresh. */
   onNotesChanged: () => void;
   /** Asks, the first time, whether sending a transcript to Anthropic is all right. */
-  confirmGenerate: () => Promise<boolean>;
   /** The summary under the title (first prompt, analysis, stats) is hidden. */
   collapsed: boolean;
   onCollapse: (collapsed: boolean) => void;
@@ -67,7 +65,6 @@ export function Transcript({
   onExport,
   authorName,
   onNotesChanged,
-  confirmGenerate,
   collapsed,
   onCollapse,
 }: Props) {
@@ -79,7 +76,6 @@ export function Transcript({
   const [find, setFind] = useState("");
   const [findOpen, setFindOpen] = useState(false);
   const [findIdx, setFindIdx] = useState(0);
-  const [copied, setCopied] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const findRef = useRef<HTMLInputElement>(null);
 
@@ -254,15 +250,6 @@ export function Transcript({
       un.forEach((p) => p.then((f) => f()));
     };
   }, [key]);
-  const generate = async () => {
-    if (!(await confirmGenerate())) return;
-    setGenMessage(null);
-    setGen({ done: 0, total: 0 });
-    await api.generateNotes(key, session.branch_of ?? session.path, session.branch_leaf).catch((e) => {
-      setGen(null);
-      setGenMessage(String(e));
-    });
-  };
 
   const saveMeta = async (meta: SessionMeta) => {
     const saved = await api.saveMeta(meta);
@@ -494,12 +481,6 @@ export function Transcript({
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const copy = async (label: string, text: string) => {
-    await navigator.clipboard.writeText(text);
-    setCopied(label);
-    setTimeout(() => setCopied(null), 1400);
-  };
-
   const elapsed = (session.updated_at ?? 0) - (session.started_at ?? 0);
   const totalIn = session.input_tokens + session.cache_read_tokens;
 
@@ -507,6 +488,14 @@ export function Transcript({
     <RemoteImages.Provider value={!session.from_bundle}>
       <div className="transcript">
         <header className="t-head" data-tauri-drag-region>
+          <TranscriptMenu
+            session={session}
+            choice={openWith}
+            onChoice={onOpenWith}
+            keyboard={keyboard}
+            onExport={onExport}
+            onRemove={session.from_bundle ? () => void removeImported(session, children) : undefined}
+          />
           <div className="t-eyebrow">
             <span className={`src src-${session.source}`}>
               <SourceIcon source={session.source} />
@@ -612,34 +601,15 @@ export function Transcript({
                 </dl>
               </div>
             )}
-            <div className="t-actions">
-              {session.from_bundle ? (
-                <button disabled title="Imported sessions have no agent files on this Mac to resume or open">
-                  Can&rsquo;t resume an imported session
-                </button>
-              ) : (
-                <OpenButton session={session} choice={openWith} onChoice={onOpenWith} keyboard={keyboard} />
-              )}
-              {gen ? (
+            {/* Analyze starts from the session list's Actions menu; this shows it running on this session. */}
+            {gen && (
+              <div className="t-actions">
                 <span className="generating">
                   <span className="pulse">Analyzing{gen.total > 1 ? ` · part ${Math.min(gen.done + 1, gen.total)} of ${gen.total}` : "…"}</span>
                   <button onClick={() => void api.cancelGenerate(key)}>Cancel</button>
                 </span>
-              ) : (
-                <button onClick={() => void generate()} title="Find the outcome, components and annotations with Claude Haiku">
-                  Analyze
-                </button>
-              )}
-              <button onClick={onExport}>Export…</button>
-            {session.from_bundle && (
-              <button onClick={() => void removeImported(session, children)}>Remove…</button>
+              </div>
             )}
-              <button onClick={() => api.reveal(session.path)}>Reveal file</button>
-              <button onClick={() => copy("path", session.path)}>{copied === "path" ? "Copied" : "Copy path"}</button>
-              <span className="t-file" title={session.path}>
-                {tildify(session.cwd)} · {bytes(session.size)}
-              </span>
-            </div>
           </div>
           {genMessage && <p className="gen-message">{genMessage}</p>}
           {(parent || children.length > 0) && (

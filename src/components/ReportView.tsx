@@ -7,16 +7,17 @@ import { fullDate } from "../lib/format";
 import { RemoteImages } from "../lib/remoteImages";
 import { CATEGORY_LABEL, PRIORITY_LABEL, modelName, reportMarkdown } from "../lib/reportMarkdown";
 import { Markdown } from "./Markdown";
+import { Menu } from "./Menu";
 
 interface Props {
   id: string;
-  /** Opens a session in the Sessions view; absent for one no longer in the list. */
+  /** Opens a session in Transcripts; absent for one no longer in the list. */
   onOpenSession: (key: string) => void;
   canOpenSession: (key: string) => boolean;
   onDeleted: () => void;
 }
 
-/** The Analysis view's right-hand pane on the Reports tab: one saved report.
+/** One saved report, filling the space right of Insights' report list.
  * Keyed by the report's id, so opening another starts fresh. */
 export function ReportView({ id, onOpenSession, canOpenSession, onDeleted }: Props) {
   const [report, setReport] = useState<Report | null | undefined>(undefined);
@@ -86,18 +87,31 @@ export function ReportView({ id, onOpenSession, canOpenSession, onDeleted }: Pro
             {fullDate(report.created_at)} · {report.sessions.length} {report.sessions.length === 1 ? "session" : "sessions"} ·{" "}
             {modelName(report.model)}
           </p>
-          <div className="report-tools">
-            <button className="ghost" onClick={() => void copy()}>
-              Copy as Markdown
-            </button>
-            <button className="ghost" onClick={() => void saveFile()}>
-              Save as .md…
-            </button>
-            <button className="ghost danger" onClick={() => void remove()}>
-              Delete…
-            </button>
-            {notice && <span className="report-notice">{notice}</span>}
-          </div>
+          {/* Top right, like the transcript's ⋯ menu. */}
+          <Menu<"copy" | "save" | "delete" | "none">
+            className="actions-menu report-menu"
+            label="Report actions"
+            title="Report actions"
+            value="none"
+            options={[
+              { key: "copy", label: "Copy as Markdown" },
+              { key: "save", label: "Save as .md…" },
+              { key: "delete", label: "Delete…" },
+            ]}
+            onChange={(a) => {
+              if (a === "copy") void copy();
+              else if (a === "save") void saveFile();
+              else if (a === "delete") void remove();
+            }}
+            trigger={
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <circle cx="5" cy="12" r="1.8" />
+                <circle cx="12" cy="12" r="1.8" />
+                <circle cx="19" cy="12" r="1.8" />
+              </svg>
+            }
+          />
+          {notice && <p className="report-notice">{notice}</p>}
         </header>
 
         {report.summary && <p className="report-summary">{report.summary}</p>}
@@ -138,7 +152,7 @@ export function ReportView({ id, onOpenSession, canOpenSession, onDeleted }: Pro
           <ul className="report-sessions">
             {report.sessions.map((s) => (
               <li key={s.key}>
-                <button className="report-session" onClick={() => onOpenSession(s.key)} disabled={!canOpenSession(s.key)} title={canOpenSession(s.key) ? "Open in Sessions" : "This session is no longer in the list"}>
+                <button className="report-session" onClick={() => onOpenSession(s.key)} disabled={!canOpenSession(s.key)} title={canOpenSession(s.key) ? "Open in Transcripts" : "This session is no longer in the list"}>
                   <span className="t">{s.title}</span>
                   {s.outcome !== "unknown" && <span className={`outcome outcome-${s.outcome}`}>{OUTCOME_LABEL[s.outcome]}</span>}
                   <span className="dim">
@@ -192,7 +206,7 @@ function EvidenceChip({
           </span>
           {since && <span className="dim">This is the note as the report saw it; it has been {since.replace(" since", "")} since.</span>}
           <button className="pick-link" onClick={() => onOpenSession(e.key)} disabled={!canOpenSession(e.key)}>
-            Open in Sessions
+            Open in Transcripts
           </button>
         </span>
       )}

@@ -198,7 +198,7 @@ const devGenerating = new Map<string, boolean>();
 let devNotes: Annotation[] = [];
 
 // A few analyzed sessions, so outcome badges, the note filters and the
-// Analysis view have something to show.
+// Statistics and Insights views have something to show.
 const SEEDED: [number, Outcome, AnnotationKind[]][] = [
   [0, "succeeded", ["key_decision", "tool_error"]],
   [1, "failed", ["agent_stuck", "agent_stuck", "tool_error"]],

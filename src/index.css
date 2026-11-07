@@ -149,12 +149,101 @@ mark {
 /* ---------- layout ---------- */
 .app {
   display: grid;
-  grid-template-columns: 248px 372px 1fr;
+  /* The view strip, the left column, the list, and the pane on the right. */
+  grid-template-columns: 72px 248px 372px 1fr;
   height: 100%;
+}
+/* Reading a report in Insights: no list, so the report spans both right-hand columns. */
+.app.reading {
+  grid-template-columns: 72px 248px 1fr;
+}
+
+/* ---------- view strip ---------- */
+.nav {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  /* Centers the first icon on the line the app name and list headings share,
+     46px down. The window's buttons sit over the left column instead. */
+  padding: 26px 0 12px;
+  background: var(--rail);
+  border-right: 1px solid var(--line);
+}
+.nav-button {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 9px;
+  color: var(--muted);
+  outline: none;
+  transition: background 0.12s, color 0.12s;
+}
+.nav-button:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+.nav-button.on {
+  background: var(--select);
+  color: var(--select-ink);
+}
+.nav-gap {
+  margin-top: auto;
+}
+
+/* ---------- Insights' left column ---------- */
+.build-area {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  /* Lines the button up with the search box in the other views' left column. */
+  padding: 10px 12px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.build-start {
+  flex: 1;
+  padding: 7px 10px;
+}
+.build-count {
+  font-size: 12px;
+  color: var(--muted);
+}
+.build-check {
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.build-title {
+  font-weight: 600;
+  color: var(--ink);
+}
+.build-note {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.build-actions {
+  display: flex;
+  gap: 8px;
+}
+.insights-rail .report-list {
+  flex: 1;
+}
+.insights-rail .report-row {
+  padding-left: 14px;
+  padding-right: 14px;
+}
+.insights-rail .empty {
+  /* Fills the column, so the footer stays at the bottom as it does in the other views. */
+  flex: 1;
+  padding: 24px 16px;
+  font-size: 12.5px;
 }
 
 /* ---------- rail ---------- */
 .rail {
+  position: relative;
   background: var(--rail);
   border-right: 1px solid var(--line);
   display: flex;
@@ -164,12 +253,12 @@ mark {
 .rail-top {
   height: 62px;
   display: flex;
-  /* The top padding leaves room for the window buttons; the slider and the
-     app name are centered on each other in the row below them. */
+  /* The top padding leaves room for the window buttons; the app name is
+     centered on the same line as the list's heading. */
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 6px;
-  padding: 34px 10px 4px 12px;
+  padding: 34px 16px 4px 12px;
 }
 .brand {
   flex: none;
@@ -621,19 +710,11 @@ mark {
 .proj-item.hidden .proj:hover {
   background: none;
 }
-.rail-foot {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 12px 12px;
-  border-top: 1px solid var(--line);
-  position: relative;
-}
 /* Floats over the bottom of the project list, then fades, like a browser's link preview. */
 .rail-status {
   position: absolute;
   left: 0;
-  bottom: 100%;
+  bottom: 0;
   max-width: 100%;
   box-sizing: border-box;
   padding: 3px 8px;
@@ -650,6 +731,10 @@ mark {
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.3s;
+}
+/* Holding the Analyze queue: its popover opens above the tray, so nothing may clip it. */
+.rail-status.with-queue {
+  overflow: visible;
 }
 .rail-status.on {
   opacity: 1;
@@ -745,7 +830,7 @@ mark {
   min-height: 0;
 }
 .mid-head {
-  /* Centers the heading on the same line as the sidebar's switch (46px down). */
+  /* Centers the heading on the same line as the app name (46px down). */
   padding: 32px 18px 12px;
   border-bottom: 1px solid var(--line-2);
 }
@@ -1010,6 +1095,7 @@ mark {
   height: 100%;
 }
 .t-head {
+  position: relative;
   padding: 30px 40px 16px;
   border-bottom: 1px solid var(--line-2);
   user-select: text;
@@ -1019,6 +1105,8 @@ mark {
   flex-wrap: wrap;
   align-items: center;
   gap: 7px;
+  /* Clear of the ⋯ menu at the top right. */
+  padding-right: 24px;
   font: 11px var(--mono);
   color: var(--muted);
 }
@@ -1094,15 +1182,24 @@ mark {
 .t-actions button:hover {
   background: var(--hover);
 }
-.t-file {
-  margin-left: 8px;
+/* The transcript's ⋯ menu, top right: its dots centered on the breadcrumb
+   line, and the last dot's edge on the header's 40px right margin (the button
+   is wider than the dots, so it sits a little past it). Confirmations such as
+   "Copied path" show beside it. */
+.t-menu {
+  position: absolute;
+  top: 24px;
+  right: 33px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.t-menu-flash {
   font: 11px var(--mono);
-  color: var(--faint);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
-  flex: 1;
+  color: var(--muted);
+}
+.t-menu .menu-list {
+  min-width: 210px;
 }
 .t-family {
   display: flex;
@@ -1961,10 +2058,6 @@ mark {
   font: 11px var(--mono);
   color: var(--muted);
 }
-.import-button {
-  padding: 5px 8px;
-  font-size: 12px;
-}
 
 /* ---------- metadata and annotations ---------- */
 .t-details {
@@ -2327,8 +2420,90 @@ mark {
 .mid-filters {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 6px 8px;
   margin-top: 8px;
+}
+.mid-filters {
+  flex-wrap: nowrap;
+  /* When the filters wrap, sort and Actions line up with their last row. */
+  align-items: flex-end;
+}
+.mid-filter-menus {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+}
+/* The Filter menu: a button like the sort menu's, an × to clear when filters
+   are on, and group flyouts that open to the right (into the pane beside). */
+.filter-menu {
+  align-items: center;
+  gap: 4px;
+}
+.filter-button {
+  padding: 4px 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: 10.5px var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.filter-button:hover,
+.filter-menu.open .filter-button,
+.filter-menu.filtering .filter-button {
+  color: var(--ink);
+  border-color: var(--ink-2);
+}
+.filter-count {
+  letter-spacing: 0;
+}
+.filter-clear {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  font-size: 14px;
+  line-height: 20px;
+  text-align: center;
+  color: var(--muted);
+}
+.filter-clear:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+.filter-menu > .menu-list {
+  left: 0;
+}
+.filter-menu .menu-list .menu-sub {
+  top: -5px;
+  left: calc(100% + 2px);
+  right: auto;
+}
+.mid-list-tools {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  /* The height of a filter button, so sort and Actions are centered on that row. */
+  min-height: 26px;
+}
+.actions-menu .menu-button {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  color: var(--muted);
+}
+.actions-menu .menu-button:hover,
+.actions-menu.open .menu-button {
+  background: var(--hover);
+  color: var(--ink);
+}
+.actions-menu .menu-list {
+  right: 0;
 }
 .mid-filters .caps-sort .menu-list,
 .analysis-annotations-head .caps-sort .menu-list {
@@ -2365,20 +2540,21 @@ mark {
 }
 
 /* ---------- keyboard shortcuts ---------- */
-.help-button {
-  width: 26px;
-  padding: 5px 0;
-  text-align: center;
-  font: 12px var(--mono);
-}
 .sheet.shortcuts {
-  width: 520px;
+  width: 900px;
+  /* Scrolls only if the window is too short for even three columns. */
+  max-height: calc(88vh - 24px);
+  overflow-y: auto;
 }
+/* Three balanced columns (fewer in a narrow window), each group kept whole. */
 .shortcut-groups {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 18px 28px;
+  columns: 3 250px;
+  column-gap: 28px;
   margin-top: 18px;
+}
+.shortcut-groups section {
+  break-inside: avoid;
+  margin-bottom: 18px;
 }
 .shortcut-groups h3 {
   margin: 0 0 6px;
@@ -2394,7 +2570,7 @@ mark {
   display: flex;
   align-items: baseline;
   gap: 12px;
-  padding: 5px 0;
+  padding: 3px 0;
   border-top: 1px solid var(--line-2);
   font-size: 12.5px;
 }
@@ -2429,11 +2605,6 @@ mark {
   font: 11px var(--mono);
   text-align: center;
   color: var(--ink);
-}
-@media (max-width: 560px) {
-  .shortcut-groups {
-    grid-template-columns: 1fr;
-  }
 }
 
 /* ---------- settings ---------- */
@@ -2485,33 +2656,6 @@ mark {
   font: 11px var(--mono);
 }
 
-/* ---------- resume / open split button ---------- */
-.split {
-  display: inline-flex;
-  align-items: stretch;
-  border: 1px solid var(--line);
-  border-radius: 5px;
-}
-.t-actions .split button {
-  border: 0;
-  border-radius: 0;
-}
-.t-actions .split .split-main {
-  border-radius: 4px 0 0 4px;
-}
-.split-menu .menu-button {
-  height: 100%;
-  padding: 0 7px;
-  border-left: 1px solid var(--line) !important;
-  border-radius: 0 4px 4px 0 !important;
-  color: var(--muted);
-}
-.split-menu .menu-list {
-  left: auto;
-  right: 0;
-  min-width: 200px;
-}
-
 /* ---------- app icons ---------- */
 /* Agent glyphs: Claude keeps its orange, the rest use the text color. */
 .app-icon {
@@ -2547,11 +2691,6 @@ mark {
 .t-eyebrow .app-icon {
   width: 12px;
   height: 12px;
-}
-.split-main {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
 }
 .copy-icon {
   color: var(--muted);
@@ -2794,10 +2933,6 @@ mark {
   white-space: nowrap;
   font-size: 13px;
 }
-.bar-label .outcome {
-  padding: 0;
-  font-size: 11px;
-}
 .bar-track {
   height: 8px;
   margin-right: 8px;
@@ -2888,8 +3023,10 @@ mark {
   gap: 12px;
 }
 .pick-count {
-  color: var(--ink);
-  font-weight: 500;
+  /* A hint, so the Analyze button reads first. */
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
 }
 .pick-analyze {
   padding: 3px 10px;
@@ -2913,69 +3050,20 @@ mark {
   font-size: 12px;
 }
 
-/* Sessions / Analysis: a two-position slider; the thumb slides under the chosen side. */
-.view-switch {
-  position: relative;
-  display: inline-grid;
-  grid-template-columns: 1fr 1fr;
-  padding: 2px;
-  border-radius: 999px;
-  background: var(--line-2);
-  border: 1px solid var(--line);
-}
-.view-thumb {
-  position: absolute;
-  top: 2px;
-  bottom: 2px;
-  left: 2px;
-  width: calc(50% - 2px);
-  border-radius: 999px;
-  background: var(--raised);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
-  transition: transform 0.18s ease;
-}
-.view-switch.right .view-thumb {
-  transform: translateX(100%);
-}
-.view-switch button {
-  position: relative;
-  /* WebKit rings a clicked button in the system accent color; the sliding thumb already shows the choice. */
-  outline: none;
-  padding: 2px 7px;
-  border-radius: 999px;
-  font: 11px var(--sans);
-  color: var(--muted);
-  white-space: nowrap;
-}
-.view-switch button.on {
-  color: var(--ink);
-}
-.view-switch button:not(.on):not(:disabled):hover {
-  color: var(--ink-2);
-}
-.view-switch button:disabled {
-  color: var(--faint);
-  opacity: 0.6;
-  cursor: default;
-}
-
 /* The Analyze queue's footer status and its popover. */
 .queue-status {
   position: relative;
-  margin-left: auto;
 }
 .queue-button {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 2px 6px;
-  border-radius: 5px;
-  font: 11px var(--mono);
+  padding: 0;
+  font: inherit;
   color: var(--muted);
 }
 .queue-button:hover,
 .queue-button[aria-expanded="true"] {
-  background: var(--hover);
   color: var(--ink);
 }
 .queue-button.has-failed {
@@ -3007,7 +3095,7 @@ mark {
 }
 .queue-pop {
   position: absolute;
-  left: 0;
+  left: -8px;
   bottom: calc(100% + 8px);
   z-index: 30;
   width: 340px;
@@ -3116,19 +3204,6 @@ mark {
 }
 
 /* ---------- reports ---------- */
-/* The Statistics / Reports switch at the top of the Analysis view's middle column. */
-.mid-title-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-.mid-title-row h2 {
-  flex: 1;
-  min-width: 0;
-}
-.mid-title-row .view-switch {
-  flex: none;
-}
 .report-list {
   padding-bottom: 24px;
 }
@@ -3193,14 +3268,20 @@ button.report-row:hover {
   color: var(--muted);
   font-size: 12.5px;
 }
-.report-tools {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  margin-top: 14px;
+.report-head {
+  position: relative;
+  /* Clear of the ⋯ menu at the top right. */
+  padding-right: 36px;
+}
+/* The dots are centered on the title's first line, and the last dot's edge on
+   the header's right edge (the button is wider than the dots). */
+.report-menu {
+  position: absolute;
+  top: 4px;
+  right: -7px;
 }
 .report-notice {
+  margin: 6px 0 0;
   font-size: 12px;
   color: var(--muted);
 }

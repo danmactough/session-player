@@ -58,7 +58,11 @@ export const api = {
   sessionNotes: (key: string, path: string, branch?: string) =>
     invoke<{ meta: SessionMeta | null; annotations: Annotation[]; revision: string | null }>("session_notes", { key, path, branch: branch ?? null }),
   /** Starts generating in the background; watch for "generate-progress" and "generate-done". */
-  generateNotes: (key: string, path: string, branch?: string) => invoke<void>("generate_notes", { key, path, branch: branch ?? null }),
+  /** `focus` is the user's own text for what to look for; omit it for the built-in text. */
+  generateNotes: (key: string, path: string, branch?: string, focus?: string) =>
+    invoke<void>("generate_notes", { key, path, branch: branch ?? null, focus: focus ?? null }),
+  /** The built-in focus text for Analyze and for reports. */
+  defaultPrompts: () => invoke<{ analyze: string; report: string }>("default_prompts"),
   cancelGenerate: (key: string) => invoke<void>("cancel_generate", { key }),
   generating: () => invoke<string[]>("generating"),
   /** Resolves to the metadata as saved, or null when every field was empty. */
@@ -68,8 +72,8 @@ export const api = {
   noteSummaries: () => invoke<NoteSummary[]>("note_summaries"),
   /** Starts a report in the background and resolves to its job id; watch for "report-progress" and "report-done".
    * `model` is an alias such as "sonnet"; omit it for the default. */
-  generateReport: (sessions: { key: string; title: string }[], model?: string) =>
-    invoke<string>("generate_report", { sessions, model: model ?? null }),
+  generateReport: (sessions: { key: string; title: string }[], model?: string, focus?: string) =>
+    invoke<string>("generate_report", { sessions, model: model ?? null, focus: focus ?? null }),
   cancelReport: (job: string) => invoke<void>("cancel_report", { job }),
   /** Newest first. */
   listReports: () => invoke<ReportSummary[]>("list_reports"),

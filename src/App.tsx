@@ -16,6 +16,8 @@ import { basename, relTime, setHome, SOURCE_LABEL, tildify } from "./lib/format"
 import { SessionList, type ClickHow, type ListMemo } from "./components/SessionList";
 import { QueueStatus } from "./components/QueueStatus";
 import { AnalyzeNotice } from "./components/AnalyzeNotice";
+import { PromptSheet } from "./components/PromptSheet";
+import { SplitButton } from "./components/SplitButton";
 import { ReportList } from "./components/ReportList";
 import { ReportView } from "./components/ReportView";
 import { useReports } from "./lib/useReports";
@@ -122,6 +124,10 @@ interface Prefs {
   authorName: string;
   /** The user ticked "Don't show this again" on the notice Analyze shows before sending transcripts. */
   hideAnalyzeNotice: boolean;
+  /** The user's own text for what Analyze focuses on; null uses the built-in text. */
+  analyzePrompt: string | null;
+  /** The user's own text for what a report focuses on; null uses the built-in text. */
+  reportPrompt: string | null;
   /** Getting insights re-analyzes chosen sessions that were analyzed before, not only the unanalyzed ones. */
   reanalyzeForInsights: boolean;
   /** The summary under a transcript's title is hidden. */
@@ -182,6 +188,8 @@ const DEFAULT_PREFS: Prefs = {
   kindFilter: [],
   authorName: "",
   hideAnalyzeNotice: false,
+  analyzePrompt: null,
+  reportPrompt: null,
   reanalyzeForInsights: false,
   summaryCollapsed: false,
   autoCheckUpdates: true,
@@ -218,7 +226,13 @@ export default function App() {
   const [importing, setImporting] = useState<{ path: string; state: ImportState } | null>(null);
   // Resolves the promise of an Analyze notice waiting for OK or Cancel.
   const [noticeAsk, setNoticeAsk] = useState<{ count: number; resolve: (ok: boolean) => void } | null>(null);
-  const overlay = sheet || help || !!exporting || !!importing || !!noticeAsk;
+  // The prompt editor, open for Analyze or for a report.
+  const [promptFor, setPromptFor] = useState<"analyze" | "report" | null>(null);
+  const [builtInPrompts, setBuiltInPrompts] = useState<{ analyze: string; report: string } | null>(null);
+  useEffect(() => {
+    api.defaultPrompts().then(setBuiltInPrompts, () => {});
+  }, []);
+  const overlay = sheet || help || !!exporting || !!importing || !!noticeAsk || !!promptFor;
   const [version, setVersion] = useState(0);
   const [projectFilter, setProjectFilter] = usePerView(view, () => "");
   const projectFilterRef = useRef<HTMLInputElement>(null);
@@ -850,7 +864,8 @@ export default function App() {
     (count = 1) => (p.hideAnalyzeNotice ? Promise.resolve(true) : new Promise<boolean>((resolve) => setNoticeAsk({ count, resolve }))),
     [p.hideAnalyzeNotice],
   );
-  const analyzePicked = useCallback(async () => {
+  // `focus` is an edited prompt for this run; without one, the saved prompt is used.
+  const analyzePicked = useCallback(async (focus?: string) => {
     const rows = pickedRows;
     if (!rows.length || !(await confirmGenerate(rows.length))) return;
     let reanalyze = false;
@@ -865,18 +880,19 @@ export default function App() {
       if (choice !== again && choice !== changed) return;
       reanalyze = choice === again;
     }
-    queue.enqueue(rows, reanalyze);
+    queue.enqueue(rows, reanalyze, focus ?? p.analyzePrompt ?? undefined);
     stopChoosing();
-  }, [pickedRows, confirmGenerate, queue, notes, stopChoosing]);
+  }, [pickedRows, confirmGenerate, queue, notes, stopChoosing, p.analyzePrompt]);
 
   // Getting insights analyzes the chosen sessions that need it first (all of
   // them when re-analyzing is ticked), waits for that to finish, then writes
   // the report on every chosen session.
-  const [pendingReport, setPendingReport] = useState<{ picks: { key: string; title: string }[]; waiting: string[] } | null>(null);
+  const [pendingReport, setPendingReport] = useState<{ picks: { key: string; title: string }[]; waiting: string[]; focus?: string } | null>(null);
   // Whether the waited-for sessions have reached the queue yet; until then, absent doesn't mean finished.
   const pendingSeen = useRef(false);
-  const getInsights = useCallback(async () => {
+  const getInsights = useCallback(async (edited?: string) => {
     const rows = pickedRows;
+    const focus = edited ?? p.reportPrompt ?? undefined;
     if (!rows.length) return;
     const toAnalyze = p.reanalyzeForInsights ? rows : rows.filter((s) => !notes.get(sessionKey(s))?.analyzed);
     if (toAnalyze.length && !(await confirmGenerate(toAnalyze.length))) return;
@@ -886,13 +902,13 @@ export default function App() {
     // The list shows the report on its way; it opens when it's saved.
     update({ openReport: null });
     if (!toAnalyze.length) {
-      await reports.start(picks);
+      await reports.start(picks, undefined, focus);
       return;
     }
     pendingSeen.current = false;
-    queue.enqueue(toAnalyze, p.reanalyzeForInsights);
-    setPendingReport({ picks, waiting: toAnalyze.map((s) => s.path) });
-  }, [pickedRows, p.reanalyzeForInsights, notes, confirmGenerate, clearPicked, update, reports, queue]);
+    queue.enqueue(toAnalyze, p.reanalyzeForInsights, p.analyzePrompt ?? undefined);
+    setPendingReport({ picks, waiting: toAnalyze.map((s) => s.path), focus });
+  }, [pickedRows, p.reanalyzeForInsights, p.reportPrompt, p.analyzePrompt, notes, confirmGenerate, clearPicked, update, reports, queue]);
   useEffect(() => {
     if (!pendingReport) return;
     const items = queue.items.filter((i) => pendingReport.waiting.includes(i.id));
@@ -900,9 +916,9 @@ export default function App() {
     if (!pendingSeen.current) return;
     // A finished queue clears itself, so a waited-for session gone from it is done too.
     if (items.some((i) => i.status === "waiting" || i.status === "checking" || i.status === "running")) return;
-    const picks = pendingReport.picks;
+    const { picks, focus } = pendingReport;
     setPendingReport(null);
-    void reports.start(picks);
+    void reports.start(picks, undefined, focus);
   }, [pendingReport, queue.items, reports]);
   const cancelPendingReport = useCallback(() => {
     for (const path of pendingReport?.waiting ?? []) queue.cancel(path);
@@ -994,13 +1010,20 @@ export default function App() {
             </label>
             <div className="build-actions">
               {/* One button, named for the next step: start, choose sessions, then get insights. */}
-              <button
-                className="primary build-start"
-                disabled={building && !pickedRows.length}
-                onClick={() => (building ? void getInsights() : setBuilding(true))}
-              >
-                {!building ? "Create" : pickedRows.length ? "Get insights" : "Select"}
-              </button>
+              {building ? (
+                <SplitButton
+                  className="build-start"
+                  disabled={!pickedRows.length}
+                  onClick={() => void getInsights()}
+                  onCustomize={() => setPromptFor("report")}
+                >
+                  {pickedRows.length ? "Get insights" : "Select"}
+                </SplitButton>
+              ) : (
+                <button className="primary build-start" onClick={() => setBuilding(true)}>
+                  Create
+                </button>
+              )}
               {building && (
                 <button
                   className="ghost"
@@ -1316,9 +1339,14 @@ export default function App() {
                   <span className="pick-count">
                     {pickedRows.length ? "⌘-click or ⇧-click to add sessions" : "Click sessions to select them"}
                   </span>
-                  <button className="primary pick-analyze" onClick={() => void analyzePicked()} disabled={!pickedRows.length}>
+                  <SplitButton
+                    className="pick-analyze"
+                    onClick={() => void analyzePicked()}
+                    onCustomize={() => setPromptFor("analyze")}
+                    disabled={!pickedRows.length}
+                  >
                     Analyze{pickedRows.length ? ` • (${pickedRows.length})` : ""}
-                  </button>
+                  </SplitButton>
                   <button className="clear-link" onClick={stopChoosing} title="Stop choosing sessions (Esc)">
                     Cancel
                   </button>
@@ -1403,6 +1431,26 @@ export default function App() {
       </main>
 
       {help && <ShortcutsSheet onClose={() => setHelp(false)} />}
+      {promptFor && builtInPrompts && (
+        <PromptSheet
+          title={promptFor === "analyze" ? "What should Analyze look for?" : "What should the report look for?"}
+          runLabel={promptFor === "analyze" ? "Analyze" : "Get insights"}
+          builtIn={builtInPrompts[promptFor]}
+          saved={promptFor === "analyze" ? p.analyzePrompt : p.reportPrompt}
+          onCancel={() => setPromptFor(null)}
+          onRun={(text, setDefault) => {
+            const kind = promptFor;
+            setPromptFor(null);
+            if (setDefault) {
+              // The built-in text saved as "your own" would stop following app updates to it.
+              const saved = text.trim() === builtInPrompts[kind].trim() ? null : text;
+              update(kind === "analyze" ? { analyzePrompt: saved } : { reportPrompt: saved });
+            }
+            if (kind === "analyze") void analyzePicked(text);
+            else void getInsights(text);
+          }}
+        />
+      )}
       {noticeAsk && (
         <AnalyzeNotice
           count={noticeAsk.count}

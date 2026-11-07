@@ -55,8 +55,8 @@ export function useReports(onWritten: (id: string) => void) {
     return () => un.forEach((p) => p.then((f) => f()));
   }, [reload]);
 
-  const start = useCallback(async (sessions: { key: string; title: string }[], model?: string) => {
-    const job = await api.generateReport(sessions, model);
+  const start = useCallback(async (sessions: { key: string; title: string }[], model?: string, focus?: string) => {
+    const job = await api.generateReport(sessions, model, focus);
     setJobs((list) => [{ job, sessions: sessions.length }, ...list]);
   }, []);
 

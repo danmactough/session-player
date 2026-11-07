@@ -296,7 +296,8 @@ const handlers: Record<string, Handler> = {
   export_cancel: () => null,
   remove_imported: () => null,
   // Pretends to analyze in two parts over about two seconds, then records an outcome.
-  generate_notes: ({ key }) => {
+  generate_notes: ({ key, focus }) => {
+    console.log("dev analyze focus:", focus);
     const k = String(key);
     if (devGenerating.has(k)) throw new Error("Already generating notes for this session");
     devGenerating.set(k, false);
@@ -318,13 +319,21 @@ const handlers: Record<string, Handler> = {
     return null;
   },
   generating: () => [...devGenerating.keys()],
+  default_prompts: () => ({
+    analyze:
+      "The analysis is for a team that studies how coding agents are used. Mark the moments that explain how the session went: where the agent went wrong or got stuck, where the user had to step in, and the decisions that shaped the result. Prefer a few well-supported annotations over many weak ones.",
+    report:
+      "The report is for a developer who wants to improve how their coding agents work. Look for problems that recur across sessions and the changes that would stop them recurring. Prefer a few well-supported takeaways and actions over many weak ones, and don't invent problems the notes don't show.",
+  }),
   // Pretends to write a report in about two seconds.
-  generate_report: ({ sessions }) => {
+  generate_report: ({ sessions, focus }) => {
+    console.log("dev report focus:", focus);
     const job = `dev-job-${Date.now()}`;
     const emit = (event: string, payload: unknown) => listeners[event]?.forEach((id) => callbacks[id]?.({ event, id, payload }));
     setTimeout(() => emit("report-progress", { job, done: 0, total: 1 }), 100);
     setTimeout(() => {
       const report = devReport(sessions as { key: string; title: string }[]);
+      if (typeof focus === "string") report.focus = focus;
       devReports = [report, ...devReports];
       emit("report-done", { job, report: report.id, error: null, cancelled: false });
     }, 2000);

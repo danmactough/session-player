@@ -36,6 +36,7 @@ export function evidenceLine(e: Evidence, report: Report, cited: Map<string, Cit
 export function reportMarkdown(report: Report, cited: Map<string, CitedAnnotation>): string {
   const out: string[] = [`# ${report.title}`, ""];
   out.push(`${fullDate(report.created_at)} · ${report.sessions.length} sessions · ${modelName(report.model)}`, "");
+  if (report.focus) out.push(`Focus: ${oneLine(report.focus)}`, "");
   if (report.summary) out.push(report.summary, "");
   const evidence = (list: Evidence[]) => list.map((e) => `  - ${evidenceLine(e, report, cited)}`);
   if (report.takeaways.length) {

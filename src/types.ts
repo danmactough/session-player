@@ -294,6 +294,8 @@ export interface Report {
   title: string;
   model: string;
   prompt_version: number;
+  /** The user's own focus text, when the report wasn't written with the built-in one. */
+  focus?: string;
   sessions: ReportSession[];
   stats: {
     sessions: number;

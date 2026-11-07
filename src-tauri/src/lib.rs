@@ -573,7 +573,7 @@ fn claude_command(state: &Shared) -> anyhow::Result<generate::Claude> {
 /// background. Progress arrives as "generate-progress" events and the end as
 /// one "generate-done" event.
 #[tauri::command]
-fn generate_notes(app: AppHandle, state: State<Shared>, key: String, path: String, branch: Option<String>) -> Result<(), String> {
+fn generate_notes(app: AppHandle, state: State<Shared>, key: String, path: String, branch: Option<String>, focus: Option<String>) -> Result<(), String> {
     let cancel = Arc::new(AtomicBool::new(false));
     {
         let mut running = state.generating.lock().unwrap();
@@ -598,7 +598,7 @@ fn generate_notes(app: AppHandle, state: State<Shared>, key: String, path: Strin
             let claude = claude_command(&state)?;
             let events = session_events(&path, branch.as_deref()).map_err(anyhow::Error::msg)?;
             let mut ask = |system: &str, input: &str, schema: &serde_json::Value| generate::run_claude(&claude, system, input, schema, &cancel);
-            let generated = generate::generate(&events, &mut ask, &mut |done, total| {
+            let generated = generate::generate(&events, focus.as_deref(), &mut ask, &mut |done, total| {
                 let _ = progress_app.emit("generate-progress", GenerateProgress { key: progress_key.clone(), done, total });
             })?;
             let conn = index::open(&state.db_path)?;
@@ -614,6 +614,19 @@ fn generate_notes(app: AppHandle, state: State<Shared>, key: String, path: Strin
         let _ = app.emit("generate-done", done);
     });
     Ok(())
+}
+
+#[derive(Serialize)]
+struct DefaultPrompts {
+    analyze: &'static str,
+    report: &'static str,
+}
+
+/// The built-in focus text for Analyze and for reports, which the user can
+/// replace with their own.
+#[tauri::command]
+fn default_prompts() -> DefaultPrompts {
+    DefaultPrompts { analyze: generate::DEFAULT_FOCUS, report: reports::DEFAULT_FOCUS }
 }
 
 #[tauri::command]
@@ -650,7 +663,7 @@ struct ReportDone {
 /// id. Progress arrives as "report-progress" events and the end as one
 /// "report-done" event, which names the saved report.
 #[tauri::command]
-fn generate_report(app: AppHandle, state: State<Shared>, sessions: Vec<reports::SessionPick>, model: Option<String>) -> Result<String, String> {
+fn generate_report(app: AppHandle, state: State<Shared>, sessions: Vec<reports::SessionPick>, model: Option<String>, focus: Option<String>) -> Result<String, String> {
     if sessions.is_empty() {
         return Err("Pick at least one session to report on.".into());
     }
@@ -675,7 +688,7 @@ fn generate_report(app: AppHandle, state: State<Shared>, sessions: Vec<reports::
             let claude = claude_command(&state)?;
             let conn = index::open(&state.db_path)?;
             let mut ask = |system: &str, input: &str, schema: &serde_json::Value| generate::run_claude_model(&claude, &model, system, input, schema, &cancel);
-            let report = reports::generate(&conn, &sessions, &mut ask, &mut |done, total| {
+            let report = reports::generate(&conn, &sessions, focus.as_deref(), &mut ask, &mut |done, total| {
                 let _ = progress_app.emit("report-progress", ReportProgress { job: progress_job.clone(), done, total });
             })?;
             reports::save_report(&conn, &report)?;
@@ -957,6 +970,7 @@ pub fn run() {
             note_summaries,
             generate_notes,
             cancel_generate,
+            default_prompts,
             generating,
             generate_report,
             cancel_report,

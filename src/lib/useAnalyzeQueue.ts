@@ -15,6 +15,8 @@ export interface QueueItem {
   title: string;
   /** Analyze it even when its analysis is current. */
   reanalyze: boolean;
+  /** What Analyze focuses on; absent uses the built-in text. */
+  focus?: string;
   status: QueueStatus;
   progress?: { done: number; total: number };
   message?: string;
@@ -50,7 +52,7 @@ export function useAnalyzeQueue() {
     [patch],
   );
 
-  const enqueue = useCallback((rows: SessionRow[], reanalyze: boolean) => {
+  const enqueue = useCallback((rows: SessionRow[], reanalyze: boolean, focus?: string) => {
     setItems((list) => {
       // A session already waiting or running isn't queued twice; a finished one can be queued again.
       const queued = new Set(list.filter((i) => active(i.status)).map((i) => i.id));
@@ -63,6 +65,7 @@ export function useAnalyzeQueue() {
           branch: s.branch_leaf ?? undefined,
           title: s.title,
           reanalyze,
+          focus,
           status: "waiting",
         }));
       const requeued = new Set(added.map((a) => a.id));
@@ -90,7 +93,7 @@ export function useAnalyzeQueue() {
         // Cancelled while its notes were being checked.
         if (current.current !== next.id) return;
         patch(next.id, { status: "running", progress: { done: 0, total: 0 } });
-        await api.generateNotes(next.key, next.path, next.branch);
+        await api.generateNotes(next.key, next.path, next.branch, next.focus);
       } catch (e) {
         finish(next.id, { status: "failed", message: String(e) });
       }

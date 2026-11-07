@@ -86,6 +86,14 @@ export function ReportView({ id, onOpenSession, canOpenSession, onDeleted }: Pro
           <p className="dim" data-tauri-drag-region>
             {fullDate(report.created_at)} · {report.sessions.length} {report.sessions.length === 1 ? "session" : "sessions"} ·{" "}
             {modelName(report.model)}
+            {report.focus && (
+              <>
+                {" · "}
+                <span className="report-focus" title={report.focus}>
+                  Custom prompt
+                </span>
+              </>
+            )}
           </p>
           {/* Top right, like the transcript's ⋯ menu. */}
           <Menu<"copy" | "save" | "delete" | "none">

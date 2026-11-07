@@ -3461,3 +3461,85 @@ button.report-row:hover {
   font-size: 12px;
   color: var(--muted);
 }
+
+/* ---------- prompt customizing ---------- */
+.split-button {
+  display: inline-flex;
+  align-items: stretch;
+}
+.split-button .split-main {
+  flex: 1;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.split-more {
+  display: flex;
+}
+.split-more .menu-button {
+  height: 100%;
+  padding: 0 7px;
+  border-radius: 0 6px 6px 0;
+  border-left: 1px solid rgba(255, 255, 255, 0.25);
+  background: var(--select);
+  color: var(--select-ink);
+}
+.split-more .menu-button:hover {
+  opacity: 0.88;
+}
+.split-button.disabled .split-more .menu-button {
+  opacity: 0.5;
+  pointer-events: none;
+}
+.prompt-sheet {
+  width: 560px;
+}
+.prompt-sheet h2 {
+  margin: 0;
+  font: 400 22px/1.2 var(--serif);
+}
+.prompt-text {
+  width: 100%;
+  resize: vertical;
+  padding: 8px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: var(--raised);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  outline: none;
+}
+.prompt-text:focus {
+  border-color: var(--ink-2);
+}
+.prompt-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 10px 0 18px;
+}
+.split-more .menu-list {
+  right: 0;
+}
+/* The pick bar sits at the bottom of the list, so its menu opens upward. */
+.pick-bar .split-more .menu-list {
+  top: auto;
+  bottom: calc(100% + 4px);
+}
+.report-focus {
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+  cursor: help;
+}
+/* Their padding belongs on the button inside, not on the pair. */
+.split-button.build-start,
+.split-button.pick-analyze {
+  padding: 0;
+}
+.split-button.build-start .split-main {
+  padding: 7px 10px;
+}
+.split-button.pick-analyze .split-main {
+  padding: 3px 10px;
+}

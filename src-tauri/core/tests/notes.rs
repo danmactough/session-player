@@ -62,12 +62,9 @@ fn metadata_is_saved_edited_and_kept_through_an_index_rebuild() {
     let conn = index::open(&path).unwrap();
     assert_eq!(notes::meta(&conn, KEY).unwrap().unwrap().components, ["packages/auth", "apps/web"]);
 
-    // Clearing every field (blank components count as empty) keeps only
-    // which fields were cleared, so generating won't fill them again.
+    // Clearing every field (blank components count as empty) removes the details.
     notes::save_meta(&conn, &notes::SessionMeta { key: KEY.into(), components: vec![" ".into()], ..Default::default() }).unwrap();
-    let cleared = notes::meta(&conn, KEY).unwrap().unwrap();
-    assert_eq!((cleared.outcome, cleared.components.len()), (notes::Outcome::Unknown, 0));
-    assert_eq!(cleared.cleared, ["outcome", "components"]);
+    assert_eq!(notes::meta(&conn, KEY).unwrap(), None);
 
     // A session that never had any details stores nothing.
     let other = "local:claude:never";
@@ -225,4 +222,130 @@ fn an_annotation_on_one_of_several_context_documents_stays_on_it() {
     let mut list = vec![notes::Annotation::new("local:pi:pi-ctx", notes::Kind::IgnoredInstruction, "", vec![r], person())];
     notes::resolve(&mut list, &events, None);
     assert_eq!((list[0].anchors[0].anchor.as_str(), list[0].anchors[0].found), (repo.anchor.as_deref().unwrap(), true));
+}
+
+fn cite(conn: &rusqlite::Connection, report: &str, a: &notes::Annotation) {
+    conn.execute("INSERT INTO report_citations(report_id, annotation_id, version) VALUES(?1, ?2, ?3)", rusqlite::params![report, a.id, a.version]).unwrap();
+}
+
+fn versions(conn: &rusqlite::Connection, id: &str) -> Vec<u32> {
+    let mut stmt = conn.prepare("SELECT version FROM annotation_versions WHERE id=?1 ORDER BY version").unwrap();
+    stmt.query_map([id], |r| r.get(0)).unwrap().collect::<Result<_, _>>().unwrap()
+}
+
+#[test]
+fn each_change_saves_a_new_version_and_only_cited_old_versions_are_kept() {
+    let (_, conn) = temp_db("versions");
+    let first = notes::save_annotation(&conn, notes::Annotation::new(KEY, notes::Kind::ToolError, "one", vec![event_ref("e1", "user", None)], person())).unwrap();
+    assert_eq!(first.version, 1);
+
+    // Saving it unchanged, as the UI does with resolved anchors, adds no version.
+    let mut same = first.clone();
+    same.anchors[0].found = true;
+    assert_eq!(notes::save_annotation(&conn, same).unwrap().version, 1);
+
+    // An uncited version is dropped once it is replaced.
+    let second = notes::save_annotation(&conn, notes::Annotation { note: "two".into(), ..first.clone() }).unwrap();
+    assert_eq!((second.version, versions(&conn, &first.id)), (2, vec![2]));
+
+    // A cited version is kept, unchanged, after later edits; a version sent in is ignored.
+    cite(&conn, "r1", &second);
+    let third = notes::save_annotation(&conn, notes::Annotation { note: "three".into(), version: 9, ..second.clone() }).unwrap();
+    assert_eq!((third.version, versions(&conn, &first.id)), (3, vec![2, 3]));
+    assert_eq!(notes::annotation_version(&conn, &first.id, 2).unwrap().unwrap().note, "two");
+    assert_eq!(notes::annotation(&conn, &first.id).unwrap().unwrap().note, "three");
+}
+
+#[test]
+fn deleting_keeps_only_the_versions_a_report_cites() {
+    let (_, conn) = temp_db("delete-versions");
+    let new = |note: &str| notes::save_annotation(&conn, notes::Annotation::new(KEY, notes::Kind::Other, note, vec![event_ref("e1", "user", None)], person())).unwrap();
+
+    let uncited = new("never cited");
+    notes::delete_annotation(&conn, &uncited.id).unwrap();
+    assert!(versions(&conn, &uncited.id).is_empty());
+
+    let cited = new("cited");
+    cite(&conn, "r1", &cited);
+    let later = notes::save_annotation(&conn, notes::Annotation { note: "edited after the report".into(), ..cited.clone() }).unwrap();
+    notes::delete_annotation(&conn, &cited.id).unwrap();
+    assert_eq!(versions(&conn, &cited.id), [1]);
+    assert_eq!(notes::annotation(&conn, &cited.id).unwrap(), None);
+    assert!(notes::annotations(&conn, KEY).unwrap().is_empty());
+    assert_eq!(notes::annotation_version(&conn, &cited.id, later.version).unwrap(), None);
+    assert_eq!(notes::annotation_version(&conn, &cited.id, 1).unwrap().unwrap().note, "cited");
+    assert!(notes::search(&conn, "cited").unwrap().is_empty());
+
+    // Arriving again in a bundle, it continues after the kept version instead of reusing its number.
+    let mut incoming = cited.clone();
+    incoming.version = 0;
+    incoming.note = "back from a bundle".into();
+    notes::put_annotation(&conn, &incoming).unwrap();
+    assert_eq!(notes::annotation(&conn, &cited.id).unwrap().unwrap().version, 2);
+    assert_eq!(versions(&conn, &cited.id), [1, 2]);
+}
+
+#[test]
+fn an_imported_annotation_adds_a_version_only_when_it_differs() {
+    let (_, conn) = temp_db("import-versions");
+    let saved = notes::save_annotation(&conn, notes::Annotation::new(KEY, notes::Kind::Other, "mine", vec![event_ref("e1", "user", None)], person())).unwrap();
+    let unnumbered = notes::Annotation { version: 0, ..saved.clone() };
+    notes::put_annotation(&conn, &unnumbered).unwrap();
+    assert_eq!(versions(&conn, &saved.id), [1]);
+
+    notes::put_annotation(&conn, &notes::Annotation { note: "theirs".into(), ..unnumbered.clone() }).unwrap();
+    let now = notes::annotation(&conn, &saved.id).unwrap().unwrap();
+    assert_eq!((now.version, now.note.as_str()), (2, "theirs"));
+
+    // Never moves an annotation to another session.
+    notes::put_annotation(&conn, &notes::Annotation { key: "local:claude:other".into(), note: "elsewhere".into(), ..unnumbered }).unwrap();
+    assert_eq!(notes::annotation(&conn, &saved.id).unwrap().unwrap().note, "theirs");
+}
+
+#[test]
+fn annotations_saved_before_versions_existed_become_version_1() {
+    let path = std::env::temp_dir().join(format!("sp-notes-migrate-{}.sqlite", std::process::id()));
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+    }
+    let old = notes::Annotation { id: "old-1".into(), created_at: 1, updated_at: 1, ..notes::Annotation::new(KEY, notes::Kind::Other, "from 0.13", vec![event_ref("e1", "user", None)], person()) };
+    let json = serde_json::to_string(&old).unwrap();
+    assert!(!json.contains("\"version\""));
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch("CREATE TABLE annotations (id TEXT PRIMARY KEY, key TEXT NOT NULL, json TEXT NOT NULL);").unwrap();
+        conn.execute("INSERT INTO annotations(id, key, json) VALUES('old-1', ?1, ?2)", [KEY, json.as_str()]).unwrap();
+    }
+    let conn = index::open(&path).unwrap();
+    assert_eq!(notes::annotation(&conn, "old-1").unwrap().unwrap().version, 1);
+    assert_eq!(versions(&conn, "old-1"), [1]);
+    let edited = notes::save_annotation(&conn, notes::Annotation { note: "edited".into(), ..old }).unwrap();
+    assert_eq!((edited.version, versions(&conn, "old-1")), (2, vec![2]));
+}
+
+#[test]
+fn summaries_count_annotations_by_kind_author_and_confidence() {
+    let (_, conn) = temp_db("summary-counts");
+    let at = || vec![event_ref("e1", "user", None)];
+    let model = || notes::Author::Model { model: "claude-haiku-5-5".into() };
+    for (kind, author, confidence) in [
+        (notes::Kind::ToolError, person(), None),
+        (notes::Kind::ToolError, model(), Some("high")),
+        (notes::Kind::MissingContext, model(), Some("low")),
+    ] {
+        let mut a = notes::Annotation::new(KEY, kind, "x", at(), author);
+        a.confidence = confidence.map(String::from);
+        notes::save_annotation(&conn, a).unwrap();
+    }
+    notes::save_meta(&conn, &notes::SessionMeta { key: "local:claude:by-hand".into(), outcome: notes::Outcome::Failed, ..Default::default() }).unwrap();
+
+    let list = notes::summaries(&conn).unwrap();
+    let s = list.iter().find(|s| s.key == KEY).unwrap();
+    assert_eq!((s.kind_counts[&notes::Kind::ToolError], s.kind_counts[&notes::Kind::MissingContext]), (2, 1));
+    assert_eq!((s.person_annotations, s.model_annotations), (1, 2));
+    assert_eq!((s.confidence["high"], s.confidence["low"]), (1, 1));
+    assert!(s.analyzed, "a model's annotations mean Analyze ran");
+    let by_hand = list.iter().find(|s| s.key == "local:claude:by-hand").unwrap();
+    assert!(!by_hand.analyzed);
+    assert_eq!(by_hand.outcome, notes::Outcome::Failed);
 }

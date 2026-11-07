@@ -1,7 +1,12 @@
 // Dev-only stand-in for the Tauri backend so the UI can be previewed in a
 // plain browser (`npm run dev`, then open http://localhost:1420). All data
 // here is synthetic. Loaded from main.tsx only when not running inside Tauri.
-import type { Annotation, SessionEvent, SessionMeta, SessionRow, Source } from "./types";
+import type { Annotation, AnnotationKind, Evidence, Outcome, Report, SessionEvent, SessionMeta, SessionRow, Source } from "./types";
+import { sessionKey } from "./lib/notes";
+
+declare const __APP_VERSION__: string;
+// One minor version ahead, so Settings › Check now can preview the update banner.
+const NEXT_VERSION = __APP_VERSION__.replace(/^(\d+)\.(\d+)\.\d+.*/, (_, major, minor) => `${major}.${Number(minor) + 1}.0`);
 
 const HOME = "/Users/demo";
 const now = Date.now();
@@ -144,7 +149,85 @@ function transcript(s: SessionRow, prefix = "e", turns = s.user_turns, setup = t
 }
 
 const devMeta = new Map<string, SessionMeta>();
+/** Saved reports, newest first. */
+let devReports: Report[] = [];
+
+/** A report built from the synthetic notes, shaped like the backend's. */
+function devReport(picked: { key: string; title: string }[]): Report {
+  const sessions = picked.map(({ key, title }) => {
+    const meta = devMeta.get(key);
+    return {
+      key,
+      title,
+      outcome: meta?.outcome ?? ("unknown" as Outcome),
+      outcome_note: meta?.outcome_note ?? null,
+      components: meta?.components ?? [],
+      annotations: devNotes.filter((a) => a.key === key).map((a) => ({ id: a.id, version: a.version ?? 1 })),
+    };
+  });
+  const cited = devNotes.filter((a) => sessions.some((s) => s.key === a.key));
+  const evidence = (kinds: AnnotationKind[]): Evidence[] =>
+    cited.filter((a) => kinds.includes(a.kind)).map((a) => ({ type: "annotation", id: a.id, version: a.version ?? 1, key: a.key }));
+  const outcomes: Partial<Record<Outcome, number>> = {};
+  for (const s of sessions) outcomes[s.outcome] = (outcomes[s.outcome] ?? 0) + 1;
+  const kinds: Partial<Record<AnnotationKind, number>> = {};
+  for (const a of cited) kinds[a.kind] = (kinds[a.kind] ?? 0) + 1;
+  return {
+    id: `dev-report-${Date.now()}`,
+    created_at: Date.now(),
+    title: "Tool errors and missing context slow sessions down",
+    model: "claude-sonnet-5-5",
+    prompt_version: 1,
+    sessions,
+    stats: { sessions: sessions.length, outcomes, kinds, annotations: cited.length },
+    summary: "Most of these sessions lost time to failing test runs the agent retried instead of reading. Two went wrong because the agent didn't know how the project runs its tests.",
+    takeaways: [
+      { text: "The agent reruns a failing test command several times before reading its output.", evidence: evidence(["tool_error"]) },
+      { text: "The agent doesn't know the project runs its tests with npm run test:unit, and guesses npm test instead.", evidence: evidence(["missing_context", "ignored_instruction"]) },
+    ].filter((t) => t.evidence.length),
+    actions: [
+      { title: "Document the test setup", category: "instructions" as const, priority: "high" as const, change: "Add a **Testing** section to `AGENTS.md` that names `npm run test:unit` and says to read a failure before rerunning.", evidence: evidence(["missing_context", "ignored_instruction"]) },
+      { title: "Script running the changed tests", category: "automation" as const, priority: "medium" as const, change: "Add a `scripts/test-changed.sh` that runs only the tests for changed files and prints the first failure.", evidence: evidence(["tool_error", "agent_stuck"]) },
+    ].filter((a) => a.evidence.length),
+    rejected: 0,
+  };
+}
+
+/** Sessions being "analyzed", and whether each was cancelled. */
+const devGenerating = new Map<string, boolean>();
 let devNotes: Annotation[] = [];
+
+// A few analyzed sessions, so outcome badges, the note filters and the
+// Statistics and Insights views have something to show.
+const SEEDED: [number, Outcome, AnnotationKind[]][] = [
+  [0, "succeeded", ["key_decision", "tool_error"]],
+  [1, "failed", ["agent_stuck", "agent_stuck", "tool_error"]],
+  [2, "partial", ["ignored_instruction", "missing_context"]],
+  [3, "succeeded", ["tool_error"]],
+  [6, "failed", ["wrong_assumption", "human_frustration", "human_intervention"]],
+  [7, "succeeded", ["automatable"]],
+  [10, "partial", ["environment", "tool_error", "tool_error"]],
+];
+for (const [i, outcome, kinds] of SEEDED) {
+  const key = sessionKey(sessions[i]);
+  const generated_by = { model: "claude-haiku-5-5", at: now - H, revision: "dev" };
+  devMeta.set(key, { key, outcome, outcome_note: null, components: [], updated_at: now - H, generated: ["outcome"], generated_by });
+  kinds.forEach((kind, j) => {
+    const byPerson = j === 0 && i % 2 === 0;
+    devNotes.push({
+      id: `dev-seed-${i}-${j}`,
+      version: 1,
+      key,
+      kind,
+      note: `Synthetic ${kind.replace(/_/g, " ")} note.`,
+      anchors: [{ anchor: `e${j + 1}`, kind: "assistant", ts: null }],
+      author: byPerson ? { type: "person", name: "Demo" } : { type: "model", model: "claude-haiku-5-5" },
+      created_at: now - H,
+      updated_at: now - H,
+      confidence: byPerson ? undefined : (["high", "medium", "low"] as const)[(i + j) % 3],
+    });
+  });
+}
 
 type Handler = (args: Record<string, unknown>) => unknown;
 const handlers: Record<string, Handler> = {
@@ -212,10 +295,74 @@ const handlers: Record<string, Handler> = {
   export_save: ({ dest }) => dest,
   export_cancel: () => null,
   remove_imported: () => null,
-  generate_notes: () => null,
-  cancel_generate: () => null,
-  generating: () => [],
-  session_notes: ({ key }) => ({ revision: null, meta: devMeta.get(String(key)) ?? null, annotations: devNotes.filter((a) => a.key === key).map((a) => ({ ...a, anchors: a.anchors.map((r) => ({ ...r, found: true })) })) }),
+  // Pretends to analyze in two parts over about two seconds, then records an outcome.
+  generate_notes: ({ key, focus }) => {
+    console.log("dev analyze focus:", focus);
+    const k = String(key);
+    if (devGenerating.has(k)) throw new Error("Already generating notes for this session");
+    devGenerating.set(k, false);
+    const emit = (event: string, payload: unknown) => listeners[event]?.forEach((id) => callbacks[id]?.({ event, id, payload }));
+    setTimeout(() => emit("generate-progress", { key: k, done: 1, total: 2 }), 900);
+    setTimeout(() => {
+      const cancelled = devGenerating.get(k);
+      devGenerating.delete(k);
+      if (!cancelled) {
+        const generated_by = { model: "claude-haiku-5-5", at: Date.now(), revision: "dev" };
+        devMeta.set(k, { key: k, outcome: "succeeded", outcome_note: null, components: [], updated_at: Date.now(), generated: ["outcome"], generated_by });
+      }
+      emit("generate-done", { key: k, error: null, cancelled, rejected: 0 });
+    }, 1800);
+    return null;
+  },
+  cancel_generate: ({ key }) => {
+    if (devGenerating.has(String(key))) devGenerating.set(String(key), true);
+    return null;
+  },
+  generating: () => [...devGenerating.keys()],
+  open_analyze_log: () => {
+    console.log("open analyze log");
+    return null;
+  },
+  default_prompts: () => ({
+    analyze:
+      "The analysis is for a team that studies how coding agents are used. Mark the moments that explain how the session went: where the agent went wrong or got stuck, where the user had to step in, and the decisions that shaped the result. Prefer a few well-supported annotations over many weak ones.",
+    report:
+      "The report is for a developer who wants to improve how their coding agents work. Look for problems that recur across sessions and the changes that would stop them recurring. Prefer a few well-supported takeaways and actions over many weak ones, and don't invent problems the notes don't show.",
+  }),
+  // Pretends to write a report in about two seconds.
+  generate_report: ({ sessions, focus }) => {
+    console.log("dev report focus:", focus);
+    const job = `dev-job-${Date.now()}`;
+    const emit = (event: string, payload: unknown) => listeners[event]?.forEach((id) => callbacks[id]?.({ event, id, payload }));
+    setTimeout(() => emit("report-progress", { job, done: 0, total: 1 }), 100);
+    setTimeout(() => {
+      const report = devReport(sessions as { key: string; title: string }[]);
+      if (typeof focus === "string") report.focus = focus;
+      devReports = [report, ...devReports];
+      emit("report-done", { job, report: report.id, error: null, cancelled: false });
+    }, 2000);
+    return job;
+  },
+  cancel_report: () => null,
+  list_reports: () =>
+    devReports.map((r) => ({ id: r.id, created_at: r.created_at, title: r.title, model: r.model, sessions: r.sessions.length, actions: r.actions.length })),
+  get_report: ({ id }) => devReports.find((r) => r.id === id) ?? null,
+  report_annotations: ({ id }) =>
+    (devReports.find((r) => r.id === id)?.sessions ?? []).flatMap((s) =>
+      s.annotations.flatMap(({ id }) => {
+        const a = devNotes.find((n) => n.id === id);
+        return a ? [{ annotation: a, current_version: a.version ?? 1 }] : [];
+      }),
+    ),
+  save_markdown: ({ dest, text }) => {
+    console.log("save markdown to", dest, String(text).length, "chars");
+    return dest;
+  },
+  delete_report: ({ id }) => {
+    devReports = devReports.filter((r) => r.id !== id);
+    return null;
+  },
+  session_notes: ({ key }) => ({ revision: devMeta.get(String(key))?.generated_by ? "dev" : null, meta: devMeta.get(String(key)) ?? null, annotations: devNotes.filter((a) => a.key === key).map((a) => ({ ...a, anchors: a.anchors.map((r) => ({ ...r, found: true })) })) }),
   save_meta: ({ meta }) => {
     const m = { ...(meta as SessionMeta), updated_at: Date.now() };
     devMeta.set(m.key, m);
@@ -223,7 +370,7 @@ const handlers: Record<string, Handler> = {
   },
   save_annotation: ({ annotation }) => {
     const a = annotation as Annotation;
-    const saved = a.id ? { ...a, updated_at: Date.now() } : { ...a, id: `dev-${Date.now()}`, created_at: Date.now(), updated_at: Date.now() };
+    const saved = a.id ? { ...a, version: (a.version ?? 0) + 1, updated_at: Date.now() } : { ...a, id: `dev-${Date.now()}`, version: 1, created_at: Date.now(), updated_at: Date.now() };
     devNotes = [...devNotes.filter((x) => x.id !== saved.id), saved];
     return saved;
   },
@@ -236,6 +383,13 @@ const handlers: Record<string, Handler> = {
     outcome: devMeta.get(key)?.outcome ?? "unknown",
     components: devMeta.get(key)?.components ?? [],
     kinds: [...new Set(devNotes.filter((a) => a.key === key).map((a) => a.kind))],
+    kind_counts: devNotes.filter((a) => a.key === key).reduce<Record<string, number>>((c, a) => ({ ...c, [a.kind]: (c[a.kind] ?? 0) + 1 }), {}),
+    person_annotations: devNotes.filter((a) => a.key === key && a.author.type === "person").length,
+    model_annotations: devNotes.filter((a) => a.key === key && a.author.type === "model").length,
+    confidence: devNotes
+      .filter((a) => a.key === key && a.confidence)
+      .reduce<Record<string, number>>((c, a) => ({ ...c, [a.confidence!]: (c[a.confidence!] ?? 0) + 1 }), {}),
+    analyzed: !!devMeta.get(key)?.generated_by || devNotes.some((a) => a.key === key && a.author.type === "model"),
   })),
   library_errors: () => [{ path: `${HOME}/Library/Application Support/com.danmactough.sessionplayer/library/Y2xhdWRlOmRlbW8.spsession`, error: "Y2xhdWRlOmRlbW8.spsession is damaged: bundle is malformed" }],
   import_bundle: () => ({ imported: ["claude:demo"], unchanged: [], kept: [], conflicts: [], empty: [], kept_notes: 0 }),
@@ -252,14 +406,65 @@ const handlers: Record<string, Handler> = {
     return handler;
   },
   "plugin:event|unlisten": () => null,
-  "plugin:app|version": () => "0.12.0",
+  // Confirmation dialogs (such as Analyze's consent) answer yes, so flows can be previewed.
+  // Shows the dialog in the page, since the browser has no native one with custom buttons.
+  // Set window.__dialogAnswer to a button's index to answer without showing it (for scripted checks).
+  "plugin:dialog|message": ({ message, title, buttons }) => {
+    const b = buttons as { OkCustom?: string; OkCancelCustom?: [string, string]; YesNoCancelCustom?: [string, string, string] } | string | undefined;
+    const labels =
+      typeof b === "object"
+        ? (b.YesNoCancelCustom ?? b.OkCancelCustom ?? (b.OkCustom ? [b.OkCustom] : ["OK"]))
+        : b === "YesNo"
+          ? ["Yes", "No"]
+          : b === "YesNoCancel"
+            ? ["Yes", "No", "Cancel"]
+            : b === "OkCancel"
+              ? ["Ok", "Cancel"]
+              : ["Ok"];
+    const scripted = (window as { __dialogAnswer?: number }).__dialogAnswer;
+    if (scripted !== undefined) return labels[Math.min(scripted, labels.length - 1)];
+    return devDialog(String(title ?? ""), String(message), labels);
+  },
+  "plugin:app|version": () => __APP_VERSION__,
   // Settings > Check now always finds this release, so the update banner can be previewed.
-  "plugin:updater|check": () => ({ rid: 1, currentVersion: "0.12.0", version: "0.13.0", date: null, body: "", rawJson: {} }),
+  "plugin:updater|check": () => ({ rid: 1, currentVersion: __APP_VERSION__, version: NEXT_VERSION, date: null, body: "", rawJson: {} }),
   "plugin:updater|download": () => 2,
   "plugin:updater|install": () => console.log("install update"),
   "plugin:process|restart": () => console.log("restart"),
   "plugin:resources|close": () => null,
 };
+
+/** A plain in-page stand-in for the native message dialog; resolves to the label clicked. */
+function devDialog(title: string, message: string, labels: string[]): Promise<string> {
+  return new Promise((resolve) => {
+    const back = document.createElement("div");
+    back.style.cssText = "position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.25)";
+    const box = document.createElement("div");
+    box.style.cssText = "width:340px;padding:18px;border-radius:10px;background:var(--raised);color:var(--ink);box-shadow:0 12px 40px rgba(0,0,0,.25);font:13px var(--sans)";
+    const h = document.createElement("div");
+    h.style.cssText = "font-weight:600;margin-bottom:6px";
+    h.textContent = title;
+    const p = document.createElement("div");
+    p.style.cssText = "color:var(--ink-2);line-height:1.45;margin-bottom:14px";
+    p.textContent = message;
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;flex-direction:column;gap:6px";
+    labels.forEach((label, i) => {
+      const btn = document.createElement("button");
+      btn.textContent = label;
+      btn.className = i === 0 ? "primary" : "ghost";
+      btn.style.cssText = "padding:5px 10px;border-radius:6px;border:1px solid var(--line)";
+      btn.onclick = () => {
+        back.remove();
+        resolve(label);
+      };
+      row.append(btn);
+    });
+    box.append(h, p, row);
+    back.append(box);
+    document.body.append(back);
+  });
+}
 
 let cb = 0;
 const callbacks: Record<number, (e: unknown) => void> = {};

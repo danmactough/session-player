@@ -562,6 +562,8 @@ fn details_and_annotations_travel_with_the_session() {
     let exported = sender.export("claude/-work-repo/abc.jsonl", None, None);
     assert_eq!(exported.sessions[0].meta.as_ref().unwrap().outcome_note.as_deref(), Some("Fixed the login test"));
     assert_eq!(exported.sessions[0].annotations.len(), 1);
+    // A bundle carries only the current version, unnumbered.
+    assert!(!serde_json::to_string(&exported.sessions[0].annotations[0]).unwrap().contains("\"version\""));
     assert_eq!(exported.sessions[1].annotations[0].author, notes::Author::Model { model: "claude-haiku-5-5".into() });
     // Still current against the transcript as bundled, whose text export rewrites.
     assert_eq!(exported.sessions[1].annotations[0].revision, Some(session_player_core::test_support::generate::revision(&exported.sessions[1].events)));
@@ -592,6 +594,7 @@ fn details_and_annotations_travel_with_the_session() {
     bundle::import(&recipient.conn, &recipient.library, &updated_file, Some(bundle::OnConflict::Replace)).unwrap();
     let after: Vec<_> = notes::annotations(&recipient.conn, key).unwrap().into_iter().map(|a| a.note).collect();
     assert_eq!(after, ["npm test failed on login.spec", "mine"]);
+    assert_eq!(notes::annotations(&recipient.conn, key).unwrap()[0].version, 2, "the replacement is a new version");
 }
 
 #[test]
@@ -684,4 +687,37 @@ fn a_subagent_that_only_replied_in_text_survives_import() {
     let report = bundle::import(&recipient.conn, &recipient.library, &file, None).unwrap();
     assert!(report.empty.is_empty());
     assert_eq!(report.imported, ["claude:abc", "claude:agent-a1"]);
+}
+
+#[test]
+fn import_gives_unnamed_annotations_by_a_person_the_exporters_name() {
+    use session_player_core::test_support::annotations as notes;
+    let sender = Sender::new("exported-by");
+    let key = "local:claude:abc";
+    let mine = notes::save_annotation(&sender.conn, notes::Annotation::new(key, notes::Kind::Other, "mine, before I set a name", vec![prompt_ref()], notes::Author::Person { name: None })).unwrap();
+    let named = notes::save_annotation(&sender.conn, notes::Annotation::new(key, notes::Kind::Other, "named", vec![prompt_ref()], notes::Author::Person { name: Some("Sam".into()) })).unwrap();
+    let model = notes::save_annotation(&sender.conn, notes::Annotation::new(key, notes::Kind::Other, "by a model", vec![prompt_ref()], notes::Author::Model { model: "claude-haiku-5-5".into() })).unwrap();
+    let mut exported = sender.export("claude/-work-repo/abc.jsonl", None, Some(vec![]));
+    exported.exported_by = Some("Dan".into());
+    let file = sender.save(&exported, "abc.spsession");
+    // The file records the exporter, and the annotation as it was.
+    let saved = bundle::read(&file).unwrap();
+    assert_eq!(saved.exported_by.as_deref(), Some("Dan"));
+    assert!(saved.sessions[0].annotations.iter().any(|a| a.id == mine.id && a.author == notes::Author::Person { name: None }));
+
+    let recipient = Recipient::new("exported-by");
+    bundle::import(&recipient.conn, &recipient.library, &file, None).unwrap();
+    let author = |id: &str| notes::annotation(&recipient.conn, id).unwrap().unwrap().author;
+    assert_eq!(author(&mine.id), notes::Author::Person { name: Some("Dan".into()) });
+    assert_eq!(author(&named.id), notes::Author::Person { name: Some("Sam".into()) });
+    assert_eq!(author(&model.id), notes::Author::Model { model: "claude-haiku-5-5".into() });
+
+    // The filled-in name isn't mistaken for the recipient's edit: an updated bundle still replaces the annotation.
+    let mut updated = exported.clone();
+    updated.sessions[0].annotations.iter_mut().find(|a| a.id == mine.id).unwrap().note = "mine, updated".into();
+    let updated_file = sender.save(&updated, "abc-2.spsession");
+    let report = bundle::import(&recipient.conn, &recipient.library, &updated_file, Some(bundle::OnConflict::Replace)).unwrap();
+    assert_eq!(report.kept_notes, 0);
+    let now = notes::annotation(&recipient.conn, &mine.id).unwrap().unwrap();
+    assert_eq!((now.note.as_str(), now.author), ("mine, updated", notes::Author::Person { name: Some("Dan".into()) }));
 }

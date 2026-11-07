@@ -27,6 +27,8 @@ interface Props {
   onHideSubagents: (hide: boolean) => void;
   authorName: string;
   onAuthorName: (name: string) => void;
+  showAnalyzeNotice: boolean;
+  onShowAnalyzeNotice: (show: boolean) => void;
   autoCheckUpdates: boolean;
   onAutoCheckUpdates: (on: boolean) => void;
   checkingForUpdates: boolean;
@@ -49,6 +51,8 @@ export function SettingsSheet({
   onHideSubagents,
   authorName,
   onAuthorName,
+  showAnalyzeNotice,
+  onShowAnalyzeNotice,
   autoCheckUpdates,
   onAutoCheckUpdates,
   checkingForUpdates,
@@ -180,13 +184,33 @@ export function SettingsSheet({
 
         <h3 className="settings-head">Annotations</h3>
         <label className="setting-field">
-          Your name
-          <input value={authorName} onChange={(e) => onAuthorName(e.target.value)} placeholder="Shown on annotations you add" />
+          <span>Your name</span>
+          <input value={authorName} onChange={(e) => onAuthorName(e.target.value)} />
+          <span className="setting-note">Shown as the author of annotations you add. Annotations from Analyze show the model instead.</span>
         </label>
+        <label className="setting-toggle">
+          <input type="checkbox" checked={showAnalyzeNotice} onChange={(e) => onShowAnalyzeNotice(e.target.checked)} />
+          <span>
+            Show the notice before Analyze sends transcripts
+            <span className="setting-note">
+              Explains that Analyze sends transcripts to Anthropic, and asks before it does. Ticking &ldquo;Don&rsquo;t show
+              this again&rdquo; on the notice turns this off.
+            </span>
+          </span>
+        </label>
+        <div className="setting-field">
+          <span>Analyze log</span>
+          <button className="ghost setting-button" onClick={() => void api.openAnalyzeLog()}>
+            Open Log
+          </button>
+          <span className="setting-note">
+            Each Analyze and report run, and each call to claude. When one fails, the log has claude&rsquo;s own error output.
+          </span>
+        </div>
 
         <h3 className="settings-head">Imported sessions</h3>
         <p className="sheet-note">
-          To remove an imported session, open it and click Remove… in its header. Files in the library that can&rsquo;t
+          To remove an imported session, open it and choose Remove… from the ⋯ menu at the top right of its transcript. Files in the library that can&rsquo;t
           be read are listed here.
         </p>
         <ul className="roots">

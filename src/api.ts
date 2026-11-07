@@ -5,6 +5,9 @@ import type {
   LibraryError,
   Annotation,
   NoteSummary,
+  CitedAnnotation,
+  Report,
+  ReportSummary,
   SessionMeta,
   OnConflict,
   OpenTarget,
@@ -45,7 +48,8 @@ export const api = {
   exportPreview: (path: string, branch?: string, subagents?: string[]) =>
     invoke<ExportPreview>("export_preview", { path, branch: branch ?? null, subagents: subagents ?? null, request: nextExportRequest() }),
   /** Writes the previewed bundle; resolves to the path written. */
-  exportSave: (token: number, dest: string) => invoke<string>("export_save", { token, dest }),
+  /** `exportedBy` is the user's name; the bundle records it as the exporter. */
+  exportSave: (token: number, dest: string, exportedBy: string) => invoke<string>("export_save", { token, dest, exportedBy }),
   exportCancel: () => invoke<void>("export_cancel"),
   importBundle: (path: string, onConflict?: OnConflict) =>
     invoke<ImportReport>("import_bundle", { path, onConflict: onConflict ?? null }),
@@ -54,7 +58,13 @@ export const api = {
   sessionNotes: (key: string, path: string, branch?: string) =>
     invoke<{ meta: SessionMeta | null; annotations: Annotation[]; revision: string | null }>("session_notes", { key, path, branch: branch ?? null }),
   /** Starts generating in the background; watch for "generate-progress" and "generate-done". */
-  generateNotes: (key: string, path: string, branch?: string) => invoke<void>("generate_notes", { key, path, branch: branch ?? null }),
+  /** `focus` is the user's own text for what to look for; omit it for the built-in text. */
+  generateNotes: (key: string, path: string, branch?: string, focus?: string) =>
+    invoke<void>("generate_notes", { key, path, branch: branch ?? null, focus: focus ?? null }),
+  /** The built-in focus text for Analyze and for reports. */
+  /** Opens the log of Analyze and report runs, which has claude's own output when a run fails. */
+  openAnalyzeLog: () => invoke<void>("open_analyze_log"),
+  defaultPrompts: () => invoke<{ analyze: string; report: string }>("default_prompts"),
   cancelGenerate: (key: string) => invoke<void>("cancel_generate", { key }),
   generating: () => invoke<string[]>("generating"),
   /** Resolves to the metadata as saved, or null when every field was empty. */
@@ -62,4 +72,16 @@ export const api = {
   saveAnnotation: (annotation: Annotation) => invoke<Annotation>("save_annotation", { annotation }),
   deleteAnnotation: (id: string) => invoke<void>("delete_annotation", { id }),
   noteSummaries: () => invoke<NoteSummary[]>("note_summaries"),
+  /** Starts a report in the background and resolves to its job id; watch for "report-progress" and "report-done".
+   * `model` is an alias such as "sonnet"; omit it for the default. */
+  generateReport: (sessions: { key: string; title: string }[], model?: string, focus?: string) =>
+    invoke<string>("generate_report", { sessions, model: model ?? null, focus: focus ?? null }),
+  cancelReport: (job: string) => invoke<void>("cancel_report", { job }),
+  /** Newest first. */
+  listReports: () => invoke<ReportSummary[]>("list_reports"),
+  getReport: (id: string) => invoke<Report | null>("get_report", { id }),
+  deleteReport: (id: string) => invoke<void>("delete_report", { id }),
+  reportAnnotations: (id: string) => invoke<CitedAnnotation[]>("report_annotations", { id }),
+  /** Writes `text` to `dest` (a .md file the user chose); resolves to the path written. */
+  saveMarkdown: (dest: string, text: string) => invoke<string>("save_markdown", { dest, text }),
 };

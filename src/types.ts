@@ -193,11 +193,9 @@ export interface SessionMeta {
   /** Repository paths or packages worked on, such as "packages/api". */
   components: string[];
   updated_at: number;
-  /** Fields ("outcome", "components") still holding what a model generated; regenerating may replace them. */
+  /** Fields ("outcome", "components") still holding what a model generated. */
   generated: string[];
   generated_by: { model: string; at: number; revision: string } | null;
-  /** Fields a person emptied on purpose; generating leaves them empty. */
-  cleared: string[];
 }
 
 export type AnnotationKind =
@@ -233,6 +231,8 @@ export type Author = { type: "person"; name: string | null } | { type: "model"; 
 export interface Annotation {
   /** Empty until saved. */
   id: string;
+  /** Missing until saved. Each change saves a new version; the backend numbers them. */
+  version?: number;
   key: string;
   kind: AnnotationKind;
   note: string;
@@ -254,10 +254,71 @@ export interface NoteSummary {
   outcome: Outcome;
   components: string[];
   kinds: AnnotationKind[];
+  /** How many of the session's annotations have each kind. */
+  kind_counts: Partial<Record<AnnotationKind, number>>;
+  person_annotations: number;
+  model_annotations: number;
+  /** The model's annotations by confidence: "low", "medium", "high". */
+  confidence: Record<string, number>;
+  /** Analyze has run on the session. */
+  analyzed: boolean;
 }
 
 export interface OpenTarget {
   id: string;
   label: string;
   url: string;
+}
+
+/** What a report's takeaway or action rests on: an annotation as the report saw it, or a session's outcome. */
+export type Evidence = { type: "annotation"; id: string; version: number; key: string } | { type: "session"; key: string };
+
+export type ActionCategory = "codebase" | "skill" | "instructions" | "environment" | "automation";
+
+export interface ReportSession {
+  key: string;
+  title: string;
+  outcome: Outcome;
+  outcome_note: string | null;
+  components: string[];
+  /** The annotations the report was given, as (id, version). */
+  annotations: { id: string; version: number }[];
+}
+
+/** A saved report on a set of sessions; it never changes after it's written. */
+export interface Report {
+  id: string;
+  created_at: number;
+  title: string;
+  model: string;
+  prompt_version: number;
+  /** The user's own focus text, when the report wasn't written with the built-in one. */
+  focus?: string;
+  sessions: ReportSession[];
+  stats: {
+    sessions: number;
+    outcomes: Partial<Record<Outcome, number>>;
+    kinds: Partial<Record<AnnotationKind, number>>;
+    annotations: number;
+  };
+  summary: string;
+  takeaways: { text: string; evidence: Evidence[] }[];
+  actions: { title: string; category: ActionCategory; priority: "high" | "medium" | "low"; change: string; evidence: Evidence[] }[];
+  /** Takeaways and actions dropped because they cited nothing the report was given. */
+  rejected: number;
+}
+
+/** An annotation as a report was given it, and its version now (null once deleted). */
+export interface CitedAnnotation {
+  annotation: Annotation;
+  current_version: number | null;
+}
+
+export interface ReportSummary {
+  id: string;
+  created_at: number;
+  title: string;
+  model: string;
+  sessions: number;
+  actions: number;
 }

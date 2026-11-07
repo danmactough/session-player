@@ -149,12 +149,106 @@ mark {
 /* ---------- layout ---------- */
 .app {
   display: grid;
-  grid-template-columns: 248px 372px 1fr;
+  /* The view strip, the left column, the list, and the pane on the right. */
+  grid-template-columns: 52px 248px 372px 1fr;
   height: 100%;
+}
+/* Reading a report in Insights: no list, so the report spans both right-hand columns. */
+.app.reading {
+  grid-template-columns: 52px 248px 1fr;
+}
+/* Choosing sessions for a report: the project list sits between Insights' column and the session list. */
+.app.choosing-report {
+  grid-template-columns: 52px 248px 248px 372px 1fr;
+}
+
+/* ---------- view strip ---------- */
+.nav {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  /* The window's buttons sit above the first icon, and the first icon is
+     centered on the left column's search box, 88px down. With no border, the
+     strip looks like it runs on to the search box, 12px into the left column,
+     so the icons sit 12px from the window edge and 12px before the search box. */
+  padding: 68px 0 12px 12px;
+  background: var(--rail);
+}
+.nav-button {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 9px;
+  color: var(--muted);
+  outline: none;
+  transition: background 0.12s, color 0.12s;
+}
+.nav-button:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+.nav-button.on {
+  background: var(--select);
+  color: var(--select-ink);
+}
+.nav-gap {
+  margin-top: auto;
+}
+
+/* ---------- Insights' left column ---------- */
+.build-area {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  /* Lines the button up with the search box in the other views' left column. */
+  padding: 10px 12px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.build-start {
+  flex: 1;
+  padding: 7px 10px;
+}
+.build-count {
+  font-size: 12px;
+  color: var(--muted);
+}
+.build-check {
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.build-title {
+  font-weight: 600;
+  color: var(--ink);
+}
+.build-note {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.build-actions {
+  display: flex;
+  gap: 8px;
+}
+.insights-rail .report-list {
+  flex: 1;
+}
+.insights-rail .report-row {
+  padding-left: 14px;
+  padding-right: 14px;
+}
+.insights-rail .empty {
+  /* Fills the column, so the footer stays at the bottom as it does in the other views. */
+  flex: 1;
+  padding: 24px 16px;
+  font-size: 12.5px;
 }
 
 /* ---------- rail ---------- */
 .rail {
+  position: relative;
   background: var(--rail);
   border-right: 1px solid var(--line);
   display: flex;
@@ -162,15 +256,19 @@ mark {
   min-height: 0;
 }
 .rail-top {
-  height: 52px;
+  height: 62px;
   display: flex;
-  align-items: flex-end;
+  /* The top padding leaves room for the window buttons; the app name is
+     centered on the same line as the list's heading. */
+  align-items: center;
   justify-content: flex-end;
-  padding: 0 16px 6px;
+  gap: 6px;
+  padding: 34px 16px 4px 12px;
 }
 .brand {
+  flex: none;
   font: 11px var(--mono);
-  letter-spacing: 0.04em;
+  letter-spacing: 0.02em;
   color: var(--muted);
   text-transform: lowercase;
 }
@@ -617,19 +715,11 @@ mark {
 .proj-item.hidden .proj:hover {
   background: none;
 }
-.rail-foot {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 12px 12px;
-  border-top: 1px solid var(--line);
-  position: relative;
-}
 /* Floats over the bottom of the project list, then fades, like a browser's link preview. */
 .rail-status {
   position: absolute;
   left: 0;
-  bottom: 100%;
+  bottom: 0;
   max-width: 100%;
   box-sizing: border-box;
   padding: 3px 8px;
@@ -646,6 +736,10 @@ mark {
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.3s;
+}
+/* Holding the Analyze queue: its popover opens above the tray, so nothing may clip it. */
+.rail-status.with-queue {
+  overflow: visible;
 }
 .rail-status.on {
   opacity: 1;
@@ -741,7 +835,8 @@ mark {
   min-height: 0;
 }
 .mid-head {
-  padding: 30px 18px 12px;
+  /* Centers the heading on the same line as the app name (46px down). */
+  padding: 32px 18px 12px;
   border-bottom: 1px solid var(--line-2);
 }
 .mid-title h2 {
@@ -832,6 +927,9 @@ mark {
   padding: 9px 18px 10px;
   border-left: 2px solid transparent;
   transition: background 0.1s;
+  /* A ⌘- or ⇧-click focuses the row, and WebKit draws its focus ring; rows
+     are moved through with j/k, never tabbed to, so the ring adds nothing. */
+  outline: none;
 }
 .srow:hover {
   background: var(--hover);
@@ -947,9 +1045,20 @@ mark {
 
 /* ---------- detail ---------- */
 .detail {
+  position: relative;
   min-width: 0;
   min-height: 0;
   background: var(--bg);
+}
+.detail-session {
+  height: 100%;
+}
+/* Kept laid out (so its scroll position and measurements survive) but out of sight and reach. */
+.detail-session.offstage {
+  position: absolute;
+  inset: 0;
+  visibility: hidden;
+  pointer-events: none;
 }
 .placeholder {
   height: 100%;
@@ -991,6 +1100,7 @@ mark {
   height: 100%;
 }
 .t-head {
+  position: relative;
   padding: 30px 40px 16px;
   border-bottom: 1px solid var(--line-2);
   user-select: text;
@@ -1000,6 +1110,8 @@ mark {
   flex-wrap: wrap;
   align-items: center;
   gap: 7px;
+  /* Clear of the ⋯ menu at the top right. */
+  padding-right: 24px;
   font: 11px var(--mono);
   color: var(--muted);
 }
@@ -1075,15 +1187,24 @@ mark {
 .t-actions button:hover {
   background: var(--hover);
 }
-.t-file {
-  margin-left: 8px;
+/* The transcript's ⋯ menu, top right: its dots centered on the breadcrumb
+   line, and the last dot's edge on the header's 40px right margin (the button
+   is wider than the dots, so it sits a little past it). Confirmations such as
+   "Copied path" show beside it. */
+.t-menu {
+  position: absolute;
+  top: 24px;
+  right: 33px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.t-menu-flash {
   font: 11px var(--mono);
-  color: var(--faint);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
-  flex: 1;
+  color: var(--muted);
+}
+.t-menu .menu-list {
+  min-width: 210px;
 }
 .t-family {
   display: flex;
@@ -1942,10 +2063,6 @@ mark {
   font: 11px var(--mono);
   color: var(--muted);
 }
-.import-button {
-  padding: 5px 8px;
-  font-size: 12px;
-}
 
 /* ---------- metadata and annotations ---------- */
 .t-details {
@@ -2027,9 +2144,13 @@ mark {
 .details-form label,
 .setting-field {
   display: grid;
-  gap: 3px;
-  font-size: 11.5px;
-  color: var(--muted);
+  gap: 6px;
+  margin-bottom: 16px;
+  font-size: 13px;
+  color: var(--ink);
+}
+.setting-field .setting-note {
+  margin-top: 0;
 }
 .details-form input,
 .details-form textarea,
@@ -2056,7 +2177,7 @@ mark {
   display: flex;
   gap: 8px;
 }
-.setting-field {
+.setting-field input {
   max-width: 320px;
 }
 .annotation {
@@ -2304,8 +2425,90 @@ mark {
 .mid-filters {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 6px 8px;
   margin-top: 8px;
+}
+.mid-filters {
+  flex-wrap: nowrap;
+  /* When the filters wrap, sort and Actions line up with their last row. */
+  align-items: flex-end;
+}
+.mid-filter-menus {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+}
+/* The Filter menu: a button like the sort menu's, an × to clear when filters
+   are on, and group flyouts that open to the right (into the pane beside). */
+.filter-menu {
+  align-items: center;
+  gap: 4px;
+}
+.filter-button {
+  padding: 4px 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: 10.5px var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.filter-button:hover,
+.filter-menu.open .filter-button,
+.filter-menu.filtering .filter-button {
+  color: var(--ink);
+  border-color: var(--ink-2);
+}
+.filter-count {
+  letter-spacing: 0;
+}
+.filter-clear {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  font-size: 14px;
+  line-height: 20px;
+  text-align: center;
+  color: var(--muted);
+}
+.filter-clear:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+.filter-menu > .menu-list {
+  left: 0;
+}
+.filter-menu .menu-list .menu-sub {
+  top: -5px;
+  left: calc(100% + 2px);
+  right: auto;
+}
+.mid-list-tools {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  /* The height of a filter button, so sort and Actions are centered on that row. */
+  min-height: 26px;
+}
+.actions-menu .menu-button {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  color: var(--muted);
+}
+.actions-menu .menu-button:hover,
+.actions-menu.open .menu-button {
+  background: var(--hover);
+  color: var(--ink);
+}
+.actions-menu .menu-list {
+  right: 0;
 }
 .mid-filters .caps-sort .menu-list,
 .analysis-annotations-head .caps-sort .menu-list {
@@ -2342,20 +2545,21 @@ mark {
 }
 
 /* ---------- keyboard shortcuts ---------- */
-.help-button {
-  width: 26px;
-  padding: 5px 0;
-  text-align: center;
-  font: 12px var(--mono);
-}
 .sheet.shortcuts {
-  width: 520px;
+  width: 900px;
+  /* Scrolls only if the window is too short for even three columns. */
+  max-height: calc(88vh - 24px);
+  overflow-y: auto;
 }
+/* Three balanced columns (fewer in a narrow window), each group kept whole. */
 .shortcut-groups {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 18px 28px;
+  columns: 3 250px;
+  column-gap: 28px;
   margin-top: 18px;
+}
+.shortcut-groups section {
+  break-inside: avoid;
+  margin-bottom: 18px;
 }
 .shortcut-groups h3 {
   margin: 0 0 6px;
@@ -2371,7 +2575,7 @@ mark {
   display: flex;
   align-items: baseline;
   gap: 12px;
-  padding: 5px 0;
+  padding: 3px 0;
   border-top: 1px solid var(--line-2);
   font-size: 12.5px;
 }
@@ -2406,11 +2610,6 @@ mark {
   font: 11px var(--mono);
   text-align: center;
   color: var(--ink);
-}
-@media (max-width: 560px) {
-  .shortcut-groups {
-    grid-template-columns: 1fr;
-  }
 }
 
 /* ---------- settings ---------- */
@@ -2462,33 +2661,6 @@ mark {
   font: 11px var(--mono);
 }
 
-/* ---------- resume / open split button ---------- */
-.split {
-  display: inline-flex;
-  align-items: stretch;
-  border: 1px solid var(--line);
-  border-radius: 5px;
-}
-.t-actions .split button {
-  border: 0;
-  border-radius: 0;
-}
-.t-actions .split .split-main {
-  border-radius: 4px 0 0 4px;
-}
-.split-menu .menu-button {
-  height: 100%;
-  padding: 0 7px;
-  border-left: 1px solid var(--line) !important;
-  border-radius: 0 4px 4px 0 !important;
-  color: var(--muted);
-}
-.split-menu .menu-list {
-  left: auto;
-  right: 0;
-  min-width: 200px;
-}
-
 /* ---------- app icons ---------- */
 /* Agent glyphs: Claude keeps its orange, the rest use the text color. */
 .app-icon {
@@ -2524,11 +2696,6 @@ mark {
 .t-eyebrow .app-icon {
   width: 12px;
   height: 12px;
-}
-.split-main {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
 }
 .copy-icon {
   color: var(--muted);
@@ -2673,4 +2840,739 @@ mark {
   margin-top: 10px;
   font-size: 13px;
   color: var(--ink-2);
+}
+
+/* ---------- analysis ---------- */
+.stats-view {
+  height: 100%;
+  overflow-y: auto;
+  padding: 29px clamp(18px, 4vw, 36px) 48px;
+  max-width: 860px;
+}
+.stats-head h1 {
+  margin: 0;
+  font: 400 30px/1.15 var(--serif);
+  color: var(--ink);
+}
+.stats-head p {
+  margin: 4px 0 0;
+}
+.stats-view .dim {
+  color: var(--muted);
+}
+.stat-tiles {
+  display: grid;
+  /* Wraps to two rows when the window is narrow. */
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 10px;
+  margin: 22px 0 8px;
+}
+.stat-tile {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.stat-value {
+  font: 400 28px/1.1 var(--serif);
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.stat-label {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.stats-section {
+  margin-top: 26px;
+}
+.stats-section h2 {
+  margin: 0 0 8px;
+  font: 10.5px var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--faint);
+  font-weight: 400;
+}
+.bars {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.bars-key {
+  display: grid;
+  grid-template-columns: minmax(96px, 2fr) 3fr 52px 64px;
+  padding: 0 8px 2px;
+  font: 10px var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.bars-key span:first-child {
+  grid-column: 3;
+  text-align: right;
+}
+.bars-key span:last-child {
+  text-align: right;
+}
+.bar-row {
+  display: grid;
+  grid-template-columns: minmax(96px, 2fr) 3fr 52px 64px;
+  align-items: center;
+  width: 100%;
+  padding: 5px 8px;
+  border-radius: 6px;
+  text-align: left;
+  color: var(--ink-2);
+}
+.bar-row:hover {
+  background: var(--hover);
+}
+.bar-row.on {
+  background: var(--hover);
+  color: var(--ink);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.bar-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+.bar-track {
+  height: 8px;
+  margin-right: 8px;
+}
+.bar-fill {
+  display: block;
+  height: 100%;
+  min-width: 4px;
+  border-radius: 0 4px 4px 0;
+  background: var(--accent);
+  opacity: 0.8;
+}
+.bar-row:hover .bar-fill,
+.bar-row.on .bar-fill {
+  opacity: 1;
+}
+.bar-succeeded {
+  background: var(--ok);
+}
+.bar-partial {
+  background: var(--warn);
+}
+.bar-failed {
+  background: var(--err);
+}
+.bar-unknown {
+  background: var(--faint);
+}
+.bar-value,
+.bar-detail {
+  text-align: right;
+  font: 12px var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+.bar-value {
+  color: var(--ink);
+}
+.bar-detail {
+  color: var(--muted);
+}
+.stats-pair {
+  display: flex;
+  gap: 56px;
+}
+.stat-list {
+  margin: 0;
+  min-width: 160px;
+}
+.stat-list-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 3px 0;
+  font-size: 13px;
+  border-bottom: 1px solid var(--line-2);
+}
+.stat-list dt {
+  color: var(--ink-2);
+}
+.stat-list dd {
+  margin: 0;
+  font: 12px var(--mono);
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- selection and Analyze queue ---------- */
+.srow.picked {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-left-color: var(--accent);
+}
+.srow.picked:hover {
+  background: color-mix(in srgb, var(--accent) 17%, transparent);
+}
+.pick-bar {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 18px;
+  border-top: 1px solid var(--line);
+  background: var(--raised);
+  font-size: 12px;
+}
+.pick-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.pick-count {
+  /* A hint, so the Analyze button reads first. */
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+}
+.pick-analyze {
+  padding: 3px 10px;
+}
+.pick-link {
+  color: var(--ink-2);
+  text-decoration: underline;
+  text-decoration-color: var(--line);
+  text-underline-offset: 3px;
+}
+.pick-link:hover:not(:disabled) {
+  color: var(--ink);
+  text-decoration-color: currentColor;
+}
+.pick-link:disabled {
+  color: var(--faint);
+  text-decoration: none;
+}
+.stats-note {
+  margin: 4px 0 0;
+  font-size: 12px;
+}
+
+/* The Analyze queue's footer status and its popover. */
+.queue-status {
+  position: relative;
+}
+.queue-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  font: inherit;
+  color: var(--muted);
+}
+.queue-button:hover,
+.queue-button[aria-expanded="true"] {
+  color: var(--ink);
+}
+.queue-button.has-failed {
+  color: var(--err);
+}
+.spinner {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1.5px solid var(--line);
+  border-top-color: var(--accent);
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.queue-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+.queue-dot.ok {
+  background: var(--ok);
+}
+.queue-dot.err {
+  background: var(--err);
+}
+.queue-pop {
+  position: absolute;
+  left: -8px;
+  bottom: calc(100% + 8px);
+  z-index: 30;
+  width: 340px;
+  max-height: 360px;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--raised);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16);
+}
+.queue-head {
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line-2);
+  font: 10.5px var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.queue-head .clear-link {
+  font: 12px var(--sans);
+  letter-spacing: 0;
+  text-transform: none;
+}
+.queue-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+  overflow-y: auto;
+}
+.queue-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px 0 12px;
+}
+.queue-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 4px 0;
+  text-align: left;
+}
+.queue-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+.queue-open:hover .queue-name {
+  color: var(--ink);
+}
+.queue-state {
+  flex: none;
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 11px var(--mono);
+  color: var(--muted);
+}
+.queue-running .queue-state,
+.queue-checking .queue-state {
+  color: var(--accent);
+}
+.queue-done .queue-state {
+  color: var(--ok);
+}
+.queue-failed .queue-state {
+  color: var(--err);
+}
+.queue-cancel {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  color: var(--faint);
+}
+.queue-cancel:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+/* The notice Analyze shows before sending transcripts. */
+.notice-sheet {
+  width: 440px;
+}
+.notice-sheet h2 {
+  margin: 0;
+  font: 400 22px/1.2 var(--serif);
+}
+.notice-check {
+  margin: 4px 0 18px;
+}
+.notice-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* ---------- reports ---------- */
+.report-list {
+  padding-bottom: 24px;
+}
+.report-row {
+  display: block;
+  width: 100%;
+  /* Like session rows: WebKit rings a clicked row, and the selection already shows. */
+  outline: none;
+  padding: 10px 18px 11px;
+  border-left: 2px solid transparent;
+  text-align: left;
+  transition: background 0.1s;
+}
+button.report-row:hover {
+  background: var(--hover);
+}
+.report-row.active {
+  background: var(--raised);
+  border-left-color: var(--ink);
+  box-shadow: inset 0 1px 0 var(--line-2), inset 0 -1px 0 var(--line-2);
+}
+.report-row-title {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.report-row-title .t {
+  flex: 1;
+  min-width: 0;
+  font-weight: 500;
+  color: var(--ink);
+  line-height: 1.35;
+}
+.report-row-meta {
+  display: block;
+  margin-top: 3px;
+  font: 11px var(--mono);
+  color: var(--muted);
+}
+.report-job .report-row-meta {
+  margin-left: 19px;
+}
+.report-job.failed .report-row-meta {
+  color: var(--err);
+}
+
+.report-view {
+  height: 100%;
+  overflow-y: auto;
+  padding: 29px clamp(18px, 4vw, 40px) 56px;
+}
+.report-view > * {
+  max-width: 820px;
+}
+.report-head h1 {
+  margin: 0;
+  font: 400 30px/1.15 var(--serif);
+  color: var(--ink);
+}
+.report-head p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.report-head {
+  position: relative;
+  /* Clear of the ⋯ menu at the top right. */
+  padding-right: 36px;
+}
+/* The dots are centered on the title's first line, and the last dot's edge on
+   the header's right edge (the button is wider than the dots). */
+.report-menu {
+  position: absolute;
+  top: 4px;
+  right: -7px;
+}
+.report-notice {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.report-summary {
+  margin: 22px 0 0;
+  font-size: 15px;
+  line-height: 1.55;
+  color: var(--ink-2);
+}
+.report-section {
+  margin-top: 30px;
+}
+.report-section h2 {
+  margin: 0 0 10px;
+  font: 400 10.5px var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+.report-action {
+  padding: 14px 16px;
+  margin-bottom: 10px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.report-action.priority-high {
+  border-left-color: var(--err);
+}
+.report-action.priority-medium {
+  border-left-color: var(--warn);
+}
+.report-action-head {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  font: 10.5px var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.priority {
+  color: var(--muted);
+}
+.priority-high .priority,
+.priority.priority-high {
+  color: var(--err);
+}
+.priority.priority-medium {
+  color: var(--warn);
+}
+.category {
+  color: var(--faint);
+}
+.report-action h3 {
+  margin: 6px 0 4px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.report-change {
+  font-size: 13.5px;
+  color: var(--ink-2);
+}
+.report-change > :first-child {
+  margin-top: 0;
+}
+.report-takeaways {
+  margin: 0;
+  padding-left: 20px;
+}
+.report-takeaways li {
+  margin-bottom: 14px;
+}
+.report-takeaways p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--ink);
+}
+.evidence {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.evidence-item {
+  display: contents;
+}
+.evidence-chip {
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  font-size: 11.5px;
+  color: var(--ink-2);
+  background: var(--raised);
+}
+.evidence-chip:hover,
+.evidence-item.open .evidence-chip {
+  border-color: var(--ink-2);
+  color: var(--ink);
+}
+.evidence-chip.cites-session {
+  font-style: italic;
+}
+.evidence-chip .since {
+  color: var(--warn);
+}
+/* An open citation takes a full row under the chips. */
+.evidence-detail {
+  flex-basis: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--hover);
+  font-size: 12.5px;
+}
+.evidence-session {
+  font-weight: 500;
+  color: var(--ink);
+}
+.evidence-note {
+  color: var(--ink-2);
+  line-height: 1.45;
+}
+.report-sessions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.report-session {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  /* Pulled out past the edges, so the hover background has room around the text. */
+  width: calc(100% + 16px);
+  margin: 0 -8px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line-2);
+  border-radius: 6px;
+  text-align: left;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.report-session:hover:not(:disabled) {
+  background: var(--hover);
+  border-bottom-color: transparent;
+}
+.report-session:disabled {
+  cursor: default;
+}
+.report-session .t {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-2);
+}
+.report-session:hover:not(:disabled) .t {
+  color: var(--ink);
+  text-decoration: underline;
+  text-decoration-color: var(--muted);
+  text-underline-offset: 3px;
+}
+.report-session .dim {
+  color: var(--muted);
+  font: 11px var(--mono);
+}
+.report-rejected {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* ---------- prompt customizing ---------- */
+.split-button {
+  display: inline-flex;
+  align-items: stretch;
+}
+.split-button .split-main {
+  flex: 1;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.split-more {
+  display: flex;
+}
+.split-more .menu-button {
+  height: 100%;
+  padding: 0 7px;
+  border-radius: 0 6px 6px 0;
+  border-left: 1px solid rgba(255, 255, 255, 0.25);
+  background: var(--select);
+  color: var(--select-ink);
+}
+.split-more .menu-button:hover {
+  opacity: 0.88;
+}
+.split-button.disabled .split-more .menu-button {
+  opacity: 0.5;
+  pointer-events: none;
+}
+.prompt-sheet {
+  width: 560px;
+}
+.prompt-sheet h2 {
+  margin: 0;
+  font: 400 22px/1.2 var(--serif);
+}
+.prompt-text {
+  width: 100%;
+  resize: vertical;
+  padding: 8px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: var(--raised);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  outline: none;
+}
+.prompt-text:focus {
+  border-color: var(--ink-2);
+}
+.prompt-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 10px 0 18px;
+}
+.split-more .menu-list {
+  right: 0;
+}
+/* The pick bar sits at the bottom of the list, so its menu opens upward. */
+.pick-bar .split-more .menu-list {
+  top: auto;
+  bottom: calc(100% + 4px);
+}
+.report-focus {
+  font: inherit;
+}
+.report-focus-text {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--hover);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink-2);
+  white-space: pre-wrap;
+}
+/* Their padding belongs on the button inside, not on the pair. */
+.split-button.build-start,
+.split-button.pick-analyze {
+  padding: 0;
+}
+.split-button.build-start .split-main {
+  padding: 7px 10px;
+}
+.split-button.pick-analyze .split-main {
+  padding: 3px 10px;
+}
+.queue-head {
+  gap: 12px;
+}
+.setting-button {
+  justify-self: start;
+}
+.report-job-log {
+  font-size: 12px;
+}
+.queue-head .queue-title {
+  flex: 1;
+  min-width: 0;
+}
+/* Insights' project list has no app name above it; its search box is
+   centered on the line the app name and "Choose sessions" share, 46px down. */
+.project-rail .rail-top {
+  display: none;
+}
+.project-rail .search {
+  margin-top: 30px;
 }

@@ -13,12 +13,27 @@ const CONTEXT_KIND = { instructions: "Instruction file", skill: "Skill", agent: 
  * writes the bundle previewed here (the backend keeps it), so the file always
  * matches what the user reviewed.
  */
-export function ExportSheet({ session, onClose }: { session: SessionRow; onClose: () => void }) {
+export function ExportSheet({
+  session,
+  authorName,
+  onAuthorName,
+  onClose,
+}: {
+  session: SessionRow;
+  /** The name in Settings; exporting needs one. */
+  authorName: string;
+  onAuthorName: (name: string) => void;
+  onClose: () => void;
+}) {
   const [preview, setPreview] = useState<ExportPreview | null>(null);
   const [subagents, setSubagents] = useState<string[] | undefined>(undefined);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
+  // Asked for here when Settings has no name yet. The field stays while the
+  // sheet is open, so typing the first letter doesn't make it vanish.
+  const [askName] = useState(() => !authorName.trim());
+  const needsName = !authorName.trim();
 
   const path = session.branch_of ?? session.path;
   useEffect(() => {
@@ -61,7 +76,7 @@ export function ExportSheet({ session, onClose }: { session: SessionRow; onClose
     if (!dest) return;
     setBusy(true);
     try {
-      setSaved(await api.exportSave(preview.token, dest));
+      setSaved(await api.exportSave(preview.token, dest, authorName.trim()));
     } catch (e) {
       setErr(String(e));
     } finally {
@@ -85,6 +100,19 @@ export function ExportSheet({ session, onClose }: { session: SessionRow; onClose
           appears in the transcript: check prompts, tool output and attachments for secrets, personal details and
           local paths before you share it.
         </p>
+
+        {askName && !saved && (
+          <>
+            <h3 className="settings-head">Your name</h3>
+            <label className="setting-field">
+              <input value={authorName} onChange={(e) => onAuthorName(e.target.value)} aria-label="Your name" autoFocus />
+              <span className="setting-note">
+                Set your name before exporting. It&rsquo;s saved in Settings and shown as the author of annotations you
+                add.
+              </span>
+            </label>
+          </>
+        )}
 
         {summary && (
           <>
@@ -192,7 +220,7 @@ export function ExportSheet({ session, onClose }: { session: SessionRow; onClose
               Reveal in Finder
             </button>
           ) : (
-            <button className="primary" disabled={!preview || busy} onClick={saveBundle}>
+            <button className="primary" disabled={!preview || busy || needsName} onClick={saveBundle} title={needsName ? "Set your name first" : undefined}>
               Save…
             </button>
           )}

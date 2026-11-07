@@ -4,6 +4,8 @@ pub mod generate;
 pub mod index;
 pub mod model;
 pub mod parse;
+pub mod reports;
+pub mod runlog;
 
 #[doc(hidden)]
 pub mod test_support {
@@ -14,6 +16,8 @@ pub mod test_support {
     pub use crate::model;
     pub use crate::model::SessionRow as Row;
     pub use crate::parse;
+    pub use crate::reports;
+    pub use crate::runlog;
 
     /// Parses and indexes one file, returning its index row and a compact
     /// "kind:text" rendering of its events ("!" marks errors).

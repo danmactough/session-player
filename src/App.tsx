@@ -953,7 +953,7 @@ export default function App() {
   );
 
   return (
-    <div className={`app ${reading ? "reading" : ""}`}>
+    <div className={`app ${reading ? "reading" : ""} ${view === "insights" && building ? "choosing-report" : ""}`}>
       <nav className="nav" aria-label="Views" data-tauri-drag-region>
         {NAV.map((n) => (
           <button
@@ -983,7 +983,7 @@ export default function App() {
           </svg>
         </button>
       </nav>
-      {view === "insights" ? (
+      {view === "insights" && (
         <aside className="rail insights-rail">
           <div className="rail-top" data-tauri-drag-region>
             <span className="brand" data-tauri-drag-region>
@@ -1050,12 +1050,16 @@ export default function App() {
             />
             {railBottom}
           </aside>
-        ) : (
-        <aside className="rail">
+      )}
+      {/* Choosing sessions for a report narrows them by project and source, as the other views do. */}
+      {(view !== "insights" || building) && (
+        <aside className={`rail ${view === "insights" ? "project-rail" : ""}`}>
           <div className="rail-top" data-tauri-drag-region>
-            <span className="brand" data-tauri-drag-region>
-              session<span className="brand-dot">·</span>player
-            </span>
+            {view !== "insights" && (
+              <span className="brand" data-tauri-drag-region>
+                session<span className="brand-dot">·</span>player
+              </span>
+            )}
           </div>
           <div className="search" onClick={() => searchRef.current?.focus()}>
             <input
@@ -1167,7 +1171,7 @@ export default function App() {
             resetKey={projectListKey}
           />
 
-          {railBottom}
+          {view !== "insights" && railBottom}
         </aside>
       )}
 

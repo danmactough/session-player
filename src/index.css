@@ -157,6 +157,10 @@ mark {
 .app.reading {
   grid-template-columns: 52px 248px 1fr;
 }
+/* Choosing sessions for a report: the project list sits between Insights' column and the session list. */
+.app.choosing-report {
+  grid-template-columns: 52px 248px 248px 372px 1fr;
+}
 
 /* ---------- view strip ---------- */
 .nav {
@@ -3563,4 +3567,12 @@ button.report-row:hover {
 .queue-head .queue-title {
   flex: 1;
   min-width: 0;
+}
+/* Insights' project list has no app name above it; its search box is
+   centered on the line the app name and "Choose sessions" share, 46px down. */
+.project-rail .rail-top {
+  display: none;
+}
+.project-rail .search {
+  margin-top: 30px;
 }

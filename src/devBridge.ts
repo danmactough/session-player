@@ -180,14 +180,14 @@ function devReport(picked: { key: string; title: string }[]): Report {
     prompt_version: 1,
     sessions,
     stats: { sessions: sessions.length, outcomes, kinds, annotations: cited.length },
-    summary: "Synthetic summary: most of these sessions hit tool errors, and a few went wrong because the agent lacked context it needed.",
+    summary: "Most of these sessions lost time to failing test runs the agent retried instead of reading. Two went wrong because the agent didn't know how the project runs its tests.",
     takeaways: [
-      { text: "Synthetic takeaway: failed tool calls recur across sessions.", evidence: evidence(["tool_error"]) },
-      { text: "Synthetic takeaway: the agent misses project conventions.", evidence: evidence(["missing_context", "ignored_instruction"]) },
+      { text: "The agent reruns a failing test command several times before reading its output.", evidence: evidence(["tool_error"]) },
+      { text: "The agent doesn't know the project runs its tests with npm run test:unit, and guesses npm test instead.", evidence: evidence(["missing_context", "ignored_instruction"]) },
     ].filter((t) => t.evidence.length),
     actions: [
-      { title: "Document the test setup", category: "instructions" as const, priority: "high" as const, change: "Synthetic change: add a Testing section to AGENTS.md.", evidence: evidence(["missing_context", "ignored_instruction"]) },
-      { title: "Script the flaky retry", category: "automation" as const, priority: "medium" as const, change: "Synthetic change: add a retry script.", evidence: evidence(["tool_error", "agent_stuck"]) },
+      { title: "Document the test setup", category: "instructions" as const, priority: "high" as const, change: "Add a **Testing** section to `AGENTS.md` that names `npm run test:unit` and says to read a failure before rerunning.", evidence: evidence(["missing_context", "ignored_instruction"]) },
+      { title: "Script running the changed tests", category: "automation" as const, priority: "medium" as const, change: "Add a `scripts/test-changed.sh` that runs only the tests for changed files and prints the first failure.", evidence: evidence(["tool_error", "agent_stuck"]) },
     ].filter((a) => a.evidence.length),
     rejected: 0,
   };

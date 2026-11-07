@@ -20,153 +20,63 @@
 
 | Usage | Development |
 |---|---|
-| [Install](#install)<br>[Add your sessions](#add-your-sessions)<br>[Find a session](#find-a-session)<br>[Search](#search)<br>[Read a session](#read-a-session)<br>[Spot errors](#spot-errors)<br>[Continue a session](#continue-a-session)<br>[Add notes and analysis](#add-notes-and-analysis)<br>[Share a session](#share-a-session)<br>[Settings](#settings)<br>[Keyboard shortcuts](#keyboard-shortcuts) | [Run it locally](#run-it-locally)<br>[Test](#test)<br>[Build](#build)<br>[Release](#release)<br>[Add support for a new agent](#add-support-for-a-new-agent)<br>[How it works](#how-it-works) |
+| [Install](#install)<br>[Add your sessions](#add-your-sessions)<br>[Find a session](#find-a-session)<br>[Search](#search)<br>[Read a session](#read-a-session)<br>[Continue a session](#continue-a-session)<br>[Add notes](#add-notes)<br>[Analyze sessions](#analyze-sessions)<br>[See patterns across sessions](#see-patterns-across-sessions)<br>[Get Insights](#get-insights)<br>[Share a session](#share-a-session)<br>[Settings](#settings)<br>[Keyboard shortcuts](#keyboard-shortcuts) | [Run it locally](#run-it-locally)<br>[Test](#test)<br>[Build](#build)<br>[Release](#release)<br>[Add support for a new agent](#add-support-for-a-new-agent)<br>[How it works](#how-it-works) |
 
 ## Usage
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/overview-dark.png">
-  <img src="docs/images/overview-light.png" alt="Session Player showing agent and project filters in the left sidebar, a list of sessions in the middle, and a session's outcome, annotations and transcript on the right">
-</picture>
+<img src="docs/images/overview-light.png" alt="Session Player showing view icons on the left edge, agent and project filters beside them, a list of sessions in the middle, and a session's outcome, annotations and transcript on the right">
 
-A few words used below:
-
-| Word | Meaning |
-|---|---|
-| **Agent** | A coding tool. Session Player reads sessions from Claude Code, Codex and pi. |
-| **Session** | One conversation with an agent. |
-| **Transcript** | The full record of a session. |
-| **Project** | The folder a session ran in. |
-| **Subagent** | A helper session that an agent starts to handle part of its work. |
-| **Fork** | A copy of a session, made to continue in a new direction while the original stays as it was. |
-| **Branch** | In pi, another path through the same session, made by going back to an earlier message and continuing from there. |
-| **Btw** | A quick side question asked with `/btw` during a session. Session Player doesn't show Codex `/btw` conversations because they are not saved anywhere. |
+The icons on the window's left edge switch between three views: **Transcripts** for reading sessions, **Statistics** for counts across them, and **Insights** for reports.
 
 ### Install
 
-1. Download the latest `.dmg` from [Releases](https://github.com/danmactough/session-player/releases/latest). It runs on Macs with Apple silicon.
-2. Open the `.dmg` and drag Session Player to Applications.
+Download the latest `.dmg` from [Releases](https://github.com/danmactough/session-player/releases/latest) and drag Session Player to Applications. It runs on Macs with Apple silicon.
 
 ### Add your sessions
 
-There's usually nothing to do. The first time it opens, the app adds each of these folders that exists:
-
-- `~/.claude/projects`
-- `~/.codex/sessions`
-- `~/.codex/archived_sessions`
-- `~/.pi/agent/sessions`
-
-To add another folder, open **Settings** (`⌘,`) and click **Add folder…**. The app finds session files anywhere inside it and works out which agent wrote each one.
-
-New sessions and new messages appear on their own while the app is open.
+Session Player finds sessions in the usual folders for Claude Code, Codex and pi on its own, and shows new ones as they're written. To add another folder, open **Settings** (`⌘,`).
 
 ### Find a session
 
-The left sidebar narrows down the session list next to it.
-
-- **Show one agent or several**: click the agent buttons at the top of the sidebar. To show only one agent, hover over its button and click **only**, or `⌥`-click the button.
-- **Show one project**: click it. Click it again, or press Esc in the list, to go back to **All projects**.
-- **Show several projects**: `⌘`-click adds or removes a project, `⇧`-click selects a run of them, and `⌘⇧`-click adds a run.
-- **Find a project**: type in the project filter, which appears when you have more than 8 projects. The session list narrows to match.
-- **Order projects**: choose **Recent**, **Oldest**, **A–Z** or **Z–A**, or drag a project to a new spot, which switches the order to **Manual**. New projects appear at the top of a manual order.
-- **Hide a project**: hover over it and click **Hide**. Its sessions leave the list, the counts and search. To bring it back, use **Settings**.
-
-Copies of a repository that Claude Code or Codex made to work in (git worktrees) are grouped with that repository. Chats in the Codex app that aren't in a project are grouped as one project, `~/Documents/Codex`.
-
-In the session list:
-
-- Move between sessions with `j` and `k` or the arrow keys.
-- Sort by **Recent**, **Oldest**, **Most prompts** or **Most tokens**.
-- Click a toggle such as "2 branches · 1 subagent" to show the sessions that came from that one: subagents, forks and pi branches.
-- Subagent sessions are hidden until you clear **Hide subagent sessions** in **Settings**.
-- Click **Only with errors** to keep only sessions with an error. Each session shows how many it has.
-
-Each session's title is the one the agent gave it. If there isn't one, the title comes from an early prompt.
+The sidebar narrows the list by agent and project; `⌘`-click to choose several. **Only with errors** keeps sessions that hit an error. Subagents, forks and pi branches are grouped under the session they came from.
 
 ### Search
 
-Press `⌘K` or `/`, then type. Search looks through titles, folder paths, prompts, replies, what the agent passed to its tools, and your notes.
-
-If you've selected projects, search starts within them. Above the results, you can switch to **All projects**. To clear the search, press Esc or click the × in the box.
-
-Opening a result opens the session with your search already in its find bar.
+Press `⌘K` to search titles, prompts, replies, tool calls and your notes.
 
 ### Read a session
 
-Click a session to read its transcript:
-
-- **Prompts and replies** appear in order, with reasoning folded away.
-- **Tool calls** are grouped into compact rows. Click a row to see what went in and what came out. File edits appear as colored before-and-after changes.
-- **Files attached to a prompt** appear as folded cards. Click one to read it.
-- **Instructions the agent was given**, such as `CLAUDE.md`, `AGENTS.md`, skills and agent definitions, appear as folded blocks where the agent received them. Each is marked **user**, **repo** or **local** to show where it came from. Clear the **Instructions** checkbox to hide them.
-- **A ChatGPT chat that started a Codex task** appears as a folded **ChatGPT conversation** block above the request.
-
-Press `⌘F` to find text in the session. In a window wider than 1500 pixels, an outline of the prompts appears on the right. To make more room, the fold button in the margin under the title hides the first prompt, the analysis and the session stats.
-
-### Spot errors
-
-An error is a tool call that couldn't do what was asked, or a failure in the agent or the model. For example: an edit that didn't apply, a timeout or a denied command.
-
-A command that ran and failed, such as a failing test run, isn't counted. Its row shows "exit 1" or whichever code it returned. To count these too, turn on **Count failed shell commands as errors** in **Settings**.
-
-The ↑ and ↓ error arrows next to the find box step through a session's errors and open each one.
+Click a session to read it: prompts and replies, tool calls with what went in and came out, file edits as before-and-after changes, and the instruction files the agent was given, such as `CLAUDE.md`. Errors, such as an edit that didn't apply or a denied command, are marked, and the arrows by the find box step through them.
 
 ### Continue a session
 
-The **⋯** button at the top right of a transcript holds its actions. The first one either copies the command that resumes the session or opens it in another app; choose which under **Resume or open with**, then click it or press `⌘O` to run it. Your choice is remembered for each agent. The same menu has **Export…**, **Reveal file** and **Copy path**, and **Remove…** for an imported session.
+The **⋯** menu at the top right of a transcript copies the command that resumes the session, or opens it in Claude, ChatGPT, T3 Code or your terminal (`⌘O`).
 
-| Action | Available for |
-|---|---|
-| **Copy resume command** | All sessions on this Mac |
-| **Open in Claude** | Claude Code sessions in `~/.claude/projects`, if Claude is installed |
-| **Open in ChatGPT** | Codex sessions in `~/.codex`, if ChatGPT is installed |
-| **Open in T3 Code** | Sessions T3 Code ran or imported, if T3 Code is installed |
-| **Open in Terminal** | All sessions on this Mac. Choose from the installed terminals: Terminal, iTerm, Ghostty, and cmux |
+### Add notes
 
-macOS asks once for permission to control each terminal. You can also show a session's file in Finder, and jump between a subagent and the session that started it.
+<img src="docs/images/annotation-light.png" alt="A transcript scrolled to an annotated reply, with a Key decision note shown directly below it and arrows for stepping through the session's annotations">
 
-### Add notes and analysis
+Each session can record its **outcome** (succeeded, partial, failed or unknown), the **components** of the codebase it touched, and **annotations** on particular moments, such as a tool error or a key decision. Hover over a message and click **+** to add one.
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/annotation-dark.png">
-  <img src="docs/images/annotation-light.png" alt="A transcript scrolled to an annotated reply, with a Key decision note shown directly below it and arrows for stepping through the session's annotations">
-</picture>
+### Analyze sessions
 
-Each session can record how it went. Use **Analyze…** in the session list's **⋯** Actions menu (`⌘Y`) to have Claude Haiku fill this in, or add it yourself:
+Analyze has Claude fill in the outcome, components and annotations for you. Choose **Analyze…** from the **⋯** menu above the session list (`⌘Y`), pick sessions, and click **Analyze**. It needs Claude Code installed.
 
-- **Outcome**: succeeded, partial, failed or unknown, with the reason.
-- **Components**: the parts of the codebase it worked on, such as `packages/api`.
-- **Annotations**: your notes on particular moments.
+### See patterns across sessions
 
-**Add an annotation**: hover over a message and click **+** in the margin, or open a tool call and click **Annotate this call**. Pick a type, then add a note.
+<img src="docs/images/statistics-light.png" alt="The Statistics view, with counts of sessions, outcomes and annotation types for the sessions in the list">
 
-**Use them**: the list under the transcript's title shows every annotation, and **Show** jumps to its place in the transcript. The ↑ and ↓ annotation arrows step through them. Use the **Filter** menu under the session list's heading to find matching sessions: hover **Analyzed**, **Outcome** or **Annotation type** and tick the options you want. You can tick several options in each group, and a session must match every group. The button shows how many options are ticked, and the **×** beside it clears them all. The transcript's annotation list has its own **Annotation type** filter.
+**Statistics** counts outcomes and annotation types across the sessions in the list, or the ones you select.
 
-**Views**: the icons down the window's left edge switch between **Transcripts** (reading sessions), **Statistics** and **Insights**; the gear and the question mark at the bottom open Settings and the keyboard shortcuts.
+### Get Insights
 
-**See them across sessions**: click **Statistics**. Its counts cover the sessions the list shows, or only the sessions you select: how many were analyzed or annotated, how many have each outcome, how many annotations of each type there are, who wrote them, and how confident Analyze was. Click an outcome or annotation type to narrow the list to it, and click it again to clear that filter.
+<img src="docs/images/report-light.png" alt="An Insights report with a summary, recommended actions with their evidence, key takeaways and the sessions it covers">
 
-Each view keeps its own projects, filters, search, expanded rows and scroll position, so switching back to **Transcripts** finds the list and the open transcript exactly as you left them. Transcripts always has one session open.
-
-**Analyze sessions**: choose **Analyze…** from the **⋯** Actions button above the session list, or press `⌘Y`. The open session (in Transcripts) or the sessions already selected (in Statistics) start selected. Change the selection as in Insights: click one, ⌘-click to add or remove one, ⇧-click a run, or ⌘A for every session the list shows under its filters and search. **Filter › Analyzed › Not analyzed** narrows the list to sessions not analyzed yet. Click **Analyze • (n)** in the bar under the list to queue them and run them one at a time, or **Cancel** (or Esc) to leave without analyzing. When some of them were analyzed before, the app asks whether to **Analyze Again** or analyze them **Only If Changed**, which skips a session whose transcript hasn't changed since its last analysis. While the queue runs, a spinner and "Analyzing 3/10" show in the small tray at the bottom of the left column, where "Indexed" appears. Click it to see each session's result; × cancels one and **Cancel all** stops the rest. When every session is done, the tray says "Analyze · Done", or how many failed, until you open it and click **Clear**. The queue isn't kept when the app quits, but the Analyze log is: **Log** at the top of the queue, **Open log** under a report that failed, and **Settings › Annotations › Open Log** all open it. It records each Analyze and report run and each call to `claude`, with `claude`'s own error output when one fails.
-
-**Customize what Analyze and reports look for**: the **Analyze** and **Get insights** buttons each have a chevron on the right. Its **Customize prompt…** opens the text that tells the model what to focus on, such as the kinds of problems to look for or who the report is for. Edit it and click **Analyze** or **Get insights** to run once with your text. Tick **Set as default** to keep it, so the plain button uses it from then on; **Restore built-in** puts back the app's own text. Only this focus can change: the rules about citing evidence and the shape of the reply stay the same. A report written with your own text says **Custom prompt** under its title; click it to read the text.
-
-**Select sessions in Statistics**: click a session to count only it, ⌘-click to add or remove one, ⇧-click to select a run, or ⌘A for every session in the list. Press Esc or click an empty part of the list to count the whole list again.
-
-**Write a report**: click **Insights**. Under **New Insight Report**, click **Create**; the button then reads **Select**. Choose sessions in the list that appears (click, ⌘-click, ⇧-click or ⌘A for all; the project list, search and source filters beside it, the Filter menu and **Recent** / **Oldest** sort work as elsewhere, with their own choices for Insights). Once some are chosen the button reads **Get insights**: click it. Sessions that haven't been analyzed are analyzed first (the report list shows "Analyzing N sessions first"), then the report is written on all of them. Tick **Also re-analyze sessions that already have an analysis** to analyze every chosen session again first; the app remembers that choice. A model (Claude Sonnet) reads their outcomes, components and annotations and writes a summary, key takeaways and recommended actions: changes to the codebase, skills, prompts and instruction files, the environment, or work to automate. Insights lists saved reports under **Build a report**, sorted by **Recent** or **Oldest**; a report being written shows there with its progress, and opens when it's done. A report you open fills the space to the right. Each takeaway and action lists what it rests on: click one to see the annotation or outcome as the report saw it (marked if it has been edited or deleted since), and **Open in Transcripts** to go to that session. A report never changes once written; write another to include newer notes. The **⋯** button at the top right of a report has **Copy as Markdown** and **Save as .md…** to export it, and **Delete…** to remove it.
-
-**Change the outcome or components**: click **Edit**.
-
-**Analyze** needs Claude Code installed. Before it sends anything, it shows a notice that transcripts go to Anthropic, with **OK** and **Cancel**. Tick **Don't show this again** and click OK to stop seeing it; **Settings › Annotations** can turn it back on. Everything Analyze writes can be edited or deleted. Running it again replaces the outcome and components, including ones you wrote or emptied, and its own annotations that nobody has edited; annotations people wrote or edited are kept.
-
-These notes are stored in the app, not in the agent's files.
+In **Insights**, choose sessions and click **Get insights**. Claude reads their analysis and recommends changes to your code, agent instructions, skills, setup or automation, each linked to the notes it's based on.
 
 ### Share a session
 
-**Send**: open the session, click the **⋯** button at the top right of the transcript, choose **Export…**, and leave ticked any subagents you want to include. Before saving, the app lists exactly what goes into the file and what stays out. It saves a `.spsession` file that anyone with Session Player can import. Exporting needs your name: if Settings doesn't have one yet, the export sheet asks for it. The file records your name, and the recipient sees it as the author of annotations you wrote before you set a name.
-
-**Receive**: choose **Import…** from the **⋯** Actions button above the session list, or press `⌘⇧I`. Imported sessions are marked "imported". They can be read, searched and exported, but not resumed. To delete one, choose **Remove…** from the **⋯** menu at the top right of its transcript.
+Choose **Export…** from the **⋯** menu at the top right of a transcript to save it as a `.spsession` file, notes included. Anyone with Session Player can open it with **Import…** (`⌘⇧I`).
 
 ### Settings
 
@@ -345,7 +255,7 @@ Until you pick an action, the button uses the agent's own app.
 - **Analyze** asks Claude Haiku for the outcome, components and annotations. It runs the `claude` command from Claude Code with no tools and the transcript passed as data.
 - It also sends the context the agent was given, each document once (up to 20,000 characters each and 60,000 in all), so it can tell when the agent ignored an instruction.
 - It runs with the variables your login shell exports and the `env` block of your Claude settings (`~/.claude/settings.json` and `settings.local.json`, or under `$CLAUDE_CONFIG_DIR`). When those name credentials of their own (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, an `apiKeyHelper`, or Bedrock or Vertex), Analyze uses only them, so an LLM gateway such as LiteLLM gets its base URL, token, `ANTHROPIC_CUSTOM_HEADERS` and model mappings. Otherwise it uses your Claude Code sign-in.
-- A field you empty stays empty until you fill it in yourself. Results generated from an earlier version of a growing transcript are marked as out of date. An annotation whose event isn't in the transcript any more is marked "event not found", not dropped.
+- Each run replaces the outcome and components. The prompt's rules are fixed; only its "what to focus on" paragraph can be customized. Each run and each `claude` call is written to `~/Library/Logs/com.danmactough.sessionplayer/analyze.log`. Results generated from an earlier version of a growing transcript are marked as out of date. An annotation whose event isn't in the transcript any more is marked "event not found", not dropped.
 - Long sessions are sent in parts and the results merged. Analysis runs in the background and can be cancelled.
 
 #### Reports

@@ -3,7 +3,7 @@ members = ["core"]
 
 [package]
 name = "session-player"
-version = "0.13.0"
+version = "0.14.0"
 description = "A unified viewer for coding-agent sessions"
 authors = ["Dan MacTough"]
 edition = "2024"

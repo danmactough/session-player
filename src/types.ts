@@ -308,6 +308,12 @@ export interface Report {
   rejected: number;
 }
 
+/** An annotation as a report was given it, and its version now (null once deleted). */
+export interface CitedAnnotation {
+  annotation: Annotation;
+  current_version: number | null;
+}
+
 export interface ReportSummary {
   id: string;
   created_at: number;

@@ -203,6 +203,27 @@ pub fn delete_report(conn: &Connection, id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// An annotation as a report was given it, and what has happened to it since.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CitedAnnotation {
+    /// The version the report was given.
+    pub annotation: annotations::Annotation,
+    /// The annotation's version now; `None` once it has been deleted.
+    pub current_version: Option<u32>,
+}
+
+/// The annotations the report was given, each as the report saw it.
+pub fn cited_annotations(conn: &Connection, report: &Report) -> anyhow::Result<Vec<CitedAnnotation>> {
+    let mut out = Vec::new();
+    for r in report.sessions.iter().flat_map(|s| &s.annotations) {
+        // Saving the report kept this version; it is missing only if the database was edited by hand.
+        let Some(annotation) = annotations::annotation_version(conn, &r.id, r.version)? else { continue };
+        let current_version = annotations::annotation(conn, &r.id)?.map(|a| a.version);
+        out.push(CitedAnnotation { annotation, current_version });
+    }
+    Ok(out)
+}
+
 /// A session to report on: its key and the title the list shows.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SessionPick {

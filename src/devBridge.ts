@@ -334,6 +334,17 @@ const handlers: Record<string, Handler> = {
   list_reports: () =>
     devReports.map((r) => ({ id: r.id, created_at: r.created_at, title: r.title, model: r.model, sessions: r.sessions.length, actions: r.actions.length })),
   get_report: ({ id }) => devReports.find((r) => r.id === id) ?? null,
+  report_annotations: ({ id }) =>
+    (devReports.find((r) => r.id === id)?.sessions ?? []).flatMap((s) =>
+      s.annotations.flatMap(({ id }) => {
+        const a = devNotes.find((n) => n.id === id);
+        return a ? [{ annotation: a, current_version: a.version ?? 1 }] : [];
+      }),
+    ),
+  save_markdown: ({ dest, text }) => {
+    console.log("save markdown to", dest, String(text).length, "chars");
+    return dest;
+  },
   delete_report: ({ id }) => {
     devReports = devReports.filter((r) => r.id !== id);
     return null;

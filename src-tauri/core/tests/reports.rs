@@ -168,3 +168,21 @@ fn a_saved_report_keeps_the_versions_it_was_given_until_it_is_deleted() {
     assert!(versions(&conn, &deleted.id).is_empty(), "nothing is left of the deleted annotation");
     assert!(reports::reports(&conn).unwrap().is_empty());
 }
+
+#[test]
+fn a_report_shows_annotations_as_it_was_given_them() {
+    let (_, conn) = temp_db("cited");
+    let key = "local:claude:a";
+    let kept = annotate(&conn, key, notes::Kind::ToolError, "as reported");
+    let gone = annotate(&conn, key, notes::Kind::Other, "deleted later");
+    let mut ask = |_: &str, _: &str, _: &Value| Ok(out(json!({ "title": "t", "summary": "s", "takeaways": [{ "text": "x", "refs": ["a1"] }], "actions": [] })));
+    let report = reports::generate(&conn, &[pick(key, "A")], &mut ask, &mut |_, _| {}).unwrap();
+    reports::save_report(&conn, &report).unwrap();
+    notes::save_annotation(&conn, notes::Annotation { note: "edited".into(), ..kept.clone() }).unwrap();
+    notes::delete_annotation(&conn, &gone.id).unwrap();
+
+    let cited = reports::cited_annotations(&conn, &report).unwrap();
+    let find = |id: &str| cited.iter().find(|c| c.annotation.id == id).unwrap();
+    assert_eq!((find(&kept.id).annotation.note.as_str(), find(&kept.id).current_version), ("as reported", Some(2)));
+    assert_eq!((find(&gone.id).annotation.note.as_str(), find(&gone.id).current_version), ("deleted later", None));
+}

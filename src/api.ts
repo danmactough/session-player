@@ -5,6 +5,7 @@ import type {
   LibraryError,
   Annotation,
   NoteSummary,
+  CitedAnnotation,
   Report,
   ReportSummary,
   SessionMeta,
@@ -74,4 +75,7 @@ export const api = {
   listReports: () => invoke<ReportSummary[]>("list_reports"),
   getReport: (id: string) => invoke<Report | null>("get_report", { id }),
   deleteReport: (id: string) => invoke<void>("delete_report", { id }),
+  reportAnnotations: (id: string) => invoke<CitedAnnotation[]>("report_annotations", { id }),
+  /** Writes `text` to `dest` (a .md file the user chose); resolves to the path written. */
+  saveMarkdown: (dest: string, text: string) => invoke<string>("save_markdown", { dest, text }),
 };

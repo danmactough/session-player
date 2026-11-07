@@ -711,6 +711,26 @@ fn get_report(state: State<Shared>, id: String) -> Result<Option<reports::Report
     reports::report(&conn, &id).map_err(err)
 }
 
+/// The annotations a report was given, as it saw them, with their versions now.
+#[tauri::command]
+fn report_annotations(state: State<Shared>, id: String) -> Result<Vec<reports::CitedAnnotation>, String> {
+    let conn = index::open(&state.db_path).map_err(err)?;
+    let Some(report) = reports::report(&conn, &id).map_err(err)? else { return Ok(Vec::new()) };
+    reports::cited_annotations(&conn, &report).map_err(err)
+}
+
+/// Writes a report exported as Markdown to the path the user chose in the
+/// save dialog. Only `.md` files are written; any other name gets `.md` added.
+#[tauri::command]
+fn save_markdown(dest: String, text: String) -> Result<String, String> {
+    let mut dest = PathBuf::from(dest);
+    if dest.extension().is_none_or(|e| !e.eq_ignore_ascii_case("md")) {
+        dest.as_mut_os_string().push(".md");
+    }
+    std::fs::write(&dest, text).map_err(err)?;
+    Ok(dest.to_string_lossy().into_owned())
+}
+
 #[tauri::command]
 fn delete_report(state: State<Shared>, id: String) -> Result<(), String> {
     let conn = index::open(&state.db_path).map_err(err)?;
@@ -942,6 +962,8 @@ pub fn run() {
             cancel_report,
             list_reports,
             get_report,
+            report_annotations,
+            save_markdown,
             delete_report
         ])
         .run(tauri::generate_context!())

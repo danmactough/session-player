@@ -11,6 +11,9 @@ import { basename, relTime, setHome, SOURCE_LABEL, tildify } from "./lib/format"
 import { SessionList, type ClickHow, type ListMemo } from "./components/SessionList";
 import { QueueStatus } from "./components/QueueStatus";
 import { AnalyzeNotice } from "./components/AnalyzeNotice";
+import { ReportList } from "./components/ReportList";
+import { ReportView } from "./components/ReportView";
+import { useReports } from "./lib/useReports";
 import { useAnalyzeQueue } from "./lib/useAnalyzeQueue";
 import { AnalysisView } from "./components/AnalysisView";
 import { Transcript } from "./components/Transcript";
@@ -28,6 +31,10 @@ import { ancestors, branchChildren, branchRows, branchSourcePath, buildTree, typ
 
 const ALL_SOURCES: Source[] = ["claude", "codex", "pi"];
 const NO_PICKS = new Set<string>();
+const REPORT_SORTS: { key: "recent" | "oldest"; label: string }[] = [
+  { key: "recent", label: "Recent" },
+  { key: "oldest", label: "Oldest" },
+];
 const SORTS: { key: SortKey; label: string }[] = [
   { key: "recent", label: "Recent" },
   { key: "oldest", label: "Oldest" },
@@ -81,6 +88,11 @@ interface Prefs {
   /** Each view's own sidebar and list choices (the keys in LIST_KEYS), so
    * switching views and back finds everything as it was. */
   lists: Record<View, ListPrefs>;
+  /** What the Analysis view shows: statistics on the sessions, or saved reports. */
+  analysisTab: "statistics" | "reports";
+  /** The report open on the Reports tab. */
+  openReport: string | null;
+  reportSort: "recent" | "oldest";
 }
 
 type View = "session" | "analysis";
@@ -129,6 +141,9 @@ const DEFAULT_PREFS: Prefs = {
   autoCheckUpdates: true,
   view: "session",
   lists: { session: {} as ListPrefs, analysis: {} as ListPrefs },
+  analysisTab: "statistics",
+  openReport: null,
+  reportSort: "recent",
 };
 DEFAULT_PREFS.lists = { session: pickList(DEFAULT_PREFS), analysis: pickList(DEFAULT_PREFS) };
 
@@ -591,6 +606,37 @@ export default function App() {
   }, []);
   const pickedRows = useMemo(() => [...picked].map((path) => byPath.get(path)).filter((s): s is SessionRow => !!s), [picked, byPath]);
   const queue = useAnalyzeQueue();
+  // A report that finishes opens on the Reports tab.
+  const reports = useReports((id) => update({ analysisTab: "reports", openReport: id }));
+  const reportsTab = view === "analysis" && p.analysisTab === "reports";
+  // The backend lists reports newest first.
+  const reportList = useMemo(() => (p.reportSort === "oldest" ? [...reports.list].reverse() : reports.list), [reports.list, p.reportSort]);
+  // With no reports (and none being written) there's nothing to show on the Reports tab.
+  const noReports = reports.loaded && !reports.list.length && !reports.jobs.length;
+  useEffect(() => {
+    if (noReports && p.analysisTab === "reports") update({ analysisTab: "statistics" });
+  }, [noReports, p.analysisTab, update]);
+  const reportPicked = useCallback(async () => {
+    if (!pickedRows.length) return;
+    await reports.start(pickedRows.map((s) => ({ key: sessionKey(s), title: s.title })));
+    clearPicked();
+    update({ analysisTab: "reports" });
+  }, [pickedRows, reports, clearPicked, update]);
+  // A report cites sessions by key; the Sessions view opens the session's own row, not a pi branch.
+  const rowByKey = useMemo(() => {
+    const m = new Map<string, SessionRow>();
+    for (const s of sessions ?? []) if (!m.has(sessionKey(s))) m.set(sessionKey(s), s);
+    return m;
+  }, [sessions]);
+  const openSessionByKey = useCallback(
+    (key: string) => {
+      const row = rowByKey.get(key);
+      if (!row) return;
+      update({ view: "session" });
+      update({ selected: row.path });
+    },
+    [rowByKey, update],
+  );
 
   // Keyboard: j/k or arrows move through the list, / or ⌘K focuses search,
   // ? lists the shortcuts. Keep ShortcutsSheet in step with this.
@@ -617,9 +663,19 @@ export default function App() {
         searchRef.current?.select();
         return;
       }
+      if (reportsTab) {
+        const dir = typing || e.metaKey || e.ctrlKey || e.altKey ? 0 : e.key === "j" || e.key === "ArrowDown" ? 1 : e.key === "k" || e.key === "ArrowUp" ? -1 : 0;
+        const list = reportList;
+        if (!dir || !list.length) return;
+        e.preventDefault();
+        const i = list.findIndex((r) => r.id === p.openReport);
+        update({ openReport: list[i < 0 ? 0 : (i + dir + list.length) % list.length].id });
+        return;
+      }
       if (view === "analysis" && !typing && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "a") {
         e.preventDefault();
-        setPicked(new Set(rows.map((r) => r.s.path)));
+        // The same sessions as "Select all" in the bar, including subagents folded under their session.
+        setPicked(new Set(list.map((s) => s.path)));
         return;
       }
       if (e.key === "Escape" && !typing && view === "analysis" && picked.size > 0) {
@@ -644,7 +700,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [rows, p.selected, select, overlay, picked.size, view, clickRow, clearPicked]);
+  }, [rows, list, p.selected, select, overlay, picked.size, view, clickRow, clearPicked, reportsTab, reportList, p.openReport, update]);
 
   const toggleSource = (s: Source) => {
     const has = p.sources.includes(s);
@@ -717,6 +773,26 @@ export default function App() {
     clearPicked();
   }, [pickedRows, confirmGenerate, queue, notes, clearPicked]);
   const unanalyzed = useMemo(() => list.filter((s) => !notes.get(sessionKey(s))?.analyzed), [list, notes]);
+
+  // On the heading's line in the Analysis view's middle column, level with the sidebar's switch.
+  const analysisSwitch = view === "analysis" && (
+    <div className={`view-switch ${reportsTab ? "right" : ""}`} role="radiogroup" aria-label="Analysis shows">
+      <span className="view-thumb" aria-hidden="true" />
+      <button role="radio" aria-checked={!reportsTab} className={!reportsTab ? "on" : ""} onClick={() => update({ analysisTab: "statistics" })}>
+        Statistics
+      </button>
+      <button
+        role="radio"
+        aria-checked={reportsTab}
+        className={reportsTab ? "on" : ""}
+        onClick={() => update({ analysisTab: "reports" })}
+        disabled={noReports}
+        title={noReports ? "No reports yet: select sessions and click Report" : undefined}
+      >
+        Reports
+      </button>
+    </div>
+  );
 
   return (
     <div className="app">
@@ -884,136 +960,195 @@ export default function App() {
       </aside>
 
       <section className="middle">
-        <div className="mid-head" data-tauri-drag-region>
-          <div className="mid-title" data-tauri-drag-region>
-            <h2 data-tauri-drag-region>
-              {searching ? "Results" : p.projects.length ? selectionName : "All sessions"}
-            </h2>
-            <div className="mid-subrow" data-tauri-drag-region>
-              <span className="mid-sub" data-tauri-drag-region>
-                {searching
-                  ? `${list.length} ${list.length === 1 ? "session matches" : "sessions match"} “${query.trim()}”`
-                  : p.projects.length === 1
-                    ? tildify(p.projects[0])
-                    : p.projects.length > 1
-                      ? p.projects.map(basename).join(", ")
-                      : `${list.length} ${list.length === 1 ? "session" : "sessions"} across ${visibleProjects.length} ${visibleProjects.length === 1 ? "project" : "projects"}`}
-              </span>
-              {/* Search results are ranked by relevance, so sorting only applies while browsing. */}
-              {!searching && (
-                <Menu className="caps-sort" label="Sort sessions" value={p.sort} options={SORTS} onChange={(sort) => update({ sort })} />
+        {reportsTab ? (
+          <>
+            <div className="mid-head" data-tauri-drag-region>
+              <div className="mid-title" data-tauri-drag-region>
+                <div className="mid-title-row" data-tauri-drag-region>
+                  <h2 data-tauri-drag-region>Reports</h2>
+                  {analysisSwitch}
+                </div>
+                <div className="mid-subrow" data-tauri-drag-region>
+                  <span className="mid-sub" data-tauri-drag-region>
+                    {reports.list.length ? `${reports.list.length} ${reports.list.length === 1 ? "report" : "reports"}` : "None yet"}
+                  </span>
+                  <Menu
+                    className="caps-sort"
+                    label="Sort reports"
+                    value={p.reportSort}
+                    options={REPORT_SORTS}
+                    onChange={(reportSort) => update({ reportSort })}
+                  />
+                </div>
+              </div>
+            </div>
+            <ReportList
+              reports={reportList}
+              jobs={reports.jobs}
+              selected={p.openReport}
+              onSelect={(openReport) => update({ openReport })}
+              onCancel={reports.cancel}
+              onDismiss={reports.dismiss}
+            />
+          </>
+        ) : (
+          <>
+          <div className="mid-head" data-tauri-drag-region>
+            <div className="mid-title" data-tauri-drag-region>
+              <div className="mid-title-row" data-tauri-drag-region>
+                <h2 data-tauri-drag-region>
+                  {searching ? "Results" : p.projects.length ? selectionName : "All sessions"}
+                </h2>
+                {analysisSwitch}
+              </div>
+              <div className="mid-subrow" data-tauri-drag-region>
+                <span className="mid-sub" data-tauri-drag-region>
+                  {searching
+                    ? `${list.length} ${list.length === 1 ? "session matches" : "sessions match"} “${query.trim()}”`
+                    : p.projects.length === 1
+                      ? tildify(p.projects[0])
+                      : p.projects.length > 1
+                        ? p.projects.map(basename).join(", ")
+                        : `${list.length} ${list.length === 1 ? "session" : "sessions"} across ${visibleProjects.length} ${visibleProjects.length === 1 ? "project" : "projects"}`}
+                </span>
+                {/* Search results are ranked by relevance, so sorting only applies while browsing. */}
+                {!searching && (
+                  <Menu className="caps-sort" label="Sort sessions" value={p.sort} options={SORTS} onChange={(sort) => update({ sort })} />
+                )}
+              </div>
+              {showNoteFilters && (
+                <div className="mid-filters">
+                  <MultiMenu
+                    label="Outcome"
+                    options={OUTCOMES.map((o) => ({ key: o, label: OUTCOME_LABEL[o] }))}
+                    value={p.outcomeFilter}
+                    onChange={(outcomeFilter) => update({ outcomeFilter })}
+                  />
+                  {kindOptions.length > 0 && (
+                    <MultiMenu
+                      label="Annotation type"
+                      options={kindOptions}
+                      value={p.kindFilter}
+                      onChange={(kindFilter) => update({ kindFilter })}
+                    />
+                  )}
+                </div>
               )}
             </div>
-            {showNoteFilters && (
-              <div className="mid-filters">
-                <MultiMenu
-                  label="Outcome"
-                  options={OUTCOMES.map((o) => ({ key: o, label: OUTCOME_LABEL[o] }))}
-                  value={p.outcomeFilter}
-                  onChange={(outcomeFilter) => update({ outcomeFilter })}
-                />
-                {kindOptions.length > 0 && (
-                  <MultiMenu
-                    label="Annotation type"
-                    options={kindOptions}
-                    value={p.kindFilter}
-                    onChange={(kindFilter) => update({ kindFilter })}
-                  />
+            {searching && (
+              <div className="mid-controls">
+                {p.projects.length > 0 && (
+                  <div className="segmented" role="radiogroup" aria-label="Search scope">
+                    <button role="radio" aria-checked={!searchAll} className={!searchAll ? "on" : ""} onClick={() => setSearchAll(false)}>
+                      {selectionName} <span className="n">{matchCounts.project}</span>
+                    </button>
+                    <button role="radio" aria-checked={searchAll} className={searchAll ? "on" : ""} onClick={() => setSearchAll(true)}>
+                      All projects <span className="n">{matchCounts.all}</span>
+                    </button>
+                  </div>
                 )}
+                <button className="clear-link" onClick={clearSearch}>
+                  Clear search
+                </button>
               </div>
             )}
           </div>
-          {searching && (
-            <div className="mid-controls">
-              {p.projects.length > 0 && (
-                <div className="segmented" role="radiogroup" aria-label="Search scope">
-                  <button role="radio" aria-checked={!searchAll} className={!searchAll ? "on" : ""} onClick={() => setSearchAll(false)}>
-                    {selectionName} <span className="n">{matchCounts.project}</span>
+          {sessions === null ? (
+            <div className="empty pulse">Loading index…</div>
+          ) : list.length === 0 ? (
+            <div className="empty">
+              {empty ? (
+                <>
+                  <p>No sessions indexed yet.</p>
+                  <button className="primary" onClick={() => setSheet(true)}>
+                    Add a session folder
                   </button>
-                  <button role="radio" aria-checked={searchAll} className={searchAll ? "on" : ""} onClick={() => setSearchAll(true)}>
-                    All projects <span className="n">{matchCounts.all}</span>
-                  </button>
-                </div>
+                </>
+              ) : searching ? (
+                <>
+                  <p>
+                    Nothing {scoped ? `in ${selectionName} ` : ""}matches “{query.trim()}”.
+                  </p>
+                  {scoped && matchCounts.all > 0 ? (
+                    <button className="ghost" onClick={() => setSearchAll(true)}>
+                      Show {matchCounts.all} {matchCounts.all === 1 ? "match" : "matches"} in all projects
+                    </button>
+                  ) : (
+                    <button className="ghost" onClick={clearSearch}>
+                      Clear search
+                    </button>
+                  )}
+                </>
+              ) : (
+                "No sessions in this view."
               )}
-              <button className="clear-link" onClick={clearSearch}>
-                Clear search
-              </button>
+            </div>
+          ) : (
+            <SessionList
+              key={view}
+              memo={scrollMemo.current[view].list}
+              rows={rows}
+              selected={view === "session" ? p.selected : null}
+              picked={view === "analysis" ? picked : NO_PICKS}
+              onBlankClick={view === "analysis" ? clearPicked : undefined}
+              onSelect={clickRow}
+              onToggle={toggleExpanded}
+              hits={hits}
+              showProject={!(scoped && p.projects.length === 1)}
+              notes={notes}
+              groupByDay={!query && (p.sort === "recent" || p.sort === "oldest")}
+              resetKey={sessionListKey}
+            />
+          )}
+          {/* At the bottom, so showing it doesn't move the rows being clicked. */}
+          {view === "analysis" && picked.size > 0 && (
+            <div className="pick-bar" role="toolbar" aria-label="Selected sessions">
+              <div className="pick-row">
+                <span className="pick-count">{picked.size} selected</span>
+                <button className="primary pick-analyze" onClick={() => void analyzePicked()} disabled={!pickedRows.length}>
+                  Analyze {pickedRows.length}
+                </button>
+                <button className="ghost pick-analyze" onClick={() => void reportPicked()} disabled={!pickedRows.length} title="Write a report on these sessions' outcomes and annotations">
+                  Report
+                </button>
+                <button className="clear-link" onClick={clearPicked} title="Clear the selection (Esc)">
+                  Clear
+                </button>
+              </div>
+              <div className="pick-row">
+                <button className="pick-link" onClick={() => setPicked(new Set(list.map((s) => s.path)))}>
+                  Select all {list.length}
+                </button>
+                <button className="pick-link" onClick={() => setPicked(new Set(unanalyzed.map((s) => s.path)))} disabled={!unanalyzed.length}>
+                  Select {unanalyzed.length} not analyzed
+                </button>
+              </div>
             </div>
           )}
-        </div>
-        {sessions === null ? (
-          <div className="empty pulse">Loading index…</div>
-        ) : list.length === 0 ? (
-          <div className="empty">
-            {empty ? (
-              <>
-                <p>No sessions indexed yet.</p>
-                <button className="primary" onClick={() => setSheet(true)}>
-                  Add a session folder
-                </button>
-              </>
-            ) : searching ? (
-              <>
-                <p>
-                  Nothing {scoped ? `in ${selectionName} ` : ""}matches “{query.trim()}”.
-                </p>
-                {scoped && matchCounts.all > 0 ? (
-                  <button className="ghost" onClick={() => setSearchAll(true)}>
-                    Show {matchCounts.all} {matchCounts.all === 1 ? "match" : "matches"} in all projects
-                  </button>
-                ) : (
-                  <button className="ghost" onClick={clearSearch}>
-                    Clear search
-                  </button>
-                )}
-              </>
-            ) : (
-              "No sessions in this view."
-            )}
-          </div>
-        ) : (
-          <SessionList
-            key={view}
-            memo={scrollMemo.current[view].list}
-            rows={rows}
-            selected={view === "session" ? p.selected : null}
-            picked={view === "analysis" ? picked : NO_PICKS}
-            onBlankClick={view === "analysis" ? clearPicked : undefined}
-            onSelect={clickRow}
-            onToggle={toggleExpanded}
-            hits={hits}
-            showProject={!(scoped && p.projects.length === 1)}
-            notes={notes}
-            groupByDay={!query && (p.sort === "recent" || p.sort === "oldest")}
-            resetKey={sessionListKey}
-          />
-        )}
-        {/* At the bottom, so showing it doesn't move the rows being clicked. */}
-        {view === "analysis" && picked.size > 0 && (
-          <div className="pick-bar" role="toolbar" aria-label="Selected sessions">
-            <div className="pick-row">
-              <span className="pick-count">{picked.size} selected</span>
-              <button className="primary pick-analyze" onClick={() => void analyzePicked()} disabled={!pickedRows.length}>
-                Analyze {pickedRows.length}
-              </button>
-              <button className="clear-link" onClick={clearPicked} title="Clear the selection (Esc)">
-                Clear
-              </button>
-            </div>
-            <div className="pick-row">
-              <button className="pick-link" onClick={() => setPicked(new Set(list.map((s) => s.path)))}>
-                Select all {list.length}
-              </button>
-              <button className="pick-link" onClick={() => setPicked(new Set(unanalyzed.map((s) => s.path)))} disabled={!unanalyzed.length}>
-                Select {unanalyzed.length} not analyzed
-              </button>
-            </div>
-          </div>
+          </>
         )}
       </section>
 
       <main className="detail">
-        {view === "analysis" && (
+        {reportsTab &&
+          (p.openReport ? (
+            <ReportView
+              key={p.openReport}
+              id={p.openReport}
+              onOpenSession={openSessionByKey}
+              canOpenSession={(key) => rowByKey.has(key)}
+              onDeleted={() => {
+                update({ openReport: null });
+                reports.reload();
+              }}
+            />
+          ) : (
+            <div className="placeholder" data-tauri-drag-region>
+              <div className="ph-mark">¶</div>
+              <p>{reports.list.length ? "Pick a report to read it." : "No reports yet."}</p>
+            </div>
+          ))}
+        {view === "analysis" && !reportsTab && (
           <AnalysisView
             // Picked sessions narrow the counts the way picking projects narrows the list.
             sessions={pickedRows.length ? pickedRows : list}

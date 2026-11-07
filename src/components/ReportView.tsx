@@ -194,7 +194,7 @@ function EvidenceChip({
   const since = c && (c.current_version === null ? "deleted since" : c.current_version !== c.annotation.version ? "edited since" : null);
   return (
     <span className={`evidence-item ${open ? "open" : ""}`}>
-      <button className={`evidence-chip ${e.type}`} onClick={() => setOpen((o) => !o)} aria-expanded={open} title={session?.title}>
+      <button className={`evidence-chip cites-${e.type}`} onClick={() => setOpen((o) => !o)} aria-expanded={open} title={session?.title}>
         {label}
         {since && <span className="since"> · {since}</span>}
       </button>

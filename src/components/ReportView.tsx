@@ -83,8 +83,9 @@ export function ReportView({ id, onOpenSession, canOpenSession, onDeleted }: Pro
     <RemoteImages.Provider value={false}>
       <div className="report-view">
         <header className="report-head" data-tauri-drag-region>
-          <h1 data-tauri-drag-region>{report.title}</h1>
-          <p className="dim" data-tauri-drag-region>
+          {/* The header's empty space drags the window; its text is selectable. */}
+          <h1>{report.title}</h1>
+          <p className="dim">
             {fullDate(report.created_at)} · {report.sessions.length} {report.sessions.length === 1 ? "session" : "sessions"} ·{" "}
             {modelName(report.model)}
             {report.focus && (

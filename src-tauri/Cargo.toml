@@ -6,6 +6,7 @@ name = "session-player"
 version = "0.14.0"
 description = "A unified viewer for coding-agent sessions"
 authors = ["Dan MacTough"]
+license = "MIT"
 edition = "2024"
 rust-version = "1.90"
 

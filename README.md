@@ -20,7 +20,7 @@
 
 | Usage | Development |
 |---|---|
-| [Install](#install)<br>[Add your sessions](#add-your-sessions)<br>[Find a session](#find-a-session)<br>[Search](#search)<br>[Read a session](#read-a-session)<br>[Continue a session](#continue-a-session)<br>[Add notes](#add-notes)<br>[Analyze sessions](#analyze-sessions)<br>[See patterns across sessions](#see-patterns-across-sessions)<br>[Get Insights](#get-insights)<br>[Share a session](#share-a-session)<br>[Settings](#settings)<br>[Keyboard shortcuts](#keyboard-shortcuts) | [Run it locally](#run-it-locally)<br>[Test](#test)<br>[Build](#build)<br>[Release](#release)<br>[Add support for a new agent](#add-support-for-a-new-agent)<br>[How it works](#how-it-works) |
+| [Install](#install)<br>[Add your sessions](#add-your-sessions)<br>[Find a session](#find-a-session)<br>[Search](#search)<br>[Read a session](#read-a-session)<br>[Continue a session](#continue-a-session)<br>[Add notes](#add-notes)<br>[Analyze sessions](#analyze-sessions)<br>[See patterns across sessions](#see-patterns-across-sessions)<br>[Get Insights](#get-insights)<br>[Share a session](#share-a-session)<br>[Settings](#settings)<br>[Keyboard shortcuts](#keyboard-shortcuts) | [Run it locally](#run-it-locally)<br>[Test](#test)<br>[Build](#build)<br>[Release](#release)<br>[Add support for a new agent](#add-support-for-a-new-agent)<br>[How it works](#how-it-works)<br>[License](#license) |
 
 ## Usage
 
@@ -271,3 +271,7 @@ Until you pick an action, the button uses the agent's own app.
 - Export downloads images that replies link from the web into the bundle, and imported transcripts never load images from the web.
 - Importing a session already in the library with different contents asks whether to replace or keep the library's copy.
 - The file format and the inclusion rules are in [docs/bundle-format.md](docs/bundle-format.md).
+
+## License
+
+[MIT](LICENSE)

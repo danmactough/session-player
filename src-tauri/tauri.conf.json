@@ -47,7 +47,9 @@
     ],
     "macOS": {
       "entitlements": "Entitlements.plist"
-    }
+    },
+    "license": "MIT",
+    "copyright": "Copyright (c) 2026 Dan MacTough"
   },
   "plugins": {
     "updater": {

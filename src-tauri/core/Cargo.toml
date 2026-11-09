@@ -3,6 +3,7 @@ name = "session-player-core"
 version = "0.1.0"
 description = "Transcript parsing, indexing, note generation and bundle export for session-player"
 authors = ["Dan MacTough"]
+license = "MIT"
 edition = "2024"
 rust-version = "1.90"
 

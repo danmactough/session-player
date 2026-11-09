@@ -32,26 +32,40 @@ export function evidenceLine(e: Evidence, report: Report, cited: Map<string, Cit
   return a ? `${KIND_LABEL[a.kind]} in ${title}: ${oneLine(a.note)}` : `An annotation in ${title}`;
 }
 
-/** The report as Markdown, for a ticket, a PR description or a file. */
+/** The report as Markdown, for a ticket, a PR description or a file. Each
+ * citation is a footnote; one cited by several takeaways or actions is one
+ * footnote referenced from each. */
 export function reportMarkdown(report: Report, cited: Map<string, CitedAnnotation>): string {
   const out: string[] = [`# ${report.title}`, ""];
   out.push(`${fullDate(report.created_at)} · ${report.sessions.length} sessions · ${modelName(report.model)}`, "");
   if (report.focus) out.push(`Focus: ${oneLine(report.focus)}`, "");
   if (report.summary) out.push(report.summary, "");
-  const evidence = (list: Evidence[]) => list.map((e) => `  - ${evidenceLine(e, report, cited)}`);
+  // Labels are numbered in the order evidence is first cited. GitHub and others
+  // number footnotes themselves; the "e" keeps ours apart from any the model wrote.
+  const notes = new Map<string, { label: string; text: string }>();
+  const refs = (list: Evidence[]) =>
+    list
+      .map((e) => {
+        const id = e.type === "session" ? `s:${e.key}` : `a:${e.id}@${e.version}`;
+        let n = notes.get(id);
+        if (!n) notes.set(id, (n = { label: `e${notes.size + 1}`, text: evidenceLine(e, report, cited) }));
+        return `[^${n.label}]`;
+      })
+      .join("");
   if (report.takeaways.length) {
     out.push("## Key takeaways", "");
-    report.takeaways.forEach((t, i) => out.push(`${i + 1}. ${t.text}`, ...evidence(t.evidence)));
+    report.takeaways.forEach((t, i) => out.push(`${i + 1}. ${t.text}${refs(t.evidence)}`));
     out.push("");
   }
   if (report.actions.length) {
     out.push("## Recommended actions", "");
     for (const a of report.actions) {
-      out.push(`### ${a.title}`, "", `**${PRIORITY_LABEL[a.priority]} priority** · ${CATEGORY_LABEL[a.category]}`, "", a.change, "", "Evidence:", "");
-      out.push(...evidence(a.evidence).map((l) => l.slice(2)), "");
+      // On a line of its own: the change is Markdown and may end in a list or code block.
+      out.push(`### ${a.title}`, "", `**${PRIORITY_LABEL[a.priority]} priority** · ${CATEGORY_LABEL[a.category]}`, "", a.change, "", `Evidence: ${refs(a.evidence)}`, "");
     }
   }
   out.push("## Sessions", "");
   for (const s of report.sessions) out.push(`- ${oneLine(s.title)} (${OUTCOME_LABEL[s.outcome].toLowerCase()})`);
+  if (notes.size) out.push("", ...[...notes.values()].map((n) => `[^${n.label}]: ${n.text}`));
   return out.join("\n") + "\n";
 }

@@ -303,9 +303,55 @@ export interface Report {
   };
   summary: string;
   takeaways: { text: string; evidence: Evidence[] }[];
-  actions: { title: string; category: ActionCategory; priority: "high" | "medium" | "low"; change: string; evidence: Evidence[] }[];
-  /** Takeaways and actions dropped because they cited nothing the report was given. */
+  actions: {
+    title: string;
+    category: ActionCategory;
+    priority: "high" | "medium" | "low";
+    change: string;
+    evidence: Evidence[];
+    /** What later sessions should show if the change works. Absent on older reports. */
+    success_check?: string;
+    follows_up?: { report_id: string; action_index: number; title: string };
+  }[];
+  /** Earlier Done actions this report judged; empty on older reports. */
+  impact: ImpactVerdict[];
+  /** Takeaways, actions and verdicts dropped because they failed the checks on what they cite. */
   rejected: number;
+}
+
+export type ActionStatus = "done" | "in_progress" | "declined" | "considering";
+export type UserImpact = "helped" | "did_not_help";
+export type Verdict = "worked" | "did_not_work" | "too_early";
+
+export interface ImpactVerdict {
+  action: { report_id: string; action_index: number };
+  action_title: string;
+  verdict: Verdict;
+  reasoning: string;
+  evidence: Evidence[];
+}
+
+export interface ActionResponseInput {
+  report_id: string;
+  action_index: number;
+  status: ActionStatus | null;
+  note: string | null;
+  user_impact: UserImpact | null;
+}
+
+export interface ActionResponse extends ActionResponseInput {
+  done_at: number | null;
+  updated_at: number;
+}
+
+/** The latest verdict later reports gave on an action. */
+export interface LatestVerdict {
+  action_index: number;
+  verdict: Verdict;
+  reasoning: string;
+  report_id: string;
+  report_title: string;
+  created_at: number;
 }
 
 /** An annotation as a report was given it, and its version now (null once deleted). */

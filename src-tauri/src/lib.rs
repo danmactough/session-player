@@ -792,6 +792,26 @@ fn save_markdown(dest: String, text: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn action_responses(state: State<Shared>, id: String) -> Result<Vec<reports::ActionResponse>, String> {
+    let conn = index::open(&state.db_path).map_err(err)?;
+    reports::action_responses(&conn, &id).map_err(err)
+}
+
+/// Replaces the response to one action; `None` when nothing is left to keep.
+#[tauri::command]
+fn set_action_response(state: State<Shared>, input: reports::ActionResponseInput) -> Result<Option<reports::ActionResponse>, String> {
+    let conn = index::open(&state.db_path).map_err(err)?;
+    reports::set_action_response(&conn, &input).map_err(err)
+}
+
+/// The latest verdict later reports gave on each of this report's actions.
+#[tauri::command]
+fn action_verdicts(state: State<Shared>, id: String) -> Result<Vec<reports::LatestVerdict>, String> {
+    let conn = index::open(&state.db_path).map_err(err)?;
+    reports::action_verdicts(&conn, &id).map_err(err)
+}
+
+#[tauri::command]
 fn delete_report(state: State<Shared>, id: String) -> Result<(), String> {
     let conn = index::open(&state.db_path).map_err(err)?;
     reports::delete_report(&conn, &id).map_err(err)
@@ -1040,7 +1060,10 @@ pub fn run() {
             get_report,
             report_annotations,
             save_markdown,
-            delete_report
+            delete_report,
+            action_responses,
+            set_action_response,
+            action_verdicts
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

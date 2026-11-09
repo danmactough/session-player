@@ -3607,3 +3607,80 @@ button.report-row:hover {
 .project-rail .search {
   margin-top: 30px;
 }
+.report-success {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+.report-follows {
+  margin: 0 0 4px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.report-response {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.report-response-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.report-toggle {
+  padding: 2px 9px;
+  font-size: 12px;
+  color: var(--ink-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+.report-toggle:hover {
+  color: var(--ink);
+}
+.report-toggle[aria-pressed="true"] {
+  color: var(--panel);
+  background: var(--ink-2);
+  border-color: var(--ink-2);
+}
+.report-response textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font: 13px var(--sans);
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 5px 8px;
+  resize: vertical;
+}
+.verdict {
+  font-weight: 600;
+}
+.verdict-worked {
+  color: var(--ok);
+}
+.verdict-did_not_work {
+  color: var(--err);
+}
+.verdict-too_early {
+  color: var(--muted);
+}
+.report-verdict {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+.report-impact h3 {
+  margin: 0 0 4px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.report-impact p {
+  margin: 0 0 6px;
+  font-size: 13.5px;
+  color: var(--ink-2);
+}

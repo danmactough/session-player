@@ -1358,6 +1358,7 @@ export default function App() {
             <ReportView
               key={p.openReport}
               id={p.openReport}
+              onOpenReport={(id) => update({ openReport: id })}
               onOpenSession={openSessionByKey}
               canOpenSession={(key) => rowByKey.has(key)}
               onDeleted={() => {

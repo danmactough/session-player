@@ -1,7 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   ExportPreview,
+  ActionResponse,
+  ActionResponseInput,
   ImportReport,
+  LatestVerdict,
   LibraryError,
   Annotation,
   NoteSummary,
@@ -81,6 +84,9 @@ export const api = {
   listReports: () => invoke<ReportSummary[]>("list_reports"),
   getReport: (id: string) => invoke<Report | null>("get_report", { id }),
   deleteReport: (id: string) => invoke<void>("delete_report", { id }),
+  actionResponses: (id: string) => invoke<ActionResponse[]>("action_responses", { id }),
+  setActionResponse: (input: ActionResponseInput) => invoke<ActionResponse | null>("set_action_response", { input }),
+  actionVerdicts: (id: string) => invoke<LatestVerdict[]>("action_verdicts", { id }),
   reportAnnotations: (id: string) => invoke<CitedAnnotation[]>("report_annotations", { id }),
   /** Writes `text` to `dest` (a .md file the user chose); resolves to the path written. */
   saveMarkdown: (dest: string, text: string) => invoke<string>("save_markdown", { dest, text }),

@@ -49,9 +49,13 @@ export function reportMarkdown(report: Report, cited: Map<string, CitedAnnotatio
         const id = e.type === "session" ? `s:${e.key}` : `a:${e.id}@${e.version}`;
         let n = notes.get(id);
         if (!n) notes.set(id, (n = { label: `e${notes.size + 1}`, text: evidenceLine(e, report, cited) }));
-        return `[^${n.label}]`;
+        return n.label;
       })
-      .join("");
+      // In number order, though first cited elsewhere in another order.
+      .sort((a, b) => +a.slice(1) - +b.slice(1))
+      // Spaced, or adjacent superscripts read as one number ("12" for 1 and 2).
+      .map((label) => `[^${label}]`)
+      .join(" ");
   if (report.takeaways.length) {
     out.push("## Key takeaways", "");
     report.takeaways.forEach((t, i) => out.push(`${i + 1}. ${t.text}${refs(t.evidence)}`));

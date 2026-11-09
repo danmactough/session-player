@@ -211,7 +211,8 @@ When none exist, the label comes from the first prompt that has at least three w
 
 #### Projects
 
-- Claude Code worktrees (`<repo>/.claude/worktrees/*`) and `<repo>/.worktrees/*` fold into their repository.
+- A session in a git repository belongs to that repository's main checkout, whether it ran in a subdirectory or in a linked worktree at any path. Submodules stay separate projects.
+- Worktrees deleted from disk can't be looked up in git. Claude Code worktrees (`<repo>/.claude/worktrees/*`) and `<repo>/.worktrees/*` still fold into their repository by path.
 - Codex worktrees (`~/.codex/worktrees/<hash>/<name>`) fold into the one project with the same folder name.
 - The Codex app gives each chat outside a project its own folder (`~/Documents/Codex/2026-10-28/<task>`). Those chats are found from the app's list of projectless threads in `~/.codex/.codex-global-state.json` or by working inside that folder, and show as one project, `~/Documents/Codex` (or the folder set as `projectless-workspace-root`).
 

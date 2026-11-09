@@ -11,7 +11,7 @@ use crate::model::{EventKind, Parsed, SessionRow, Source};
 use crate::parse;
 
 /// Bump when parsing changes so existing indexes are rebuilt on launch.
-const INDEX_VERSION: &str = "26";
+const INDEX_VERSION: &str = "27";
 const FTS_BODY_LIMIT: usize = 400_000;
 const SKIP_DIRS: &[&str] = &["memory", "tool-results", "subagent-artifacts", "node_modules", ".git"];
 
@@ -504,8 +504,6 @@ fn build_row(file: &FileInfo, p: Parsed) -> Option<(SessionRow, String)> {
     Some((row, body))
 }
 
-/// The directory a session is grouped under. Claude Code worktrees live inside
-/// the repo they were cut from, so they fold back into it.
 /// Unwraps slash-command markup into "/command args". Otherwise the agent's
 /// title is used as given, even a bare slash command or a hyphenated slug.
 fn clean_title(t: &str) -> Option<String> {
@@ -520,16 +518,64 @@ fn clean_title(t: &str) -> Option<String> {
     Some(t)
 }
 
+/// The directory a session is grouped under: the main checkout of the git
+/// repository containing `cwd`. The path markers come first because they still
+/// identify the repository after a worktree has been deleted from disk.
 fn project_of(cwd: Option<&str>) -> String {
     let Some(cwd) = cwd.filter(|c| !c.is_empty()) else {
         return "(unknown)".into();
     };
-    for marker in ["/.claude/worktrees/", "/.worktrees/"] {
-        if let Some(i) = cwd.find(marker) {
-            return cwd[..i].to_string();
-        }
+    let dir = ["/.claude/worktrees/", "/.worktrees/"]
+        .iter()
+        .find_map(|marker| cwd.find(marker).map(|i| &cwd[..i]))
+        .unwrap_or_else(|| cwd.trim_end_matches('/'));
+    repo_root(Path::new(dir)).unwrap_or_else(|| dir.to_string())
+}
+
+/// Walks up from `dir` to the nearest `.git`. It is a directory in a main
+/// checkout and a file in a linked worktree or submodule. Ancestors are checked
+/// even when `dir` itself is gone, so a deleted subdirectory still groups.
+fn repo_root(dir: &Path) -> Option<String> {
+    if !dir.is_absolute() {
+        return None;
     }
-    cwd.trim_end_matches('/').to_string()
+    for ancestor in dir.ancestors() {
+        let dot_git = ancestor.join(".git");
+        let Ok(meta) = std::fs::metadata(&dot_git) else { continue };
+        let root = if meta.is_file() {
+            linked_worktree_repo(ancestor, &dot_git).unwrap_or_else(|| ancestor.to_path_buf())
+        } else {
+            ancestor.to_path_buf()
+        };
+        return Some(root.to_string_lossy().into_owned());
+    }
+    None
+}
+
+/// The repository a linked worktree belongs to, from its `.git` file, which
+/// reads `gitdir: <repo>/.git/worktrees/<name>`. A submodule's `.git` file
+/// points at `.git/modules/<name>` instead, so it returns None and the
+/// submodule stays its own project.
+fn linked_worktree_repo(worktree: &Path, dot_git: &Path) -> Option<PathBuf> {
+    let contents = std::fs::read_to_string(dot_git).ok()?;
+    let gitdir = Path::new(contents.trim().strip_prefix("gitdir:")?.trim());
+    let gitdir = if gitdir.is_absolute() {
+        gitdir.to_path_buf()
+    } else {
+        std::fs::canonicalize(worktree.join(gitdir)).ok()?
+    };
+    let worktrees = gitdir.parent()?;
+    if worktrees.file_name()? != "worktrees" {
+        return None;
+    }
+    let common = worktrees.parent()?;
+    // A bare repository has no main checkout. `/repo/.git` and `/repo/.bare`
+    // group under `/repo`, and `/repo.git` is used as it is.
+    if common.file_name()?.to_string_lossy().starts_with('.') {
+        common.parent().map(Path::to_path_buf)
+    } else {
+        Some(common.to_path_buf())
+    }
 }
 
 type SidecarCache = std::sync::Mutex<HashMap<PathBuf, std::sync::Arc<HashMap<String, String>>>>;
@@ -816,6 +862,58 @@ pub fn root_counts(conn: &Connection) -> anyhow::Result<HashMap<String, i64>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn temp_tree(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("sp-project-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("repo/.git/worktrees/feat")).unwrap();
+        std::fs::create_dir_all(dir.join("repo/src/deep")).unwrap();
+        std::fs::create_dir_all(dir.join("elsewhere/feat/src")).unwrap();
+        dir
+    }
+
+    fn project(path: &Path) -> String {
+        project_of(path.to_str())
+    }
+
+    #[test]
+    fn subdirectory_groups_under_repository() {
+        let t = temp_tree("subdir");
+        assert_eq!(project(&t.join("repo/src/deep")), project(&t.join("repo")));
+        assert_eq!(project(&t.join("repo/src/deleted/dir")), t.join("repo").to_str().unwrap());
+    }
+
+    #[test]
+    fn worktree_at_any_path_groups_under_repository() {
+        let t = temp_tree("worktree");
+        let gitdir = t.join("repo/.git/worktrees/feat");
+        std::fs::write(t.join("elsewhere/feat/.git"), format!("gitdir: {}\n", gitdir.display())).unwrap();
+        assert_eq!(project(&t.join("elsewhere/feat")), t.join("repo").to_str().unwrap());
+        assert_eq!(project(&t.join("elsewhere/feat/src")), t.join("repo").to_str().unwrap());
+    }
+
+    #[test]
+    fn relative_gitdir_resolves() {
+        let t = temp_tree("relative");
+        std::fs::write(t.join("elsewhere/feat/.git"), "gitdir: ../../repo/.git/worktrees/feat\n").unwrap();
+        let expected = std::fs::canonicalize(t.join("repo")).unwrap();
+        assert_eq!(project(&t.join("elsewhere/feat")), expected.to_str().unwrap());
+    }
+
+    #[test]
+    fn submodule_stays_its_own_project() {
+        let t = temp_tree("submodule");
+        std::fs::create_dir_all(t.join("repo/vendor/lib")).unwrap();
+        std::fs::write(t.join("repo/vendor/lib/.git"), "gitdir: ../../.git/modules/vendor/lib\n").unwrap();
+        assert_eq!(project(&t.join("repo/vendor/lib")), t.join("repo/vendor/lib").to_str().unwrap());
+    }
+
+    #[test]
+    fn directory_outside_git_is_its_own_project() {
+        let t = temp_tree("plain");
+        assert_eq!(project(&t.join("elsewhere/feat/src")), t.join("elsewhere/feat/src").to_str().unwrap());
+        assert_eq!(project_of(Some("/no/such/repo/.claude/worktrees/feat")), "/no/such/repo");
+    }
 
     /// Indexes the real agent directories on this machine into a throwaway
     /// database. Run with: SP_TEST_DB=/tmp/x.sqlite cargo test -- --ignored --nocapture

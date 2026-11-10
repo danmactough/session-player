@@ -3692,3 +3692,15 @@ button.report-row:hover {
   font-size: 13.5px;
   color: var(--ink-2);
 }
+.report-note {
+  position: relative;
+}
+/* Inside the box, top right, so it doesn't move the layout when it appears. */
+.report-note-clear {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+}
+.report-note textarea {
+  padding-right: 64px;
+}

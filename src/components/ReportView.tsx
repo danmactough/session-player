@@ -249,8 +249,13 @@ export function ReportView({ id, onOpenSession, canOpenSession, onDeleted, onOpe
 const STATUSES: ActionStatus[] = ["done", "in_progress", "declined", "considering"];
 const IMPACTS: UserImpact[] = ["helped", "did_not_help"];
 
-/** The developer's status and note for one action. Each save sends all of it,
- * so saves run in order: leaving the note by clicking a status fires two. */
+/** How long typing pauses before the note is saved. */
+const NOTE_SAVE_DELAY = 600;
+
+/** The developer's status and note for one action. The note saves as you
+ * type, and once more if the view closes mid-edit (switching reports
+ * unmounts it), so nothing typed is lost. Each save sends the whole
+ * response, so saves run in order. */
 function ActionResponseControls({
   reportId,
   index,
@@ -265,15 +270,44 @@ function ActionResponseControls({
   onError: (e: unknown) => void;
 }) {
   const [note, setNote] = useState(saved?.note ?? "");
-  const queue = useRef<Promise<unknown>>(Promise.resolve());
   const status = saved?.status ?? null;
   const impact = saved?.user_impact ?? null;
+  const queue = useRef<Promise<unknown>>(Promise.resolve());
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // Read by the delayed and unmount saves, which outlive the render that scheduled them.
+  const latest = useRef({ note, status, impact, savedNote: saved?.note ?? "" });
+  useEffect(() => {
+    latest.current = { note, status, impact, savedNote: saved?.note ?? "" };
+  });
 
-  const persist = (next: { status: ActionStatus | null; user_impact: UserImpact | null }) => {
+  const persist = (next: { note: string; status: ActionStatus | null; user_impact: UserImpact | null }) => {
+    clearTimeout(timer.current);
+    latest.current.savedNote = next.note.trim();
     queue.current = queue.current
-      .then(() => api.setActionResponse({ report_id: reportId, action_index: index, note, ...next }))
+      .then(() => api.setActionResponse({ report_id: reportId, action_index: index, ...next }))
       .then(onSaved)
       .catch(onError);
+  };
+  const persistRef = useRef(persist);
+  useEffect(() => {
+    persistRef.current = persist;
+  });
+
+  useEffect(
+    () => () => {
+      const { note, status, impact, savedNote } = latest.current;
+      if (note.trim() !== savedNote) persistRef.current({ note, status, user_impact: impact });
+    },
+    [],
+  );
+
+  const typed = (value: string) => {
+    setNote(value);
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => {
+      const { note, status, impact, savedNote } = latest.current;
+      if (note.trim() !== savedNote) persistRef.current({ note, status, user_impact: impact });
+    }, NOTE_SAVE_DELAY);
   };
 
   return (
@@ -284,7 +318,7 @@ function ActionResponseControls({
             key={s}
             className="report-toggle"
             aria-pressed={status === s}
-            onClick={() => persist({ status: status === s ? null : s, user_impact: s === "done" && status === s ? null : impact })}
+            onClick={() => persist({ note, status: status === s ? null : s, user_impact: s === "done" && status === s ? null : impact })}
           >
             {STATUS_LABEL[s]}
           </button>
@@ -294,22 +328,26 @@ function ActionResponseControls({
       {status === "done" && (
         <div className="report-response-row" role="group" aria-label="Did it help?">
           {IMPACTS.map((x) => (
-            <button key={x} className="report-toggle" aria-pressed={impact === x} onClick={() => persist({ status, user_impact: impact === x ? null : x })}>
+            <button key={x} className="report-toggle" aria-pressed={impact === x} onClick={() => persist({ note, status, user_impact: impact === x ? null : x })}>
               {USER_IMPACT_LABEL[x]}
             </button>
           ))}
         </div>
       )}
-      <textarea
-        rows={2}
-        placeholder="Note"
-        aria-label="Note"
-        value={note}
-        onChange={(e) => setNote(e.target.value)}
-        onBlur={() => {
-          if (note.trim() !== (saved?.note ?? "")) persist({ status, user_impact: impact });
-        }}
-      />
+      <div className="report-note">
+        <textarea rows={2} placeholder="Note" aria-label="Note" value={note} onChange={(e) => typed(e.target.value)} />
+        {note && (
+          <button
+            className="report-toggle report-note-clear"
+            onClick={() => {
+              setNote("");
+              persist({ note: "", status, user_impact: impact });
+            }}
+          >
+            Clear
+          </button>
+        )}
+      </div>
     </div>
   );
 }

@@ -344,12 +344,19 @@ export function Transcript({
     if (!typing) scrollRef.current?.focus({ preventScroll: true });
   }, [session.path]);
 
-  // Jump to the first in-session match once the transcript has loaded.
+  // Jump to the first in-session match once the transcript has loaded, and
+  // to each match the find bar steps to. Only a new query, step or session
+  // jumps: `matches` is rebuilt whenever the events reload (a live session
+  // growing on disk) or the session list refreshes, and following those
+  // rebuilds would pull the reader back to the match mid-read.
+  const jumpedFor = useRef<string | null>(null);
   useEffect(() => {
-    if (matches.length && events) {
-      const i = Math.min(findIdx, matches.length - 1);
-      scrollToBlock(matches[i], "center");
-    }
+    if (!matches.length || !events) return;
+    const want = `${session.path}\n${find}\n${findIdx}`;
+    if (jumpedFor.current === want) return;
+    jumpedFor.current = want;
+    const i = Math.min(findIdx, matches.length - 1);
+    scrollToBlock(matches[i], "center");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [matches, findIdx, events]);
 

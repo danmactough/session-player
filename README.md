@@ -72,7 +72,7 @@ Analyze has Claude fill in the outcome, components and annotations for you. Choo
 
 <img src="docs/images/report-light.png" alt="An Insights report with a summary, recommended actions with their evidence, key takeaways and the sessions it covers">
 
-In **Insights**, choose sessions and click **Get insights**. Claude reads their analysis and recommends changes to your code, agent instructions, skills, setup or automation, each linked to the notes it's based on.
+In **Insights**, choose sessions and click **Get insights**. Claude reads their analysis and recommends changes to your code, agent instructions, skills, setup or automation, each linked to the notes it's based on. Mark each recommendation done, in progress, declined or thinking about it, with a note. Later reports on the same projects take your responses into account and say whether what you did worked.
 
 ### Share a session
 
@@ -263,6 +263,8 @@ Until you pick an action, the button uses the agent's own app.
 
 - A report reads the outcomes, components and annotations of a set of sessions (not their titles or transcripts) and writes a title, a summary, key takeaways and recommended actions. Each action has a category (codebase, skill, instructions, environment or automation), a priority and the change to make.
 - It runs the `claude` command the same way Analyze does, with Claude Sonnet unless another model is chosen. Sessions are numbered `s1`…, and annotations `a1`…, so every takeaway and action cites what it rests on; one citing nothing it was given is dropped. Large sets are sent in groups of whole sessions and the results merged.
+- Each recommended action can have a status (done, in progress, declined, thinking about it) and a note, kept beside the report. A new report is told about responses from any report sharing a project with it, so it doesn't repeat a declined or failed recommendation without saying what changed.
+- Each action has a success check. Mark a Done action **Didn't help** yourself, or let a later report judge it: sessions started after the action was marked Done are compared to its check, and the report gives a verdict of worked, didn't work or too early. A verdict that it worked or didn't must cite those later sessions, or it is dropped.
 - Reports are saved in the app's database for good and never change. Each records the version of every annotation it was given, so editing or deleting an annotation later doesn't change what the report shows. Deleting a report releases versions no other report cites.
 - Code: `src-tauri/core/src/reports.rs`.
 

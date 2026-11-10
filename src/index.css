@@ -3414,6 +3414,7 @@ button.report-row:hover {
   font-size: 11.5px;
   color: var(--ink-2);
   background: var(--raised);
+  cursor: pointer;
 }
 .evidence-chip:hover,
 .evidence-item.open .evidence-chip {
@@ -3606,4 +3607,100 @@ button.report-row:hover {
 }
 .project-rail .search {
   margin-top: 30px;
+}
+.report-success {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+.report-follows {
+  margin: 0 0 4px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.report-response {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.report-response-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.report-toggle {
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  font-size: 11.5px;
+  color: var(--ink-2);
+  background: var(--raised);
+  cursor: pointer;
+}
+.report-toggle:hover {
+  border-color: var(--ink-2);
+  color: var(--ink);
+}
+.report-toggle[aria-pressed="true"] {
+  color: var(--panel);
+  background: var(--ink-2);
+  border-color: var(--ink-2);
+}
+.report-toggle[aria-pressed="true"]:hover {
+  background: var(--ink);
+  border-color: var(--ink);
+}
+.report-response textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font: 13px var(--sans);
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 5px 8px;
+  resize: vertical;
+}
+.verdict {
+  font-weight: 600;
+}
+.verdict-worked {
+  color: var(--ok);
+}
+.verdict-did_not_work {
+  color: var(--err);
+}
+.verdict-too_early {
+  color: var(--muted);
+}
+.report-verdict {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+.report-impact h3 {
+  margin: 0 0 4px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.report-impact p {
+  margin: 0 0 6px;
+  font-size: 13.5px;
+  color: var(--ink-2);
+}
+.report-note {
+  position: relative;
+}
+/* Inside the box, top right, so it doesn't move the layout when it appears. */
+.report-note-clear {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+}
+.report-note textarea {
+  padding-right: 64px;
 }

@@ -1,7 +1,7 @@
 // Dev-only stand-in for the Tauri backend so the UI can be previewed in a
 // plain browser (`npm run dev`, then open http://localhost:1420). All data
 // here is synthetic. Loaded from main.tsx only when not running inside Tauri.
-import type { Annotation, AnnotationKind, Evidence, Outcome, Report, SessionEvent, SessionMeta, SessionRow, Source } from "./types";
+import type { ActionResponse, ActionResponseInput, Annotation, AnnotationKind, Evidence, ImpactVerdict, LatestVerdict, Outcome, Report, SessionEvent, SessionMeta, SessionRow, Source } from "./types";
 import { sessionKey } from "./lib/notes";
 
 declare const __APP_VERSION__: string;
@@ -151,6 +151,7 @@ function transcript(s: SessionRow, prefix = "e", turns = s.user_turns, setup = t
 const devMeta = new Map<string, SessionMeta>();
 /** Saved reports, newest first. */
 let devReports: Report[] = [];
+const devResponses = new Map<string, ActionResponse>();
 
 /** A report built from the synthetic notes, shaped like the backend's. */
 function devReport(picked: { key: string; title: string }[]): Report {
@@ -166,6 +167,19 @@ function devReport(picked: { key: string; title: string }[]): Report {
     };
   });
   const cited = devNotes.filter((a) => sessions.some((s) => s.key === a.key));
+  const impact: ImpactVerdict[] = [...devResponses.values()]
+    .filter((r) => r.status === "done")
+    .flatMap((r) => {
+      const earlier = devReports.find((d) => d.id === r.report_id);
+      if (!earlier || !sessions.length) return [];
+      return [{
+        action: { report_id: r.report_id, action_index: r.action_index },
+        action_title: earlier.actions[r.action_index].title,
+        verdict: "did_not_work" as const,
+        reasoning: "The same failing test command still shows up after this was marked done.",
+        evidence: [{ type: "session" as const, key: sessions[0].key }],
+      }];
+    });
   const evidence = (kinds: AnnotationKind[]): Evidence[] =>
     cited.filter((a) => kinds.includes(a.kind)).map((a) => ({ type: "annotation", id: a.id, version: a.version ?? 1, key: a.key }));
   const outcomes: Partial<Record<Outcome, number>> = {};
@@ -186,9 +200,10 @@ function devReport(picked: { key: string; title: string }[]): Report {
       { text: "The agent doesn't know the project runs its tests with npm run test:unit, and guesses npm test instead.", evidence: evidence(["missing_context", "ignored_instruction"]) },
     ].filter((t) => t.evidence.length),
     actions: [
-      { title: "Document the test setup", category: "instructions" as const, priority: "high" as const, change: "Add a **Testing** section to `AGENTS.md` that names `npm run test:unit` and says to read a failure before rerunning.", evidence: evidence(["missing_context", "ignored_instruction"]) },
+      { title: "Document the test setup", category: "instructions" as const, priority: "high" as const, change: "Add a **Testing** section to `AGENTS.md` that names `npm run test:unit` and says to read a failure before rerunning.", success_check: "Notes about guessing the test command stop appearing.", evidence: evidence(["missing_context", "ignored_instruction"]) },
       { title: "Script running the changed tests", category: "automation" as const, priority: "medium" as const, change: "Add a `scripts/test-changed.sh` that runs only the tests for changed files and prints the first failure.", evidence: evidence(["tool_error", "agent_stuck"]) },
     ].filter((a) => a.evidence.length),
+    impact,
     rejected: 0,
   };
 }
@@ -357,6 +372,28 @@ const handlers: Record<string, Handler> = {
   save_markdown: ({ dest, text }) => {
     console.log("save markdown to", dest, String(text).length, "chars");
     return dest;
+  },
+  action_responses: ({ id }) => [...devResponses.values()].filter((r) => r.report_id === id).sort((a, b) => a.action_index - b.action_index),
+  set_action_response: ({ input }) => {
+    const i = input as ActionResponseInput;
+    const k = `${i.report_id}:${i.action_index}`;
+    const note = i.note?.trim() || null;
+    if (!i.status && !note) {
+      devResponses.delete(k);
+      return null;
+    }
+    const done = i.status === "done";
+    const saved: ActionResponse = { ...i, note, user_impact: done ? i.user_impact : null, done_at: done ? (devResponses.get(k)?.done_at ?? Date.now()) : null, updated_at: Date.now() };
+    devResponses.set(k, saved);
+    return saved;
+  },
+  action_verdicts: ({ id }) => {
+    const latest = new Map<number, LatestVerdict>();
+    for (const r of [...devReports].reverse())
+      for (const v of r.impact)
+        if (v.action.report_id === id)
+          latest.set(v.action.action_index, { action_index: v.action.action_index, verdict: v.verdict, reasoning: v.reasoning, report_id: r.id, report_title: r.title, created_at: r.created_at });
+    return [...latest.values()];
   },
   delete_report: ({ id }) => {
     devReports = devReports.filter((r) => r.id !== id);

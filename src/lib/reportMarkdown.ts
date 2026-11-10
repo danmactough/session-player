@@ -1,4 +1,4 @@
-import type { CitedAnnotation, Evidence, Report } from "../types";
+import type { ActionResponse, ActionStatus, CitedAnnotation, Evidence, LatestVerdict, Report, UserImpact, Verdict } from "../types";
 import { KIND_LABEL, OUTCOME_LABEL } from "./notes";
 import { fullDate } from "./format";
 
@@ -11,6 +11,13 @@ export const CATEGORY_LABEL = {
 } as const;
 
 export const PRIORITY_LABEL = { high: "High", medium: "Medium", low: "Low" } as const;
+
+export const STATUS_LABEL: Record<ActionStatus, string> = { done: "Done", in_progress: "In progress", declined: "Declined", considering: "Thinking about it" };
+export const USER_IMPACT_LABEL: Record<UserImpact, string> = { helped: "Helped", did_not_help: "Didn’t help" };
+export const VERDICT_LABEL: Record<Verdict, string> = { worked: "Worked", did_not_work: "Didn’t work", too_early: "Too early to tell" };
+
+/** Failures first: they are what the section exists to show. */
+export const verdictOrder = (v: Verdict) => (v === "did_not_work" ? 0 : v === "worked" ? 1 : 2);
 
 /** "claude-sonnet-5-5" → "Sonnet 5.5"; anything else as it is. */
 export function modelName(model: string): string {
@@ -35,7 +42,11 @@ export function evidenceLine(e: Evidence, report: Report, cited: Map<string, Cit
 /** The report as Markdown, for a ticket, a PR description or a file. Each
  * citation is a footnote; one cited by several takeaways or actions is one
  * footnote referenced from each. */
-export function reportMarkdown(report: Report, cited: Map<string, CitedAnnotation>): string {
+export function reportMarkdown(
+  report: Report,
+  cited: Map<string, CitedAnnotation>,
+  { responses, verdicts }: { responses: Map<number, ActionResponse>; verdicts: Map<number, LatestVerdict> },
+): string {
   const out: string[] = [`# ${report.title}`, ""];
   out.push(`${fullDate(report.created_at)} · ${report.sessions.length} sessions · ${modelName(report.model)}`, "");
   if (report.focus) out.push(`Focus: ${oneLine(report.focus)}`, "");
@@ -63,9 +74,28 @@ export function reportMarkdown(report: Report, cited: Map<string, CitedAnnotatio
   }
   if (report.actions.length) {
     out.push("## Recommended actions", "");
-    for (const a of report.actions) {
+    report.actions.forEach((a, i) => {
       // On a line of its own: the change is Markdown and may end in a list or code block.
-      out.push(`### ${a.title}`, "", `**${PRIORITY_LABEL[a.priority]} priority** · ${CATEGORY_LABEL[a.category]}`, "", a.change, "", `Evidence: ${refs(a.evidence)}`, "");
+      out.push(`### ${a.title}`, "", `**${PRIORITY_LABEL[a.priority]} priority** · ${CATEGORY_LABEL[a.category]}`, "", a.change, "");
+      if (a.follows_up) out.push(`Follows up on: ${oneLine(a.follows_up.title)}`, "");
+      if (a.success_check) out.push(`Success check: ${oneLine(a.success_check)}`, "");
+      const r = responses.get(i);
+      if (r) {
+        const status = r.status ? STATUS_LABEL[r.status] : "No status";
+        const when = r.done_at ? ` on ${fullDate(r.done_at)}` : "";
+        const impact = r.user_impact ? ` (${USER_IMPACT_LABEL[r.user_impact]})` : "";
+        out.push(`Status: ${status}${when}${impact}${r.note ? `. Note: ${oneLine(r.note)}` : ""}`, "");
+      }
+      const v = verdicts.get(i);
+      if (v) out.push(`Latest verdict: ${VERDICT_LABEL[v.verdict]}, per “${oneLine(v.report_title)}”`, "");
+      out.push(`Evidence: ${refs(a.evidence)}`, "");
+    });
+  }
+  if (report.impact.length) {
+    out.push("## Did earlier actions work?", "");
+    for (const v of [...report.impact].sort((a, b) => verdictOrder(a.verdict) - verdictOrder(b.verdict))) {
+      out.push(`### ${v.action_title}`, "", `**${VERDICT_LABEL[v.verdict]}.** ${v.reasoning}`, "");
+      if (v.evidence.length) out.push(`Evidence: ${refs(v.evidence)}`, "");
     }
   }
   out.push("## Sessions", "");

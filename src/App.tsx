@@ -743,7 +743,8 @@ export default function App() {
       }
       // The open sheet handles its own keys; nothing behind it should react.
       if (overlay) return;
-      const typing = (e.target as HTMLElement)?.tagName === "INPUT";
+      const target = e.target as HTMLElement | null;
+      const typing = !!target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || target.isContentEditable);
       if (e.key === "?" && !typing) {
         e.preventDefault();
         setHelp(true);
@@ -1358,6 +1359,7 @@ export default function App() {
             <ReportView
               key={p.openReport}
               id={p.openReport}
+              onOpenReport={(id) => update({ openReport: id })}
               onOpenSession={openSessionByKey}
               canOpenSession={(key) => rowByKey.has(key)}
               onDeleted={() => {

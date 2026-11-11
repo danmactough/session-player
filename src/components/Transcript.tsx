@@ -110,13 +110,20 @@ export function Transcript({
   // Branches and pi fork files start where they split off, so they get a
   // link back to that point; children that split off from this transcript
   // get a marker where they do.
-  const forks = useMemo(() => {
-    const isSplit = session.branch_of || session.fork_entry;
-    return {
-      from: isSplit && parent ? { source: parent, self: session } : undefined,
-      to: children.filter((c) => c.fork_entry),
-    };
-  }, [session, parent, children]);
+  // Every reindex hands down new session objects, so this is keyed on the
+  // fields the fork blocks show rather than on identity: a reindex that
+  // doesn't touch them leaves the blocks (and the reader's place) alone.
+  const isSplit = !!(session.branch_of || session.fork_entry);
+  const toForks = children.filter((c) => c.fork_entry);
+  const forksKey = JSON.stringify([
+    isSplit && parent ? [parent.path, parent.title, session.path, session.branch_of, session.fork_turn] : null,
+    toForks.map((c) => [c.path, c.title, c.fork_entry]),
+  ]);
+  const forks = useMemo(
+    () => ({ from: isSplit && parent ? { source: parent, self: session } : undefined, to: toForks }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [forksKey],
+  );
 
   const blocks = useMemo(() => {
     if (!events) return [];
@@ -344,12 +351,19 @@ export function Transcript({
     if (!typing) scrollRef.current?.focus({ preventScroll: true });
   }, [session.path]);
 
-  // Jump to the first in-session match once the transcript has loaded.
+  // Jump to the first in-session match once the transcript has loaded, and
+  // to each match the find bar steps to. Only a new query, step or session
+  // jumps: `matches` is rebuilt whenever the events reload (a live session
+  // growing on disk) or the session list refreshes, and following those
+  // rebuilds would pull the reader back to the match mid-read.
+  const jumpedFor = useRef<string | null>(null);
   useEffect(() => {
-    if (matches.length && events) {
-      const i = Math.min(findIdx, matches.length - 1);
-      scrollToBlock(matches[i], "center");
-    }
+    if (!matches.length || !events) return;
+    const want = `${session.path}\n${find}\n${findIdx}`;
+    if (jumpedFor.current === want) return;
+    jumpedFor.current = want;
+    const i = Math.min(findIdx, matches.length - 1);
+    scrollToBlock(matches[i], "center");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [matches, findIdx, events]);
 

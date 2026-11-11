@@ -517,7 +517,10 @@ Object.assign(window, {
     invoke: async (cmd: string, args: Record<string, unknown> = {}) => {
       const h = handlers[cmd];
       if (!h) throw new Error(`devBridge: no handler for ${cmd}`);
-      return h(args);
+      // Tauri's IPC deserializes a fresh copy on every call; hand back copies
+      // too, so code that leans on object identity behaves as it does in the app.
+      const out = await h(args);
+      return out === undefined ? out : structuredClone(out);
     },
   },
   __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener: () => {} },

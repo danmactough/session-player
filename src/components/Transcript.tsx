@@ -110,13 +110,20 @@ export function Transcript({
   // Branches and pi fork files start where they split off, so they get a
   // link back to that point; children that split off from this transcript
   // get a marker where they do.
-  const forks = useMemo(() => {
-    const isSplit = session.branch_of || session.fork_entry;
-    return {
-      from: isSplit && parent ? { source: parent, self: session } : undefined,
-      to: children.filter((c) => c.fork_entry),
-    };
-  }, [session, parent, children]);
+  // Every reindex hands down new session objects, so this is keyed on the
+  // fields the fork blocks show rather than on identity: a reindex that
+  // doesn't touch them leaves the blocks (and the reader's place) alone.
+  const isSplit = !!(session.branch_of || session.fork_entry);
+  const toForks = children.filter((c) => c.fork_entry);
+  const forksKey = JSON.stringify([
+    isSplit && parent ? [parent.path, parent.title, session.path, session.branch_of, session.fork_turn] : null,
+    toForks.map((c) => [c.path, c.title, c.fork_entry]),
+  ]);
+  const forks = useMemo(
+    () => ({ from: isSplit && parent ? { source: parent, self: session } : undefined, to: toForks }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [forksKey],
+  );
 
   const blocks = useMemo(() => {
     if (!events) return [];

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Builds a signed, notarized Session Player .dmg and publishes it as a GitHub
 # release tagged v<version>, using the version in package.json (tauri.conf.json
-# reads it from there).
+# reads it from there). The app carries the sp command inside it. Publishing the
+# release starts .github/workflows/release-cli.yml, which adds sp for Linux.
 #
 # Usage: ./build-and-publish.sh [patch|minor|major|<x.y.z>] [--no-publish]
 #   patch|minor|major|<x.y.z>   bump the version with `npm version` and commit
@@ -58,7 +59,7 @@ die() {
   exit 1
 }
 
-for tool in jq gh xcrun security npx; do
+for tool in jq gh xcrun security npx cargo rustc; do
   command -v "$tool" >/dev/null || die "$tool is not installed"
 done
 
@@ -120,11 +121,20 @@ TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$(security find-generic-password -s "$UPDATER
   die "no keychain item named $UPDATER_KEYCHAIN_SERVICE (see setup in this script)"
 export TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD
 
+step "Building the sp command"
+# Tauri bundles a program named <name>-<target triple> as Contents/MacOS/<name> and signs
+# it with the app, so the notarization below covers it.
+TARGET=$(rustc -vV | sed -n 's/^host: //p')
+cargo build --release --locked --manifest-path src-tauri/Cargo.toml -p session-player-cli
+mkdir -p src-tauri/binaries
+cp src-tauri/target/release/sp "src-tauri/binaries/sp-$TARGET"
+[ "$(src-tauri/target/release/sp --version)" = "sp $VERSION" ] || die "sp reports $(src-tauri/target/release/sp --version), not $VERSION"
+
 step "Building, signing and notarizing the app"
 npm ci --ignore-scripts
-# Update archives are turned on here, not in tauri.conf.json, so that `npm run bundle` keeps
-# working on machines without the signing key.
-npx tauri build --bundles app,dmg --config '{"bundle":{"createUpdaterArtifacts":true}}'
+# Update archives and the bundled sp are turned on here, not in tauri.conf.json, so that
+# `npm run bundle`, `npm run app` and the tests keep working without the signing key or a built sp.
+npx tauri build --bundles app,dmg --config '{"bundle":{"createUpdaterArtifacts":true,"externalBin":["binaries/sp"]}}'
 [ -f "$DMG" ] || die "expected $DMG after the build"
 [ -f "$UPDATE_ARCHIVE" ] || die "expected $UPDATE_ARCHIVE after the build"
 [ -f "$UPDATE_ARCHIVE.sig" ] || die "expected $UPDATE_ARCHIVE.sig after the build"
@@ -144,6 +154,12 @@ trap 'rm -rf "$UPDATE_CHECK"' EXIT
 tar -xzf "$UPDATE_ARCHIVE" -C "$UPDATE_CHECK"
 spctl -a -vvv -t exec "$UPDATE_CHECK/Session Player.app"
 xcrun stapler validate "$UPDATE_CHECK/Session Player.app"
+# The command line is how the app is used from a terminal and from other machines, so a
+# release without it, or with one macOS won't run, must not go out.
+BUNDLED_SP="$UPDATE_CHECK/Session Player.app/Contents/MacOS/sp"
+[ -x "$BUNDLED_SP" ] || die "the app has no sp in Contents/MacOS"
+codesign --verify --strict "$BUNDLED_SP"
+[ "$("$BUNDLED_SP" --version)" = "sp $VERSION" ] || die "the bundled sp reports $("$BUNDLED_SP" --version), not $VERSION"
 
 # gh replaces the spaces in an uploaded file's name with dots.
 jq -n \
@@ -165,3 +181,4 @@ git push origin main
 gh release create "$TAG" "$DMG" "$UPDATE_ARCHIVE" "$UPDATE_MANIFEST" --target main --title "Session Player $VERSION" --generate-notes
 
 step "Published: $(gh release view "$TAG" --json url -q .url)"
+echo "The Linux sp is being built and added to the release: gh run watch \$(gh run list --workflow release-cli.yml --limit 1 --json databaseId -q '.[0].databaseId')"

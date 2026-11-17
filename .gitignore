@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# The sp binary that the release build copies in for bundling into the app
+src-tauri/binaries/

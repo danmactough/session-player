@@ -1,0 +1,24 @@
+[package]
+name = "session-player-cli"
+version.workspace = true
+description = "Command-line access to Session Player's sessions, analysis and reports"
+authors = ["Dan MacTough"]
+license = "MIT"
+edition = "2024"
+rust-version = "1.90"
+
+# Named `sp` because the app's own binary is already `session-player`, and two binaries
+# with one name can't share the workspace's target folder.
+[[bin]]
+name = "sp"
+path = "src/main.rs"
+
+[dependencies]
+session-player-core = { path = "../core" }
+clap = { version = "4", features = ["derive"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+serde_json = "1.0"
+dirs = "6"
+anyhow = "1"
+ctrlc = "3"

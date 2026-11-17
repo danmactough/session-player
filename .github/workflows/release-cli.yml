@@ -1,0 +1,62 @@
+name: Release CLI
+
+# The Mac app, with sp inside it, is built, signed and published from a Mac by
+# build-and-publish.sh. This adds sp for Linux to that release, where install.sh
+# downloads it from.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The release to add the Linux files to, such as v0.17.0
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      # musl links sp statically, so the one file runs on any distribution, whatever its glibc.
+      - name: Install the musl C compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - run: cargo build --release --locked --manifest-path src-tauri/Cargo.toml -p session-player-cli --target ${{ matrix.target }}
+
+      - name: Check the binary
+        run: |
+          BIN=src-tauri/target/${{ matrix.target }}/release/sp
+          "$BIN" --version
+          # The release's tag is v<version>; an sp that says otherwise was built from the wrong commit.
+          [ "$("$BIN" --version)" = "sp ${TAG#v}" ]
+
+      - name: Package and upload
+        run: |
+          FILE=sp-${{ matrix.target }}.tar.gz
+          tar -czf "$FILE" -C src-tauri/target/${{ matrix.target }}/release sp
+          sha256sum "$FILE" > "$FILE.sha256"
+          gh release upload "$TAG" "$FILE" "$FILE.sha256" --clobber

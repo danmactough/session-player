@@ -1,5 +1,10 @@
 [workspace]
-members = ["core"]
+members = ["core", "cli"]
+
+# The sp command ships with the app and reports the app's version. `npm version`
+# rewrites every line here that starts with "version".
+[workspace.package]
+version = "0.16.0"
 
 [package]
 name = "session-player"

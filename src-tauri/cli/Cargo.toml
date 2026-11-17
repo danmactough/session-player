@@ -1,6 +1,6 @@
 [package]
 name = "session-player-cli"
-version = "0.1.0"
+version.workspace = true
 description = "Command-line access to Session Player's sessions, analysis and reports"
 authors = ["Dan MacTough"]
 license = "MIT"

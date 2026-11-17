@@ -108,7 +108,7 @@ enum Command {
     },
     /// Copy a project's sessions, analysis and reports from another machine over SSH
     ///
-    /// The other machine needs sp too: build it there and run `sp install`.
+    /// The other machine needs sp too, installed with `sp install`.
     /// Run this inside a checkout of the same repository. Sessions land in
     /// the agents' own folders, so they can be resumed here.
     Pull {
@@ -130,7 +130,9 @@ enum Command {
         #[arg(long)]
         full: bool,
     },
-    /// Copy this program to ~/.local/bin/sp, where `sp pull` on another machine looks for it
+    /// Put sp at ~/.local/bin/sp, where your shell and `sp pull` on another machine look for it
+    ///
+    /// The sp inside the Mac app is linked, so updating the app updates it. Anywhere else it is copied.
     Install,
     /// What `sp pull` runs on the other machine: writes the repository's sessions to standard output
     #[command(hide = true)]
@@ -802,20 +804,38 @@ fn cmd_index(paths: &Paths, full: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Whether a program at `path` is inside a Mac app bundle. The app's updater
+/// replaces the whole bundle, so a link to the sp inside stays current where a copy would go stale.
+fn in_app_bundle(path: &Path) -> bool {
+    path.parent().is_some_and(|dir| dir.ends_with("Contents/MacOS") && dir.ancestors().any(|a| a.extension().is_some_and(|e| e == "app")))
+}
+
 fn cmd_install() -> anyhow::Result<()> {
     let dir = home()?.join(".local/bin");
     let dest = dir.join("sp");
     let running = std::env::current_exe()?;
-    if std::fs::canonicalize(&dest).ok() == std::fs::canonicalize(&running).ok() {
-        println!("This is already the sp at {}.", dest.display());
+    let link = in_app_bundle(&running);
+    let already = if link { std::fs::read_link(&dest).is_ok_and(|to| to == running) } else { std::fs::canonicalize(&dest).ok() == std::fs::canonicalize(&running).ok() };
+    if already {
+        println!("{} is already this sp.", dest.display());
         return Ok(());
     }
     std::fs::create_dir_all(&dir).with_context(|| format!("Couldn't create {}", dir.display()))?;
-    // Copied beside the destination and renamed: an sp running from there can't be written over.
-    let copy = dir.join(".sp-installing");
-    std::fs::copy(&running, &copy).with_context(|| format!("Couldn't write to {}", dir.display()))?;
-    std::fs::rename(&copy, &dest)?;
-    println!("Installed {}", dest.display());
+    // Made beside the destination and renamed: an sp running from there can't be written over.
+    let new = dir.join(".sp-installing");
+    let _ = std::fs::remove_file(&new);
+    if link {
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&running, &new).with_context(|| format!("Couldn't write to {}", dir.display()))?;
+    } else {
+        std::fs::copy(&running, &new).with_context(|| format!("Couldn't write to {}", dir.display()))?;
+    }
+    std::fs::rename(&new, &dest)?;
+    if link {
+        println!("Linked {} to {}", dest.display(), running.display());
+    } else {
+        println!("Installed {}", dest.display());
+    }
     let on_path = std::env::var_os("PATH").is_some_and(|path| std::env::split_paths(&path).any(|d| d == dir));
     if !on_path {
         println!("{} isn't on your PATH, so add it to run `sp` by name. `sp pull` from another machine finds it either way.", dir.display());
@@ -935,7 +955,7 @@ fn remote_result(host: &str, child: &mut std::process::Child, command: &str) -> 
     match child.wait()?.code() {
         Some(0) => Ok(()),
         Some(255) => bail!("ssh couldn't reach {host}. Check that `ssh {host}` works."),
-        Some(127) => bail!("{host} has no sp. Build sp on {host} and run `sp install` there."),
+        Some(127) => bail!("{host} has no sp. Install it there; see \"Use the command line\" in the README."),
         Some(2) => bail!("The sp on {host} is too old for `sp {command}`. Update it there and run `sp install` again."),
         _ => bail!("sp failed on {host}; its message is above."),
     }
@@ -1095,6 +1115,14 @@ mod tests {
         assert_eq!(shell_quote("/usr/local/bin/sp"), "/usr/local/bin/sp");
         assert_eq!(shell_quote("/Users/me/My Tools/sp"), "'/Users/me/My Tools/sp'");
         assert_eq!(shell_quote("it's"), "'it'\\''s'");
+    }
+
+    #[test]
+    fn only_the_sp_inside_the_mac_app_is_linked_instead_of_copied() {
+        assert!(in_app_bundle(Path::new("/Applications/Session Player.app/Contents/MacOS/sp")));
+        assert!(!in_app_bundle(Path::new("/home/me/.local/bin/sp")));
+        assert!(!in_app_bundle(Path::new("/Users/me/code/session-player/src-tauri/target/release/sp")));
+        assert!(!in_app_bundle(Path::new("/Users/me/my.app/notes/sp")));
     }
 
     #[test]

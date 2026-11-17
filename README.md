@@ -80,7 +80,27 @@ Choose **Export…** from the **⋯** menu at the top right of a transcript to s
 
 ### Use the command line
 
-`sp` analyzes sessions and writes reports from a terminal. It uses the app's database, so its results show up in the app, and it also runs on a machine without the app, including Linux. Install it from a checkout with `cargo install --path src-tauri/cli`.
+`sp` analyzes sessions and writes reports from a terminal. It uses the app's database, so its results show up in the app, and it also runs on a machine without the app, including a Linux server with no display.
+
+To install it:
+
+- **On a Mac**, `sp` comes inside the app. Choose **File > Install Command Line Tool** once. It links `~/.local/bin/sp` to the app's own copy, so updating the app updates `sp`. From a terminal, `"/Applications/Session Player.app/Contents/MacOS/sp" install` does the same.
+
+- **On Linux**, including a server with no display:
+
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/danmactough/session-player/main/install.sh | sh
+  ```
+
+  It downloads the `sp` for the machine's processor (x86-64 or ARM64) from the latest release, checks it against its checksum, and puts it at `~/.local/bin/sp`. Run it again to update. Then run `sp index` to read the machine's sessions.
+
+Then:
+
+- If `~/.local/bin` isn't on your `PATH`, the install says so; add it.
+- `sp analyze`, `sp report` and `sp doctor` run the `claude` command, so Claude Code must be installed and signed in on the machine. The other commands don't need it.
+- On Linux the database is in `~/.local/share/com.danmactough.sessionplayer`. Set `SESSION_PLAYER_DATA_DIR` to keep it somewhere else.
+
+The commands:
 
 ```bash
 sp index                              # read new session files into the database (every command does this first)
@@ -106,7 +126,7 @@ sp sessions laptop --since 30d        # list the sessions another machine has fo
 
 To work on one repository from several machines, pull its sessions from the others:
 
-1. On each machine, build `sp` and run `sp install`. It copies `sp` to `~/.local/bin/sp`, where a pull from another machine looks for it.
+1. Install `sp` on each machine, as above. Both ways put it at `~/.local/bin/sp`, where a pull from another machine looks for it.
 2. Check that `ssh <host>` reaches the other machine without asking for anything. Over Tailscale, the host is the machine's Tailscale name.
 3. In a checkout of the repository, run `sp pull <host>`.
 
@@ -170,7 +190,15 @@ CI runs the tests and the linter on every push to `main` and every pull request.
 npm run bundle
 ```
 
-The app is written to `src-tauri/target/release/bundle/macos/Session Player.app`.
+The app is written to `src-tauri/target/release/bundle/macos/Session Player.app`. This build has no `sp` inside it; only a release does.
+
+To build `sp` on its own, which needs none of the app's GUI libraries and also works on Linux:
+
+```bash
+cargo build --release --manifest-path src-tauri/Cargo.toml -p session-player-cli
+```
+
+It is written to `src-tauri/target/release/sp`.
 
 ### Release
 
@@ -180,10 +208,13 @@ The app is written to `src-tauri/target/release/bundle/macos/Session Player.app`
 
 Use `patch`, `minor`, `major` or an exact `x.y.z`. The script bumps the version with `npm version`, commits the bump, builds a signed and notarized `.dmg`, and publishes it as GitHub release `v<version>`.
 
+- The script builds `sp` and bundles it into the app as `Contents/MacOS/sp`, signed and notarized with it.
+- Publishing the release starts the Release CLI workflow (`.github/workflows/release-cli.yml`), which builds statically linked `sp` binaries for Linux on x86-64 and ARM64 and adds them to the release. `install.sh` downloads them from there. To add them to an existing release, run the workflow by hand with the release's tag.
+
 - Without a bump argument, it releases the current version.
 - `--no-publish` stops after building and verifying.
 - It refuses to run with uncommitted changes, off `main`, or when the tag already exists.
-- The version lives only in `package.json`. `src-tauri/tauri.conf.json` reads it from there.
+- The version lives only in `package.json`. `src-tauri/tauri.conf.json` reads it from there, and `npm version` copies it into `src-tauri/Cargo.toml` for the app and for `sp`.
 
 The one-time setup (Developer ID certificate, notarization password in the keychain) is described at the top of the script.
 

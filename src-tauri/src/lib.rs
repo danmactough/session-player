@@ -1,4 +1,5 @@
 mod apps;
+mod cli;
 mod terminals;
 
 // The parsing, indexing, note generation and bundle code lives in session-player-core, which
@@ -944,9 +945,28 @@ fn external_links<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
         .build()
 }
 
+/// What File > Install Command Line Tool does: links ~/.local/bin/sp to the sp
+/// inside the app, then says what happened.
+fn install_cli(app: &AppHandle) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+    let result = match cli::bundled() {
+        None => Err("This build of Session Player has no sp command inside it. Releases do.".to_string()),
+        Some(sp) => cli::link(&sp, &dirs::home_dir().unwrap_or_default()),
+    };
+    let (kind, message) = match result {
+        Ok(dest) => (
+            MessageDialogKind::Info,
+            // The app can't see the PATH a terminal sets up, so it can't tell whether this folder is on it.
+            format!("The sp command is at {}.\n\nIf your terminal doesn't find sp, add ~/.local/bin to your PATH. Run \"sp --help\" to see what it does.", dest.display()),
+        ),
+        Err(e) => (MessageDialogKind::Error, e),
+    };
+    app.dialog().message(message).title("Install Command Line Tool").kind(kind).show(|_| {});
+}
+
 /// The standard menu with "Settings…" (⌘,) added to the app menu, after
-/// "About", where macOS apps put it, and "Import Session…" (⌘⇧I) at the top
-/// of the File menu.
+/// "About", where macOS apps put it, and "Import Session…" (⌘⇧I) and
+/// "Install Command Line Tool" at the top of the File menu.
 fn install_menu(app: &AppHandle) -> tauri::Result<()> {
     use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
     let menu = Menu::default(app)?;
@@ -958,7 +978,8 @@ fn install_menu(app: &AppHandle) -> tauri::Result<()> {
     }
     if let Some(file_menu) = items.iter().filter_map(|m| m.as_submenu()).find(|m| m.text().is_ok_and(|t| t == "File")) {
         let import = MenuItem::with_id(app, "import-session", "Import Session…", true, Some("CmdOrCtrl+Shift+I"))?;
-        file_menu.insert_items(&[&import, &PredefinedMenuItem::separator(app)?], 0)?;
+        let install_cli = MenuItem::with_id(app, "install-cli", "Install Command Line Tool", true, None::<&str>)?;
+        file_menu.insert_items(&[&import, &PredefinedMenuItem::separator(app)?, &install_cli, &PredefinedMenuItem::separator(app)?], 0)?;
     }
     app.set_menu(menu)?;
     Ok(())
@@ -1017,6 +1038,7 @@ pub fn run() {
                 "import-session" => {
                     let _ = app.emit("import-session", ());
                 }
+                "install-cli" => install_cli(app),
                 _ => {}
             }
         })

@@ -10,7 +10,8 @@ use anyhow::{Context, bail};
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 
-use crate::annotations::{self, Annotation, Change, SessionMeta};
+pub use crate::annotations::Change;
+use crate::annotations::{self, Annotation, SessionMeta};
 use crate::model::SessionRow;
 use crate::reports::{self, ActionResponse, Report};
 
@@ -97,6 +98,8 @@ pub struct ImportTarget {
     /// The local checkout the sessions are listed under.
     pub project: PathBuf,
     pub home: PathBuf,
+    /// Work out what the import would do and report it, writing nothing.
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -118,9 +121,20 @@ impl Counts {
     }
 }
 
+/// A file in the stream: where it goes on this machine and what happens to the copy there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PulledFile {
+    pub path: PathBuf,
+    pub change: Change,
+    /// False for a file an agent keeps beside a session.
+    pub is_session: bool,
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct PullSummary {
     pub exporter: String,
+    /// Every file in the stream, in the order it arrived.
+    pub files: Vec<PulledFile>,
     pub sessions: Counts,
     pub analyses: Counts,
     pub annotations: Counts,
@@ -378,8 +392,44 @@ fn analyzed_at<'a>(meta: Option<&SessionMeta>, annotations: impl Iterator<Item =
     from_meta.max(from_annotations)
 }
 
+/// The tables an import reads and writes, other than the index's own.
+const SYNCED_TABLES: [&str; 8] = ["roots", "session_projects", "session_meta", "annotations", "annotation_versions", "report_citations", "reports", "action_responses"];
+
+/// A throwaway database holding a copy of what an import reads and writes. A
+/// dry run stores into it with the same code a pull uses, so it reports what
+/// the pull would do without a second set of rules to keep in step.
+struct Scratch {
+    conn: Connection,
+    path: PathBuf,
+}
+
+impl Scratch {
+    fn copy_of(live: &Connection) -> anyhow::Result<Scratch> {
+        let source = live.path().filter(|p| !p.is_empty()).context("A dry run needs a database stored in a file")?.to_string();
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
+        let path = std::env::temp_dir().join(format!("sp-dry-run-{}-{nanos}.sqlite", std::process::id()));
+        let conn = crate::index::open(&path)?;
+        conn.execute("ATTACH DATABASE ?1 AS live", [source])?;
+        for table in SYNCED_TABLES {
+            conn.execute_batch(&format!("INSERT INTO main.{table} SELECT * FROM live.{table};"))?;
+        }
+        conn.execute_batch("DETACH DATABASE live;")?;
+        Ok(Scratch { conn, path })
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", self.path.display()));
+        }
+    }
+}
+
 /// Reads what `export` wrote and stores it for the checkout at `target.project`.
 pub fn import(conn: &Connection, target: &ImportTarget, input: &mut dyn Read) -> anyhow::Result<PullSummary> {
+    let scratch = if target.dry_run { Some(Scratch::copy_of(conn)?) } else { None };
+    let conn = scratch.as_ref().map_or(conn, |s| &s.conn);
     const NOT_AN_EXPORT: &str = "That isn't a Session Player export";
     const ENDED_EARLY: &str = "The export ended early. Session files already copied are kept; pull again to finish.";
     let mut input = BufReader::new(zstd::stream::read::Decoder::new(input).context(NOT_AN_EXPORT)?);
@@ -419,11 +469,16 @@ pub fn import(conn: &Connection, target: &ImportTarget, input: &mut dyn Read) ->
                     AgentFolder::PiSessions => root.join(pi_folder(&target.project)).join(rel),
                     AgentFolder::CodexSessions | AgentFolder::CodexArchived => root.join(rel),
                 };
-                std::fs::create_dir_all(dest.parent().context("The export names a folder, not a file")?)?;
-                // Written beside the destination and renamed, so a pull that stops early leaves no partial session.
-                let mut incoming = dest.clone().into_os_string();
-                incoming.push(".sp-pull");
-                let incoming = PathBuf::from(incoming);
+                let incoming = if target.dry_run {
+                    // Compared with the copy here, then discarded; nothing goes into the session folders.
+                    std::env::temp_dir().join(format!("sp-dry-run-{}.incoming", std::process::id()))
+                } else {
+                    std::fs::create_dir_all(dest.parent().context("The export names a folder, not a file")?)?;
+                    // Written beside the destination and renamed, so a pull that stops early leaves no partial session.
+                    let mut beside = dest.clone().into_os_string();
+                    beside.push(".sp-pull");
+                    PathBuf::from(beside)
+                };
                 let copied = std::io::copy(&mut (&mut input).take(size), &mut std::fs::File::create(&incoming)?)?;
                 if copied != size {
                     let _ = std::fs::remove_file(&incoming);
@@ -447,11 +502,12 @@ pub fn import(conn: &Connection, target: &ImportTarget, input: &mut dyn Read) ->
                 if session.is_some() && change == Change::KeptLocal {
                     kept_local.push(dest.with_extension(""));
                 }
-                if matches!(change, Change::Added | Change::Replaced) {
+                if matches!(change, Change::Added | Change::Replaced) && !target.dry_run {
                     std::fs::rename(&incoming, &dest)?;
                 } else {
                     std::fs::remove_file(&incoming)?;
                 }
+                summary.files.push(PulledFile { path: dest.clone(), change, is_session: session.is_some() });
                 crate::index::add_root(conn, &root.to_string_lossy())?;
                 if session.is_some() {
                     summary.sessions.add(change);

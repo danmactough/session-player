@@ -92,6 +92,7 @@ sp reports                            # list saved reports
 sp show                               # print the repository's newest report again
 sp doctor                             # start Claude Code on the newest report's recommended actions
 sp pull laptop --since 30d            # copy the repository's sessions, analysis and reports from another machine
+sp sessions laptop --since 30d        # list the sessions another machine has for the repository
 ```
 
 - Commands work on the repository the current folder is in. `--project <folder>` names another.
@@ -110,6 +111,7 @@ To work on one repository from several machines, pull its sessions from the othe
 - The checkouts can be at different paths. They count as one repository when their `origin` URLs match, or, without an origin, when their folders have the same name.
 - Pulled sessions are listed under the local checkout and go into the agents' own folders, so `claude --resume <id>` and the app's Continue work on them. Analysis, annotations, reports and the responses to their actions come too.
 - When both machines have a copy of something, the newer one is kept. For a session, that is the copy that continues the other, or the one with the later last event when it was continued on both machines; the other machine's extra turns are dropped.
+- `sp sessions <host>` lists what the other machine has. `sp pull <host> --dry-run` shows what a pull would do without writing anything: each file it would add or replace, where, and each file it would leave because the copy here is newer.
 - Pulling again copies only what changed. Deletions don't travel: something deleted here comes back from a machine that still has it.
 
 ### Settings

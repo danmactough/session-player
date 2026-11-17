@@ -103,3 +103,7 @@ Both machines may have the same thing. A pull never merges two copies; it keeps 
 Deletions don't travel: an annotation or report deleted on one machine comes back from a machine that still has it.
 
 A session file is written under a temporary name and renamed into place, so a pull that stops part-way leaves no partial session.
+
+## Dry run
+
+`sp pull <host> --dry-run` reads the same stream and writes nothing. Each file is compared with the copy here and then discarded, and the other records are stored into a throwaway copy of the database's tables, using the same code as a pull. What it reports is therefore what the pull would do.

@@ -79,7 +79,7 @@ fn export_repo(from: &mut Machine, repo: sync::RepoName, since: Option<i64>) -> 
 }
 
 fn import(to: &mut Machine, bytes: &[u8]) -> anyhow::Result<sync::PullSummary> {
-    let target = sync::ImportTarget { project: to.project.clone(), home: to.home.clone() };
+    let target = sync::ImportTarget { project: to.project.clone(), home: to.home.clone(), dry_run: false };
     let summary = sync::import(&to.conn, &target, &mut &bytes[..])?;
     index::run(&mut to.conn, false, None, &|_, _| {}).unwrap();
     Ok(summary)
@@ -645,4 +645,62 @@ fn a_subagent_goes_with_its_session_and_never_without_it() {
     let mut got: Vec<(String, Option<String>)> = rows.into_iter().map(|r| (r.native_id, r.parent_id)).collect();
     got.sort();
     assert_eq!(got, [("agent-a1".to_string(), Some("new".to_string())), ("new".to_string(), None)]);
+}
+
+/// Every file below the home folder with its contents, and every row of the tables a pull writes to.
+fn state(m: &Machine) -> (Vec<(PathBuf, Vec<u8>)>, Vec<String>) {
+    let mut on_disk: Vec<(PathBuf, Vec<u8>)> = files(m).into_iter().map(|f| (f.clone(), std::fs::read(f).unwrap())).collect();
+    on_disk.sort();
+    let mut rows = Vec::new();
+    for table in ["roots", "session_projects", "session_meta", "annotations", "annotation_versions", "report_citations", "reports", "action_responses", "notes_fts"] {
+        let mut stmt = m.conn.prepare(&format!("SELECT * FROM {table} ORDER BY 1, 2")).unwrap();
+        let columns = stmt.column_count();
+        let mut found = stmt.query([]).unwrap();
+        while let Some(row) = found.next().unwrap() {
+            let values: Vec<String> = (0..columns).map(|i| format!("{:?}", row.get_ref(i).unwrap())).collect();
+            rows.push(format!("{table}: {}", values.join(" | ")));
+        }
+    }
+    (on_disk, rows)
+}
+
+#[test]
+fn a_dry_run_reports_what_a_pull_would_do_and_changes_nothing() {
+    let mut laptop = machine("dry", "laptop", "dev/widgets");
+    let mut desktop = machine("dry", "desktop", "code/widgets");
+    claude_session(&laptop, "continued", &["one"]);
+    claude_session(&laptop, "same", &["one"]);
+    claude_session(&laptop, "ahead-here", &["one"]);
+    pull(&mut laptop, &mut desktop);
+    continue_session(&laptop, "continued", 5, "two");
+    continue_session(&desktop, "ahead-here", 5, "two");
+    claude_session(&laptop, "new", &["Fix the login test"]);
+    reindex(&mut laptop);
+    analyze(&laptop, "new", 5_000, "Reran the suite three times");
+    let report = report_on(&laptop, "new");
+    respond(&laptop, &report, "done", "Added the section");
+    let bytes = export_repo(&mut laptop, sync::repo_name(&desktop.project).unwrap(), None);
+    let before = state(&desktop);
+
+    let target = sync::ImportTarget { project: desktop.project.clone(), home: desktop.home.clone(), dry_run: true };
+    let planned = sync::import(&desktop.conn, &target, &mut &bytes[..]).unwrap();
+
+    assert_eq!(state(&desktop), before, "nothing is written to the session folders or the database");
+    let mut would: Vec<(String, sync::Change)> =
+        planned.files.iter().map(|f| (f.path.strip_prefix(claude_folder(&desktop, &desktop.project)).unwrap().to_string_lossy().into_owned(), f.change)).collect();
+    would.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(
+        would,
+        [
+            ("ahead-here.jsonl".to_string(), sync::Change::KeptLocal),
+            ("continued.jsonl".to_string(), sync::Change::Replaced),
+            ("new.jsonl".to_string(), sync::Change::Added),
+            ("same.jsonl".to_string(), sync::Change::Unchanged),
+        ]
+    );
+    assert_eq!(planned.analyses.added, 1);
+    assert_eq!(planned.reports_added, 1);
+
+    let done = import(&mut desktop, &bytes).unwrap();
+    assert_eq!(done, planned, "the pull then does exactly what the dry run said");
 }

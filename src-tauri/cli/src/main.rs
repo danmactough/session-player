@@ -31,10 +31,15 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// List a project's sessions
+    /// List a project's sessions, here or on another machine
     Sessions {
+        /// Another machine, as you would name it to ssh: list the sessions it has for this repository
+        host: Option<String>,
         #[command(flatten)]
         scope: Scope,
+        /// What `sp sessions <host>` passes to the other machine: the repository's name, in place of a folder
+        #[arg(long, hide = true, conflicts_with = "project")]
+        repo: Option<String>,
     },
     /// Have Claude fill in the outcome, components and annotations of a session
     ///
@@ -111,6 +116,9 @@ enum Command {
         host: String,
         #[command(flatten)]
         scope: Scope,
+        /// Show what would be copied, where it would be written and what would be replaced, without writing anything
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Copy this program to ~/.local/bin/sp, where `sp pull` on another machine looks for it
     Install,
@@ -129,6 +137,8 @@ enum Command {
     ImportProject {
         #[command(flatten)]
         project: ProjectArg,
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -457,10 +467,28 @@ fn log_file_hint(paths: &Paths) -> String {
     format!("Details are in {}.", paths.log.display())
 }
 
-fn cmd_sessions(paths: &Paths, scope: &Scope) -> anyhow::Result<()> {
+/// Sessions of the repository named `repo`, whichever folder its checkout is in
+/// here, most recently active first. This is what another machine asks for: it
+/// knows the repository's name but not where this machine keeps it.
+fn in_repo<'a>(rows: &'a [SessionRow], repo: &str, since: Option<i64>) -> Vec<&'a SessionRow> {
+    let mut names: HashMap<&str, Option<sync::RepoName>> = HashMap::new();
+    rows.iter()
+        .filter(|r| !r.is_subagent && !r.from_bundle)
+        .filter(|r| names.entry(r.project.as_str()).or_insert_with(|| sync::repo_name(Path::new(&r.project))).as_ref().is_some_and(|name| name.0 == repo))
+        .filter(|r| since.is_none_or(|s| r.started_at.or(r.updated_at).is_some_and(|t| t >= s)))
+        .collect()
+}
+
+fn cmd_sessions(paths: &Paths, host: Option<&str>, scope: &Scope, repo: Option<&str>) -> anyhow::Result<()> {
+    if let Some(host) = host {
+        return remote_sessions(host, scope);
+    }
     let conn = open_indexed(paths)?;
     let rows = index::list(&conn)?;
-    let (_, found) = scoped(&rows, scope)?;
+    let found = match repo {
+        Some(repo) => in_repo(&rows, repo, scope.since.as_deref().map(|s| parse_since(s, Local::now())).transpose()?),
+        None => scoped(&rows, scope)?.1,
+    };
     let analyzed = analyzed_keys(&conn)?;
     for r in found {
         let when = r.started_at.or(r.updated_at).and_then(|t| Local.timestamp_millis_opt(t).single());
@@ -755,13 +783,42 @@ fn cmd_export_project(paths: &Paths, repo: &str, since: Option<i64>) -> anyhow::
 }
 
 /// Stores an export for the checkout at `project`, then indexes the sessions it brought.
-fn import_project(paths: &Paths, project: &str, input: &mut dyn Read) -> anyhow::Result<sync::PullSummary> {
+/// A dry run stores nothing and reports what would have been.
+fn import_project(paths: &Paths, project: &str, input: &mut dyn Read, dry_run: bool) -> anyhow::Result<sync::PullSummary> {
     let conn = index::open(&paths.db)?;
     index::seed_roots(&conn)?;
-    let summary = sync::import(&conn, &sync::ImportTarget { project: PathBuf::from(project), home: home()? }, input)?;
+    let summary = sync::import(&conn, &sync::ImportTarget { project: PathBuf::from(project), home: home()?, dry_run }, input)?;
     drop(conn);
-    open_indexed(paths)?;
+    if !dry_run {
+        open_indexed(paths)?;
+    }
     Ok(summary)
+}
+
+/// What a dry run found, one line per file that a pull would write or leave as
+/// it is here. Files already identical aren't listed.
+fn print_plan(summary: &sync::PullSummary) {
+    let home = home().unwrap_or_default();
+    let short = |path: &Path| match path.strip_prefix(&home) {
+        Ok(rest) if !home.as_os_str().is_empty() => format!("~/{}", rest.display()),
+        _ => path.display().to_string(),
+    };
+    println!("Dry run: nothing was written. A pull from {} would:", summary.exporter);
+    for file in &summary.files {
+        let what = match file.change {
+            sync::Change::Added => "add     ",
+            sync::Change::Replaced => "replace ",
+            sync::Change::KeptLocal => "keep    ",
+            sync::Change::Unchanged => continue,
+        };
+        let why = if file.change == sync::Change::KeptLocal { "  (the copy here is newer)" } else { "" };
+        println!("  {what}{}{why}", short(&file.path));
+    }
+    let same = summary.files.iter().filter(|f| f.change == sync::Change::Unchanged).count();
+    if same > 0 {
+        println!("  leave {same} files that are already the same here");
+    }
+    println!("In total, it would have this result:");
 }
 
 fn print_pull(summary: &sync::PullSummary) {
@@ -788,69 +845,113 @@ fn print_pull(summary: &sync::PullSummary) {
     }
 }
 
-fn cmd_import_project(paths: &Paths, project: &ProjectArg) -> anyhow::Result<()> {
+fn cmd_import_project(paths: &Paths, project: &ProjectArg, dry_run: bool) -> anyhow::Result<()> {
     let project = project_of(project)?;
-    print_pull(&import_project(paths, &project, &mut std::io::stdin().lock())?);
+    let summary = import_project(paths, &project, &mut std::io::stdin().lock(), dry_run)?;
+    if dry_run {
+        print_plan(&summary);
+    }
+    print_pull(&summary);
     Ok(())
 }
 
-/// The command line `sp pull` has the other machine run. A command run over
-/// SSH doesn't get the PATH an interactive shell sets up, so the place
-/// `sp install` copies to is tried before the PATH.
-fn remote_command(repo: &str, since: Option<i64>) -> String {
-    let mut args = format!("export-project --repo {}", shell_quote(repo));
-    if let Some(since) = since {
-        args.push_str(&format!(" --since {since}"));
-    }
+/// The command line that runs sp with `args` on another machine. A command
+/// run over SSH doesn't get the PATH an interactive shell sets up, so the
+/// place `sp install` copies to is tried before the PATH.
+fn remote_command(args: &[String]) -> String {
+    let args = args.iter().map(|a| shell_quote(a)).collect::<Vec<_>>().join(" ");
     let script = format!("if [ -x \"$HOME/.local/bin/sp\" ]; then exec \"$HOME/.local/bin/sp\" {args}; else exec sp {args}; fi");
     // Wrapped in sh so it runs the same whatever the account's shell is.
     format!("sh -c {}", shell_quote(&script))
 }
 
-fn cmd_pull(paths: &Paths, host: &str, scope: &Scope) -> anyhow::Result<()> {
-    let project = project_of(&scope.project)?;
-    let repo = sync::repo_name(Path::new(&project)).with_context(|| format!("Couldn't work out which repository {project} is"))?;
-    // Resolved here and sent as a number, so the other machine's time zone doesn't change what "since" means.
-    let since = scope.since.as_deref().map(|s| parse_since(s, Local::now())).transpose()?;
-    eprintln!("Pulling {} from {host}…", repo.0);
-    let mut child = std::process::Command::new("ssh")
+/// Starts sp with `args` on `host` over SSH, with its output piped back.
+fn remote_sp(host: &str, args: &[String]) -> anyhow::Result<std::process::Child> {
+    std::process::Command::new("ssh")
         // Without "--" a host name starting with "-" would be read as an ssh option.
         .arg("--")
         .arg(host)
-        .arg(remote_command(&repo.0, since))
+        .arg(remote_command(args))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .spawn()
-        .context("Couldn't run ssh")?;
-    let mut stdout = child.stdout.take().expect("stdout is piped");
-    let imported = import_project(paths, &project, &mut stdout);
-    drop(stdout);
-    // When the other side failed, its exit status says more than the import's complaint about an empty stream.
+        .context("Couldn't run ssh")
+}
+
+/// Waits for the sp started on `host` and explains a failure. Its own message, if any, has already been printed.
+fn remote_result(host: &str, child: &mut std::process::Child, command: &str) -> anyhow::Result<()> {
     match child.wait()?.code() {
-        Some(0) => {}
+        Some(0) => Ok(()),
         Some(255) => bail!("ssh couldn't reach {host}. Check that `ssh {host}` works."),
         Some(127) => bail!("{host} has no sp. Build sp on {host} and run `sp install` there."),
-        Some(2) => bail!("The sp on {host} is too old to export a project. Update it there and run `sp install` again."),
+        Some(2) => bail!("The sp on {host} is too old for `sp {command}`. Update it there and run `sp install` again."),
         _ => bail!("sp failed on {host}; its message is above."),
     }
-    print_pull(&imported?);
+}
+
+/// The repository the scope's folder is a checkout of, and when `--since` starts.
+/// The time is resolved here and sent as a number or a UTC time, so the other
+/// machine's time zone doesn't change what "since" means.
+fn remote_scope(scope: &Scope) -> anyhow::Result<(String, sync::RepoName, Option<i64>)> {
+    let project = project_of(&scope.project)?;
+    let repo = sync::repo_name(Path::new(&project)).with_context(|| format!("Couldn't work out which repository {project} is"))?;
+    let since = scope.since.as_deref().map(|s| parse_since(s, Local::now())).transpose()?;
+    Ok((project, repo, since))
+}
+
+fn remote_sessions(host: &str, scope: &Scope) -> anyhow::Result<()> {
+    let (_, repo, since) = remote_scope(scope)?;
+    let mut args = vec!["sessions".to_string(), "--repo".into(), repo.0.clone()];
+    if let Some(at) = since.and_then(|ms| chrono::DateTime::from_timestamp_millis(ms)) {
+        args.extend(["--since".into(), at.to_rfc3339()]);
+    }
+    let mut child = remote_sp(host, &args)?;
+    let mut listing = String::new();
+    child.stdout.take().expect("stdout is piped").read_to_string(&mut listing)?;
+    remote_result(host, &mut child, "sessions <host>")?;
+    if listing.trim().is_empty() {
+        let range = scope.since.as_deref().map(|s| format!(" since {s}")).unwrap_or_default();
+        bail!("{host} has no sessions for {}{range}.", repo.0);
+    }
+    print!("{listing}");
+    Ok(())
+}
+
+fn cmd_pull(paths: &Paths, host: &str, scope: &Scope, dry_run: bool) -> anyhow::Result<()> {
+    let (project, repo, since) = remote_scope(scope)?;
+    let mut args = vec!["export-project".to_string(), "--repo".into(), repo.0.clone()];
+    if let Some(since) = since {
+        args.extend(["--since".into(), since.to_string()]);
+    }
+    eprintln!("{} {} from {host}…", if dry_run { "Checking" } else { "Pulling" }, repo.0);
+    let mut child = remote_sp(host, &args)?;
+    let mut stdout = child.stdout.take().expect("stdout is piped");
+    let imported = import_project(paths, &project, &mut stdout, dry_run);
+    drop(stdout);
+    // When the other side failed, its exit status says more than the import's complaint about an empty stream.
+    remote_result(host, &mut child, "pull")?;
+    let summary = imported?;
+    if dry_run {
+        print_plan(&summary);
+    }
+    print_pull(&summary);
     Ok(())
 }
 
 fn main() {
     let cli = Cli::parse();
     let result = paths().and_then(|paths| match &cli.command {
-        Command::Sessions { scope } => cmd_sessions(&paths, scope),
+        Command::Sessions { host, scope, repo } => cmd_sessions(&paths, host.as_deref(), scope, repo.as_deref()),
         Command::Analyze { session, scope, prompt, force } => cmd_analyze(&paths, session.as_deref(), scope, prompt, *force),
         Command::Report { scope, prompt, model, no_analyze, out } => cmd_report(&paths, scope, prompt, model, *no_analyze, out.as_deref()),
         Command::Reports => cmd_reports(&paths),
         Command::Show { report, project } => cmd_show(&paths, report.as_deref(), project),
         Command::Doctor { report, project, print } => cmd_doctor(&paths, report.as_deref(), project, *print),
         Command::Action { report, number, status, note } => cmd_action(&paths, report, *number, *status, note.clone()),
-        Command::Pull { host, scope } => cmd_pull(&paths, host, scope),
+        Command::Pull { host, scope, dry_run } => cmd_pull(&paths, host, scope, *dry_run),
         Command::Install => cmd_install(),
         Command::ExportProject { repo, since } => cmd_export_project(&paths, repo, *since),
-        Command::ImportProject { project } => cmd_import_project(&paths, project),
+        Command::ImportProject { project, dry_run } => cmd_import_project(&paths, project, *dry_run),
     });
     if let Err(e) = result {
         if generate::is_cancelled(&e) || e.is::<Interrupted>() {
@@ -943,6 +1044,25 @@ mod tests {
         assert_eq!(shell_quote("it's"), "'it'\\''s'");
     }
 
+    #[test]
+    fn another_machine_is_asked_for_a_repository_by_name_wherever_it_keeps_the_checkout() {
+        let dir = std::env::temp_dir().join(format!("sp-in-repo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let checkout = dir.join("somewhere/Widgets");
+        std::fs::create_dir_all(checkout.join(".git")).unwrap();
+        std::fs::write(checkout.join(".git/config"), "[remote \"origin\"]\n\turl = git@github.com:dan/widgets.git\n").unwrap();
+        let here = checkout.to_string_lossy().into_owned();
+        let mut subagent = row("sub", &here, 300);
+        subagent.is_subagent = true;
+        let mut shared = row("shared", &here, 300);
+        shared.from_bundle = true;
+        let rows = vec![row("new", &here, 300), row("old", &here, 100), row("other", "/elsewhere/widgets", 300), subagent, shared];
+        let ids = |repo, since| in_repo(&rows, repo, since).iter().map(|r| r.native_id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids("github.com/dan/widgets", None), ["new", "old"]);
+        assert_eq!(ids("github.com/dan/widgets", Some(200)), ["new"]);
+        assert_eq!(ids("widgets", None), ["other"], "a checkout with no origin goes by its folder's name");
+    }
+
     #[cfg(unix)]
     #[test]
     fn the_command_for_the_other_machine_runs_the_installed_sp_with_the_repository_name_intact() {
@@ -954,7 +1074,7 @@ mod tests {
         std::fs::write(&installed, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n").unwrap();
         std::fs::set_permissions(&installed, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-        let command = remote_command("github.com/it's/a repo", Some(42));
+        let command = remote_command(&["export-project".into(), "--repo".into(), "github.com/it's/a repo".into(), "--since".into(), "42".into()]);
 
         // sshd hands the command to the account's shell as one string, without ~/.local/bin on the PATH.
         let run = std::process::Command::new("sh").arg("-c").arg(&command).env("HOME", &home).env("PATH", "/usr/bin:/bin").output().unwrap();

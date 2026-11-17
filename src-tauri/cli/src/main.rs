@@ -120,6 +120,16 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Read new and changed session files into the database, as the app does when it opens
+    ///
+    /// Every other command does this first, so it is only needed to prepare a
+    /// machine ahead of time, such as one that others pull from, or to rebuild
+    /// the index with --full.
+    Index {
+        /// Read every session file again, not only the new and changed ones
+        #[arg(long)]
+        full: bool,
+    },
     /// Copy this program to ~/.local/bin/sp, where `sp pull` on another machine looks for it
     Install,
     /// What `sp pull` runs on the other machine: writes the repository's sessions to standard output
@@ -203,10 +213,24 @@ fn paths() -> anyhow::Result<Paths> {
     Ok(Paths { db: data.join("index.sqlite"), library: data.join("library"), log: logs.join("analyze.log"), data })
 }
 
+/// Registers the agents' session folders. They are added once, the first time
+/// the database is used, so that a folder removed in the app's settings stays
+/// removed. If sp first ran before any agent had, nothing was added then; with
+/// no folders registered at all, the ones that exist now are.
+fn register_session_folders(conn: &Connection) -> anyhow::Result<()> {
+    index::seed_roots(conn)?;
+    if index::roots(conn)?.is_empty() {
+        for root in index::default_roots() {
+            index::add_root(conn, &root.to_string_lossy())?;
+        }
+    }
+    Ok(())
+}
+
 /// Opens the database and indexes sessions written since the last run.
 fn open_indexed(paths: &Paths) -> anyhow::Result<Connection> {
     let mut conn = index::open(&paths.db)?;
-    index::seed_roots(&conn)?;
+    register_session_folders(&conn)?;
     let show = std::io::stderr().is_terminal();
     index::run(&mut conn, false, Some(&paths.library), &move |done, total| {
         // A first run reads every session; later runs only what changed.
@@ -750,6 +774,34 @@ fn home() -> anyhow::Result<PathBuf> {
     dirs::home_dir().context("Couldn't find the home folder")
 }
 
+fn cmd_index(paths: &Paths, full: bool) -> anyhow::Result<()> {
+    let mut conn = index::open(&paths.db)?;
+    register_session_folders(&conn)?;
+    let roots = index::roots(&conn)?;
+    if roots.is_empty() {
+        bail!("There are no session folders to read: none of ~/.claude/projects, ~/.codex/sessions and ~/.pi/agent/sessions exists.");
+    }
+    let show = std::io::stderr().is_terminal();
+    let stats = index::run(&mut conn, full, Some(&paths.library), &move |done, total| {
+        if show && total > 0 && (done % 50 == 0 || done == total) {
+            eprint!("\rReading sessions {done}/{total}{}", if done == total { "\n" } else { "" });
+        }
+    })?;
+    let listed = index::list(&conn)?.len();
+    println!("{} files found, {} new or changed, in {:.1}s. {} sessions listed.", stats.scanned, stats.updated + stats.failed, stats.elapsed_ms as f64 / 1000.0, listed);
+    if stats.removed > 0 {
+        println!("Dropped {} whose files are gone.", stats.removed);
+    }
+    if stats.failed > 0 {
+        println!("{} files couldn't be read.", stats.failed);
+    }
+    println!("Session folders:");
+    for root in roots {
+        println!("  {root}");
+    }
+    Ok(())
+}
+
 fn cmd_install() -> anyhow::Result<()> {
     let dir = home()?.join(".local/bin");
     let dest = dir.join("sp");
@@ -786,7 +838,7 @@ fn cmd_export_project(paths: &Paths, repo: &str, since: Option<i64>) -> anyhow::
 /// A dry run stores nothing and reports what would have been.
 fn import_project(paths: &Paths, project: &str, input: &mut dyn Read, dry_run: bool) -> anyhow::Result<sync::PullSummary> {
     let conn = index::open(&paths.db)?;
-    index::seed_roots(&conn)?;
+    register_session_folders(&conn)?;
     let summary = sync::import(&conn, &sync::ImportTarget { project: PathBuf::from(project), home: home()?, dry_run }, input)?;
     drop(conn);
     if !dry_run {
@@ -949,6 +1001,7 @@ fn main() {
         Command::Doctor { report, project, print } => cmd_doctor(&paths, report.as_deref(), project, *print),
         Command::Action { report, number, status, note } => cmd_action(&paths, report, *number, *status, note.clone()),
         Command::Pull { host, scope, dry_run } => cmd_pull(&paths, host, scope, *dry_run),
+        Command::Index { full } => cmd_index(&paths, *full),
         Command::Install => cmd_install(),
         Command::ExportProject { repo, since } => cmd_export_project(&paths, repo, *since),
         Command::ImportProject { project, dry_run } => cmd_import_project(&paths, project, *dry_run),

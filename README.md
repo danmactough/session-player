@@ -83,6 +83,7 @@ Choose **Export…** from the **⋯** menu at the top right of a transcript to s
 `sp` analyzes sessions and writes reports from a terminal. It uses the app's database, so its results show up in the app, and it also runs on a machine without the app, including Linux. Install it from a checkout with `cargo install --path src-tauri/cli`.
 
 ```bash
+sp index                              # read new session files into the database (every command does this first)
 sp sessions --since 7d                # the current repository's sessions from the last 7 days
 sp analyze                            # analyze the repository's most recently active session
 sp analyze 3f2a91c0                   # analyze one session, by the start of its id or by its file's path
@@ -96,6 +97,7 @@ sp sessions laptop --since 30d        # list the sessions another machine has fo
 ```
 
 - Commands work on the repository the current folder is in. `--project <folder>` names another.
+- `sp index` does what the app does when it opens: it reads new and changed session files from the agents' folders. Other commands do it first anyway, so it is for preparing a machine with no app ahead of time. `--full` reads every file again.
 - `--since` takes a date (`2026-11-01`), a date and time (`2026-11-01T09:30`) or an age (`12h`, `7d`, `2w`).
 - `analyze` and `report` take `--prompt "<text>"` or `--prompt-file <file>` (`-` for standard input) for what to focus on. Without either they use the prompt saved in the app, and the built-in one when there is none.
 - `report` first analyzes the sessions in range that have no analysis, unless given `--no-analyze`. `--model` picks the model and `--out <file>` writes the Markdown to a file.

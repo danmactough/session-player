@@ -20,7 +20,7 @@
 
 | Usage | Development |
 |---|---|
-| [Install](#install)<br>[Add your sessions](#add-your-sessions)<br>[Find a session](#find-a-session)<br>[Search](#search)<br>[Read a session](#read-a-session)<br>[Continue a session](#continue-a-session)<br>[Add notes](#add-notes)<br>[Analyze sessions](#analyze-sessions)<br>[See patterns across sessions](#see-patterns-across-sessions)<br>[Get Insights](#get-insights)<br>[Share a session](#share-a-session)<br>[Settings](#settings)<br>[Keyboard shortcuts](#keyboard-shortcuts) | [Run it locally](#run-it-locally)<br>[Test](#test)<br>[Build](#build)<br>[Release](#release)<br>[Add support for a new agent](#add-support-for-a-new-agent)<br>[How it works](#how-it-works)<br>[License](#license) |
+| [Install](#install)<br>[Add your sessions](#add-your-sessions)<br>[Find a session](#find-a-session)<br>[Search](#search)<br>[Read a session](#read-a-session)<br>[Continue a session](#continue-a-session)<br>[Add notes](#add-notes)<br>[Analyze sessions](#analyze-sessions)<br>[See patterns across sessions](#see-patterns-across-sessions)<br>[Get Insights](#get-insights)<br>[Share a session](#share-a-session)<br>[Use the command line](#use-the-command-line)<br>[Settings](#settings)<br>[Keyboard shortcuts](#keyboard-shortcuts) | [Run it locally](#run-it-locally)<br>[Test](#test)<br>[Build](#build)<br>[Release](#release)<br>[Add support for a new agent](#add-support-for-a-new-agent)<br>[How it works](#how-it-works)<br>[License](#license) |
 
 ## Usage
 
@@ -78,6 +78,40 @@ In **Insights**, choose sessions and click **Get insights**. Claude reads their 
 
 Choose **Export…** from the **⋯** menu at the top right of a transcript to save it as a `.spsession` file, notes included. Anyone with Session Player can open it with **Import…** (`⌘⇧I`).
 
+### Use the command line
+
+`sp` analyzes sessions and writes reports from a terminal. It uses the app's database, so its results show up in the app, and it also runs on a machine without the app, including Linux. Install it from a checkout with `cargo install --path src-tauri/cli`.
+
+```bash
+sp sessions --since 7d                # the current repository's sessions from the last 7 days
+sp analyze                            # analyze the repository's most recently active session
+sp analyze 3f2a91c0                   # analyze one session, by the start of its id or by its file's path
+sp analyze --since 2026-11-01         # analyze every session since a date that has no analysis yet
+sp report --since 2026-11-01          # write a report on those sessions and print it as Markdown
+sp reports                            # list saved reports
+sp show                               # print the repository's newest report again
+sp doctor                             # start Claude Code on the newest report's recommended actions
+sp pull laptop --since 30d            # copy the repository's sessions, analysis and reports from another machine
+```
+
+- Commands work on the repository the current folder is in. `--project <folder>` names another.
+- `--since` takes a date (`2026-11-01`), a date and time (`2026-11-01T09:30`) or an age (`12h`, `7d`, `2w`).
+- `analyze` and `report` take `--prompt "<text>"` or `--prompt-file <file>` (`-` for standard input) for what to focus on. Without either they use the prompt saved in the app, and the built-in one when there is none.
+- `report` first analyzes the sessions in range that have no analysis, unless given `--no-analyze`. `--model` picks the model and `--out <file>` writes the Markdown to a file.
+- `doctor` starts a Claude Code session in the repository. Claude reads the report, proposes a concrete change for each action not yet done or declined, asks which ones to make, makes those, and records each as done or declined with `sp action`, so the next report knows what you did. `--print` prints the prompt instead of starting Claude.
+- `sp action <report> <number> --status done|in-progress|declined|considering --note "<text>"` records a response yourself.
+
+To work on one repository from several machines, pull its sessions from the others:
+
+1. On each machine, build `sp` and run `sp install`. It copies `sp` to `~/.local/bin/sp`, where a pull from another machine looks for it.
+2. Check that `ssh <host>` reaches the other machine without asking for anything. Over Tailscale, the host is the machine's Tailscale name.
+3. In a checkout of the repository, run `sp pull <host>`.
+
+- The checkouts can be at different paths. They count as one repository when their `origin` URLs match, or, without an origin, when their folders have the same name.
+- Pulled sessions are listed under the local checkout and go into the agents' own folders, so `claude --resume <id>` and the app's Continue work on them. Analysis, annotations, reports and the responses to their actions come too.
+- When both machines have a copy of something, the newer one is kept. For a session, that is the copy that continues the other, or the one with the later last event when it was continued on both machines; the other machine's extra turns are dropped.
+- Pulling again copies only what changed. Deletions don't travel: something deleted here comes back from a machine that still has it.
+
 ### Settings
 
 Open **Settings** with `⌘,`, the gear at the bottom of the window's left edge, or **Session Player → Settings…**.
@@ -108,8 +142,9 @@ To work on layout and styling without the native shell, run `npm run dev` and op
 ### Test
 
 ```bash
-npm run test:core   # parsers, indexing, annotations, bundles
+npm run test:core   # parsers, indexing, annotations, bundles, sync
 npm run test:app    # the Tauri command layer
+npm run test:cli    # the sp command
 npm run lint        # the frontend
 ```
 
@@ -180,6 +215,10 @@ src-tauri/core/src/            no Tauri dependency, so its tests need no GUI lib
   annotations.rs               session metadata and annotations, kept apart from the index tables
   generate.rs                  suggesting metadata and annotations with Claude Haiku via the claude CLI
   reports.rs                   reports on sets of sessions: takeaways and recommended actions, kept for good
+  sync.rs                      copying a repository's sessions, analysis and reports between machines
+src-tauri/cli/src/             the sp command; depends on core only, so it builds without the GUI stack
+  main.rs                      commands, session and report lookup, the doctor prompt, pull over SSH
+  markdown.rs                  a report as Markdown
 src-tauri/src/
   lib.rs                       Tauri commands, background indexing, file watcher, spimg:// image protocol
   apps.rs                      desktop apps that can open a session
@@ -214,6 +253,7 @@ When none exist, the label comes from the first prompt that has at least three w
 - A session in a git repository belongs to that repository's main checkout, whether it ran in a subdirectory or in a linked worktree at any path. Submodules stay separate projects.
 - Worktrees deleted from disk can't be looked up in git. Claude Code worktrees (`<repo>/.claude/worktrees/*`) and `<repo>/.worktrees/*` still fold into their repository by path.
 - Codex worktrees (`~/.codex/worktrees/<hash>/<name>`) fold into the one project with the same folder name.
+- A session pulled from another machine with `sp pull` records that machine's folder. It is listed under the checkout it was pulled into.
 - The Codex app gives each chat outside a project its own folder (`~/Documents/Codex/2026-10-28/<task>`). Those chats are found from the app's list of projectless threads in `~/.codex/.codex-global-state.json` or by working inside that folder, and show as one project, `~/Documents/Codex` (or the folder set as `projectless-workspace-root`).
 
 #### Session list
@@ -274,6 +314,13 @@ Until you pick an action, the button uses the agent's own app.
 - Export downloads images that replies link from the web into the bundle, and imported transcripts never load images from the web.
 - Importing a session already in the library with different contents asks whether to replace or keep the library's copy.
 - The file format and the inclusion rules are in [docs/bundle-format.md](docs/bundle-format.md).
+
+#### Sync
+
+- `sp pull <host>` runs `sp export-project` on the other machine over SSH and stores what it writes: session files into the agents' folders, everything else into the database.
+- Reports cite annotations by id and version, so annotations keep their version numbers when pulled.
+- The stream's format and the rules for which copy wins are in [docs/sync-format.md](docs/sync-format.md).
+- Code: `src-tauri/core/src/sync.rs`.
 
 ## License
 

@@ -402,6 +402,87 @@ pub fn put_annotation(conn: &Connection, a: &Annotation) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// What storing a record that came from another machine did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Change {
+    Added,
+    Replaced,
+    /// The copy here is newer, so it stays.
+    KeptLocal,
+    Unchanged,
+}
+
+/// Stores another machine's metadata as given, `updated_at` included, unless
+/// the metadata here is newer.
+pub(crate) fn put_meta(conn: &Connection, meta: &SessionMeta) -> anyhow::Result<Change> {
+    let change = match self::meta(conn, &meta.key)? {
+        None => Change::Added,
+        Some(old) if old == *meta => return Ok(Change::Unchanged),
+        Some(old) if meta.updated_at > old.updated_at => Change::Replaced,
+        Some(_) => return Ok(Change::KeptLocal),
+    };
+    let tx = conn.unchecked_transaction()?;
+    tx.execute("DELETE FROM session_meta WHERE key=?1", [&meta.key])?;
+    tx.execute("DELETE FROM notes_fts WHERE key=?1 AND item='meta'", [&meta.key])?;
+    tx.execute("INSERT INTO session_meta(key, json) VALUES(?1, ?2)", params![meta.key, serde_json::to_string(meta)?])?;
+    tx.execute("INSERT INTO notes_fts(key, item, text) VALUES(?1, 'meta', ?2)", params![meta.key, meta.search_text()])?;
+    tx.commit()?;
+    Ok(change)
+}
+
+/// Stores one version of an annotation from another machine, keeping its
+/// version number so a report from that machine still finds what it cites
+/// (`put_annotation` renumbers). With `current` it also becomes the
+/// annotation's current version, unless the one here is newer. Without, it is
+/// an older version a report cites; the caller stores that report first, since
+/// a version nothing cites is dropped.
+pub(crate) fn put_version(conn: &Connection, a: &Annotation, current: bool) -> anyhow::Result<Change> {
+    let mut a = a.clone();
+    for r in &mut a.anchors {
+        r.found = false;
+        r.elsewhere = false;
+    }
+    let tx = conn.unchecked_transaction()?;
+    let stored = annotation_version(&tx, &a.id, a.version)?;
+    if !current {
+        let change = match stored {
+            None => Change::Added,
+            Some(s) if s == a => return Ok(Change::Unchanged),
+            // Both machines edited the annotation and gave different text the same number.
+            Some(_) => return Ok(Change::KeptLocal),
+        };
+        tx.execute(
+            "INSERT INTO annotation_versions(id, version, key, json) VALUES(?1, ?2, ?3, ?4)",
+            params![a.id, a.version, a.key, serde_json::to_string(&a)?],
+        )?;
+        tx.commit()?;
+        return Ok(change);
+    }
+    let change = match annotation(&tx, &a.id)? {
+        None => Change::Added,
+        // Never moves an annotation from one session to another.
+        Some(old) if old.key != a.key => return Ok(Change::KeptLocal),
+        Some(old) if old == a => return Ok(Change::Unchanged),
+        Some(old) if a.updated_at > old.updated_at => Change::Replaced,
+        Some(_) => return Ok(Change::KeptLocal),
+    };
+    if stored.is_some_and(|s| s != a) {
+        // The number is taken by different text that a report here may cite.
+        a.version = tx.query_row("SELECT COALESCE(MAX(version), 0) + 1 FROM annotation_versions WHERE id=?1", [&a.id], |r| r.get(0))?;
+    }
+    let json = serde_json::to_string(&a)?;
+    tx.execute("INSERT OR IGNORE INTO annotation_versions(id, version, key, json) VALUES(?1, ?2, ?3, ?4)", params![a.id, a.version, a.key, json])?;
+    tx.execute(
+        "INSERT INTO annotations(id, key, json) VALUES(?1, ?2, ?3) ON CONFLICT(id) DO UPDATE SET json=excluded.json",
+        params![a.id, a.key, json],
+    )?;
+    tx.execute("DELETE FROM notes_fts WHERE item=?1", [&a.id])?;
+    tx.execute("INSERT INTO notes_fts(key, item, text) VALUES(?1, ?2, ?3)", params![a.key, a.id, a.note])?;
+    drop_unused_versions(&tx, &a.id)?;
+    tx.commit()?;
+    Ok(change)
+}
+
 /// Deletes the annotation. Versions a report cites are kept, so the report
 /// can still show them; everything else about it is removed.
 pub fn delete_annotation(conn: &Connection, id: &str) -> anyhow::Result<()> {

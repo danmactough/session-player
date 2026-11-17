@@ -301,7 +301,7 @@ pub enum UserImpact {
 
 /// The developer's response to one action. Reports never change, so responses
 /// live beside them, addressed by the action's position in `Report::actions`.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActionResponse {
     pub report_id: String,
     pub action_index: usize,
@@ -390,8 +390,43 @@ pub fn set_action_response(conn: &Connection, input: &ActionResponseInput) -> an
     Ok(Some(response))
 }
 
+/// Stores a report from another machine unless it is already here; reports
+/// never change. Returns whether it was added.
+pub(crate) fn put_report(conn: &Connection, report: &Report) -> anyhow::Result<bool> {
+    if self::report(conn, &report.id)?.is_some() {
+        return Ok(false);
+    }
+    save_report(conn, report)?;
+    Ok(true)
+}
+
+/// Stores another machine's response as given, unless the one here is newer.
+pub(crate) fn put_action_response(conn: &Connection, response: &ActionResponse) -> anyhow::Result<annotations::Change> {
+    use annotations::Change;
+    let existing = action_responses(conn, &response.report_id)?.into_iter().find(|r| r.action_index == response.action_index);
+    let change = match existing {
+        None => Change::Added,
+        Some(old) if old == *response => return Ok(Change::Unchanged),
+        Some(old) if response.updated_at > old.updated_at => Change::Replaced,
+        Some(_) => return Ok(Change::KeptLocal),
+    };
+    conn.execute(
+        &format!("INSERT OR REPLACE INTO action_responses({RESPONSE_COLUMNS}) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)"),
+        params![
+            response.report_id,
+            response.action_index as i64,
+            response.status.as_ref().map(enum_name),
+            response.note,
+            response.done_at,
+            response.user_impact.as_ref().map(enum_name),
+            response.updated_at
+        ],
+    )?;
+    Ok(change)
+}
+
 /// Every saved report, oldest first.
-fn saved_reports(conn: &Connection) -> anyhow::Result<Vec<Report>> {
+pub(crate) fn saved_reports(conn: &Connection) -> anyhow::Result<Vec<Report>> {
     let mut stmt = conn.prepare("SELECT json FROM reports ORDER BY created_at ASC, rowid ASC")?;
     let list = stmt.query_map([], |r| r.get::<_, String>(0))?.map(|j| Ok(serde_json::from_str(&j?)?)).collect::<anyhow::Result<Vec<_>>>()?;
     Ok(list)

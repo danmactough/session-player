@@ -45,6 +45,7 @@ pub fn open(db_path: &Path) -> anyhow::Result<Connection> {
     )?;
     crate::annotations::create_tables(&conn)?;
     crate::reports::create_tables(&conn)?;
+    crate::sync::create_tables(&conn)?;
     let version: Option<String> = conn
         .query_row("SELECT value FROM settings WHERE key='index_version'", [], |r| r.get(0))
         .optional()?;
@@ -242,6 +243,7 @@ pub fn run(
         .collect();
 
     let mut stats = IndexStats { scanned, removed: removed.len(), ..Default::default() };
+    let pulled = crate::sync::pulled_projects(conn)?;
     let tx = conn.transaction()?;
     for path in &removed {
         tx.execute("DELETE FROM files WHERE path=?1", [path])?;
@@ -265,7 +267,13 @@ pub fn run(
         if r.error.is_some() {
             stats.failed += 1;
         }
-        let Some((row, body)) = r.row else { continue };
+        let Some((mut row, body)) = r.row else { continue };
+        // A session pulled from another machine records that machine's folder. Its file is in the
+        // agent's folder for the local checkout, which is also where resuming it has to run.
+        if let Some(project) = pulled.get(&row.path) {
+            row.project = project.clone();
+            row.cwd = Some(project.clone());
+        }
         stats.updated += 1;
         tx.execute(
             "INSERT INTO sessions(path, root, source, native_id, cwd, project, title, title_source,
@@ -521,7 +529,7 @@ fn clean_title(t: &str) -> Option<String> {
 /// The directory a session is grouped under: the main checkout of the git
 /// repository containing `cwd`. The path markers come first because they still
 /// identify the repository after a worktree has been deleted from disk.
-fn project_of(cwd: Option<&str>) -> String {
+pub fn project_of(cwd: Option<&str>) -> String {
     let Some(cwd) = cwd.filter(|c| !c.is_empty()) else {
         return "(unknown)".into();
     };

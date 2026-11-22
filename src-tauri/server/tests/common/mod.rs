@@ -11,7 +11,8 @@ use std::time::{Duration, Instant};
 
 use session_player_client::{Client, ClientParams, PairingString};
 use session_player_core::index;
-use session_player_core::ops::{Ctx, OpenParams, Paths};
+use session_player_core::model::SessionRow;
+use session_player_core::ops::{self, Ctx, Extension, JOB, JobRequest, JobState, LIST_SESSIONS, ListSessionsRequest, OpenParams, Paths, REINDEX, ReindexRequest};
 use session_player_server::{SERVER_EXTENSIONS, ServeParams, ServerConfig, ServerHandle, TlsMode, serve};
 
 pub const CLOCK: u64 = 7_000_000;
@@ -44,6 +45,16 @@ pub fn data_of(dir: &Path) -> PathBuf {
 }
 
 pub fn open_ctx(params: CtxParams) -> Arc<Ctx> {
+    open_ctx_with(params, OpenWith { upload_cap: None, extensions: SERVER_EXTENSIONS.to_vec() })
+}
+
+/// What `open_ctx` doesn't vary.
+pub struct OpenWith {
+    pub upload_cap: Option<u64>,
+    pub extensions: Vec<Extension>,
+}
+
+pub fn open_ctx_with(params: CtxParams, with: OpenWith) -> Arc<Ctx> {
     let data = data_of(params.dir);
     std::fs::create_dir_all(&data).unwrap();
     let home = params.dir.join("home");
@@ -67,8 +78,8 @@ pub fn open_ctx(params: CtxParams) -> Arc<Ctx> {
         claude: None,
         clock: Some(Arc::new(move || clock.0.load(Ordering::SeqCst))),
         event_capacity: params.event_capacity,
-        upload_cap: None,
-        extensions: SERVER_EXTENSIONS.to_vec(),
+        upload_cap: with.upload_cap,
+        extensions: with.extensions,
     })
     .expect("open the Ctx")
 }
@@ -230,4 +241,100 @@ pub fn post_json(addr: SocketAddr, path: &str, headers: &[(&str, &str)], body: &
     let mut all = vec![("Content-Type", "application/json")];
     all.extend_from_slice(headers);
     raw(addr, RawRequest { method: "POST", path, host: None, headers: &all, body: body.as_bytes() })
+}
+
+pub fn bearer(data: &Path) -> String {
+    format!("Bearer {}", read_token(data))
+}
+
+/// The Claude Code session folder `open_ctx` registers as a root (with `fixtures: true`).
+pub fn claude_root(dir: &Path) -> PathBuf {
+    dir.join("home/.claude/projects")
+}
+
+/// A checkout of a repository: a folder with a `.git` folder, named like the repository.
+pub fn checkout(home: &Path, name: &str) -> PathBuf {
+    let project = home.join("code").join(name);
+    std::fs::create_dir_all(project.join(".git")).unwrap();
+    project
+}
+
+pub struct SessionFile<'a> {
+    pub home: &'a Path,
+    pub cwd: &'a Path,
+    pub id: &'a str,
+    pub prompt: &'a str,
+    /// (media type, base64 data) of images in the prompt.
+    pub images: &'a [(&'a str, &'a str)],
+}
+
+/// Writes a one-turn Claude Code session under `home/.claude/projects` and returns its path.
+pub fn session_file(s: SessionFile) -> PathBuf {
+    let folder: String = s.cwd.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+    let folder = s.home.join(".claude/projects").join(folder);
+    std::fs::create_dir_all(&folder).unwrap();
+    let content = if s.images.is_empty() {
+        serde_json::json!(s.prompt)
+    } else {
+        let mut parts = vec![serde_json::json!({ "type": "text", "text": s.prompt })];
+        for (mime, data) in s.images {
+            parts.push(serde_json::json!({ "type": "image", "source": { "type": "base64", "media_type": mime, "data": data } }));
+        }
+        serde_json::json!(parts)
+    };
+    let user = serde_json::json!({ "type": "user", "sessionId": s.id, "cwd": s.cwd, "timestamp": "2026-11-01T10:00:00Z",
+                       "message": { "role": "user", "content": content } });
+    let assistant = serde_json::json!({ "type": "assistant", "sessionId": s.id, "timestamp": "2026-11-01T10:00:30Z",
+                            "message": { "id": "m1", "model": "claude-opus-5-5", "role": "assistant",
+                                         "content": [{ "type": "text", "text": "Done." }] } });
+    let path = folder.join(format!("{}.jsonl", s.id));
+    std::fs::write(&path, format!("{user}\n{assistant}\n")).unwrap();
+    path
+}
+
+/// Runs an incremental index pass in process and waits for it.
+pub fn reindex(ctx: &Arc<Ctx>) {
+    let id = ops::call(ctx, &REINDEX, &ReindexRequest { full: false }).expect("reindex");
+    wait_until("the index pass ends", Duration::from_secs(60), || ops::call(ctx, &JOB, &JobRequest { id: id.clone() }).expect("job").state != JobState::Running);
+    let job = ops::call(ctx, &JOB, &JobRequest { id }).expect("job");
+    assert_eq!(job.state, JobState::Finished, "{job:?}");
+}
+
+pub fn rows(ctx: &Arc<Ctx>) -> Vec<SessionRow> {
+    ops::call(ctx, &LIST_SESSIONS, &ListSessionsRequest::default()).expect("list_sessions")
+}
+
+pub fn row(ctx: &Arc<Ctx>, native_id: &str) -> SessionRow {
+    rows(ctx).into_iter().find(|r| r.native_id == native_id).unwrap_or_else(|| panic!("no session {native_id} listed"))
+}
+
+/// Text that compresses poorly.
+pub fn noise(len: usize) -> String {
+    let mut state: u64 = 0x2545_f491_4f6c_dd1d;
+    (0..len)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            char::from(b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 "[(state % 63) as usize])
+        })
+        .collect()
+}
+
+/// Every file under `dir`, except SQLite's own journal files.
+pub fn files_under(dir: &Path) -> std::collections::BTreeSet<PathBuf> {
+    let mut found = std::collections::BTreeSet::new();
+    let mut todo = vec![dir.to_path_buf()];
+    while let Some(folder) = todo.pop() {
+        let Ok(entries) = std::fs::read_dir(&folder) else { continue };
+        for entry in entries {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                todo.push(path);
+            } else if !path.to_string_lossy().ends_with("-wal") && !path.to_string_lossy().ends_with("-shm") {
+                found.insert(path);
+            }
+        }
+    }
+    found
 }

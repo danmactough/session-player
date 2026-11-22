@@ -3,6 +3,7 @@
 
 mod pairing;
 mod probe;
+mod pull;
 mod store;
 
 use std::io::Read;
@@ -26,6 +27,7 @@ use tokio::runtime::Runtime;
 
 pub use pairing::{ConnectParams, PairedServer, PairingString, connect};
 pub use probe::{LocalProbe, probe_local};
+pub use pull::{PULL, PullChange, PullCounts, PullFile, PullRequest, PullResponse};
 pub use store::ServersStore;
 
 pub struct ClientParams {

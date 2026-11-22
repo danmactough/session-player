@@ -5,6 +5,7 @@ pub mod auth;
 pub mod listener;
 pub mod lockfile;
 pub mod pairing;
+pub mod service;
 pub mod stream;
 pub mod tls;
 

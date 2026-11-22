@@ -58,6 +58,7 @@ fn open(dir: &Path) -> Arc<Ctx> {
         claude: None,
         clock: Some(Arc::new(|| 7_000_000)),
         event_capacity: None,
+        upload_cap: None,
         extensions: vec![],
     })
     .expect("open the Ctx")

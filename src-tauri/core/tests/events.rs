@@ -40,6 +40,7 @@ fn open(dir: &Path, event_capacity: Option<usize>) -> Arc<Ctx> {
         claude: None,
         clock: Some(Arc::new(|| CLOCK)),
         event_capacity,
+        upload_cap: None,
         extensions: vec![],
     })
     .expect("open the Ctx")

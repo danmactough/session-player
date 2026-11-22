@@ -30,6 +30,7 @@ fn open_with(dir: &Path, extensions: Vec<Extension>) -> anyhow::Result<Arc<Ctx>>
         claude: None,
         clock: Some(Arc::new(|| 7_000_000)),
         event_capacity: None,
+        upload_cap: None,
         extensions,
     })
 }

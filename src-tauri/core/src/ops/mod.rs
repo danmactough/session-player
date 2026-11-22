@@ -1,8 +1,17 @@
 //! The one set of operations every caller reaches: the server's `POST /api/v1/<op>`, the in-process
 //! CLI and the client crate. See .plans/server-api/00-design.md.
 
+mod analyze;
 mod events;
+mod export;
+mod generate_job;
+mod import;
 mod jobs;
+mod notes;
+mod report_ops;
+mod roots;
+mod sessions;
+mod settings;
 pub mod wire;
 
 use std::collections::{HashMap, HashSet};
@@ -14,12 +23,20 @@ use anyhow::{Context, bail};
 use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, TimeZone};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+pub use analyze::*;
+pub use export::*;
+pub use generate_job::*;
+pub use import::*;
+pub use notes::*;
+pub use report_ops::*;
+pub use roots::*;
+pub use sessions::*;
+pub use settings::*;
 pub use wire::*;
 
 use crate::generate::Claude;
-use crate::index;
-use crate::model::SessionRow;
-use crate::sync;
+use crate::model::{Event, SessionRow};
+use crate::{annotations, index, reports, sync};
 use events::{Events, Since};
 use jobs::Jobs;
 
@@ -46,6 +63,8 @@ pub struct OpenParams {
     pub clock: Option<Clock>,
     /// How many events the ring keeps before older ones are answered with a Snapshot.
     pub event_capacity: Option<usize>,
+    /// The most bytes an upload (`import_bundle`) may hold; None is `DEFAULT_UPLOAD_CAP`.
+    pub upload_cap: Option<u64>,
     /// Operations other crates add: `pull` from the client crate, the pairing and service
     /// operations from the server crate.
     pub extensions: Vec<Extension>,
@@ -143,6 +162,13 @@ pub struct Op<Req: 'static, Res: 'static> {
     handler: fn(&Arc<Ctx>, &DeviceId, &Req) -> Result<Res, OpError>,
 }
 
+/// An operation with a raw body in or out, declared once by `operations!` and run by name with
+/// `call_raw` or `dispatch`.
+pub struct RawOp {
+    pub spec: OpSpec,
+    handler: ExtensionHandler,
+}
+
 pub type ExtensionHandler = fn(&Arc<Ctx>, &DeviceId, Input) -> Result<Output, OpError>;
 
 /// An operation another crate adds through `OpenParams.extensions`.
@@ -154,7 +180,9 @@ pub struct Extension {
 
 pub enum Input {
     Json(serde_json::Value),
-    Raw { body: Box<dyn Read + Send>, content_type: Option<String> },
+    /// An uploaded body. `query` holds the decoded URL query pairs, which carry a raw operation's
+    /// options (such as `import_bundle`'s `on_conflict`).
+    Raw { body: Box<dyn Read + Send>, content_type: Option<String>, query: Vec<(String, String)> },
 }
 
 pub enum RawData {
@@ -181,21 +209,35 @@ pub struct DispatchParams {
 }
 
 macro_rules! operations {
-    ($($stat:ident = $name:literal ($req:ty => $res:ty) { body: $body:ident, inline: $inline:literal, access: $access:ident } => $handler:path;)*) => {
+    (
+        typed {
+            $($stat:ident = $name:literal ($req:ty => $res:ty) { body: $body:ident, inline: $inline:literal, access: $access:ident } => $handler:path;)*
+        }
+        raw {
+            $($rstat:ident = $rname:literal { body: $rbody:ident, inline: $rinline:literal, access: $raccess:ident } => $rhandler:path;)*
+        }
+    ) => {
         $(
             pub static $stat: Op<$req, $res> = Op {
                 spec: OpSpec { name: $name, body: Body::$body, inline: $inline, access: Access::$access },
                 handler: $handler,
             };
         )*
+        $(
+            pub static $rstat: RawOp = RawOp {
+                spec: OpSpec { name: $rname, body: Body::$rbody, inline: $rinline, access: Access::$raccess },
+                handler: $rhandler,
+            };
+        )*
 
         fn core_specs() -> Vec<OpSpec> {
-            vec![$($stat.spec),*]
+            vec![$($stat.spec,)* $($rstat.spec,)*]
         }
 
         fn dispatch_core(ctx: &Arc<Ctx>, device: &DeviceId, name: String, input: Input) -> Result<Output, OpError> {
             match name.as_str() {
                 $($name => dispatch_json(ctx, device, &$stat, input),)*
+                $($rname => ($rstat.handler)(ctx, device, input),)*
                 _ => Err(OpError::UnknownOperation(name)),
             }
         }
@@ -203,11 +245,60 @@ macro_rules! operations {
 }
 
 operations! {
-    HELLO = "hello" (HelloRequest => HelloResponse) { body: Json, inline: true, access: Authenticated } => hello;
-    JOB = "job" (JobRequest => Job) { body: Json, inline: true, access: Authenticated } => job;
-    CANCEL_JOB = "cancel_job" (CancelJobRequest => ()) { body: Json, inline: true, access: Authenticated } => cancel_job;
-    LIST_SESSIONS = "list_sessions" (ListSessionsRequest => Vec<SessionRow>) { body: Json, inline: false, access: Authenticated } => list_sessions;
-    REINDEX = "reindex" (ReindexRequest => JobId) { body: Json, inline: false, access: Authenticated } => reindex;
+    typed {
+        HELLO = "hello" (HelloRequest => HelloResponse) { body: Json, inline: true, access: Authenticated } => hello;
+        JOB = "job" (JobRequest => Job) { body: Json, inline: true, access: Authenticated } => job;
+        CANCEL_JOB = "cancel_job" (CancelJobRequest => ()) { body: Json, inline: true, access: Authenticated } => cancel_job;
+        LIST_SESSIONS = "list_sessions" (ListSessionsRequest => Vec<SessionRow>) { body: Json, inline: false, access: Authenticated } => list_sessions;
+        REINDEX = "reindex" (ReindexRequest => JobId) { body: Json, inline: false, access: Authenticated } => reindex;
+
+        GET_ROOTS = "get_roots" (GetRootsRequest => Vec<RootInfo>) { body: Json, inline: false, access: Authenticated } => roots::get_roots;
+        SUGGESTED_ROOTS = "suggested_roots" (SuggestedRootsRequest => Vec<String>) { body: Json, inline: false, access: Authenticated } => roots::suggested_roots;
+        ADD_ROOT = "add_root" (AddRootRequest => RootInfo) { body: Json, inline: false, access: Authenticated } => roots::add_root;
+        REMOVE_ROOT = "remove_root" (RemoveRootRequest => ()) { body: Json, inline: false, access: Authenticated } => roots::remove_root;
+
+        SEARCH = "search" (SearchRequest => Vec<index::SearchHit>) { body: Json, inline: false, access: Authenticated } => sessions::search;
+        LOAD_SESSION = "load_session" (LoadSessionRequest => Vec<Event>) { body: Json, inline: false, access: Authenticated } => sessions::load_session;
+
+        GET_SETTING = "get_setting" (GetSettingRequest => Option<String>) { body: Json, inline: false, access: Authenticated } => settings::get_setting;
+        SET_SETTING = "set_setting" (SetSettingRequest => ()) { body: Json, inline: false, access: Authenticated } => settings::set_setting;
+        LOG_FRONTEND = "log_frontend" (LogFrontendRequest => ()) { body: Json, inline: false, access: Authenticated } => settings::log_frontend;
+        LIBRARY_ERRORS = "library_errors" (LibraryErrorsRequest => Vec<index::LibraryError>) { body: Json, inline: false, access: Authenticated } => settings::library_errors;
+        REMOVE_IMPORTED = "remove_imported" (RemoveImportedRequest => ()) { body: Json, inline: false, access: Authenticated } => settings::remove_imported;
+
+        EXPORT_PREVIEW = "export_preview" (ExportPreviewRequest => ExportPreview) { body: Json, inline: false, access: Authenticated } => export::export_preview;
+        EXPORT_CANCEL = "export_cancel" (ExportCancelRequest => ()) { body: Json, inline: false, access: Authenticated } => export::export_cancel;
+
+        SESSION_NOTES = "session_notes" (SessionNotesRequest => SessionNotes) { body: Json, inline: false, access: Authenticated } => notes::session_notes;
+        SAVE_META = "save_meta" (SaveMetaRequest => Option<annotations::SessionMeta>) { body: Json, inline: false, access: Authenticated } => notes::save_meta;
+        SAVE_ANNOTATION = "save_annotation" (SaveAnnotationRequest => annotations::Annotation) { body: Json, inline: false, access: Authenticated } => notes::save_annotation;
+        DELETE_ANNOTATION = "delete_annotation" (DeleteAnnotationRequest => ()) { body: Json, inline: false, access: Authenticated } => notes::delete_annotation;
+        NOTE_SUMMARIES = "note_summaries" (NoteSummariesRequest => Vec<annotations::Summary>) { body: Json, inline: false, access: Authenticated } => notes::note_summaries;
+
+        GENERATE_NOTES = "generate_notes" (GenerateNotesRequest => JobId) { body: Json, inline: false, access: Authenticated } => generate_job::generate_notes;
+        CANCEL_GENERATE = "cancel_generate" (CancelGenerateRequest => ()) { body: Json, inline: false, access: Authenticated } => generate_job::cancel_generate;
+        GENERATING = "generating" (GeneratingRequest => Vec<String>) { body: Json, inline: false, access: Authenticated } => generate_job::generating;
+        DEFAULT_PROMPTS = "default_prompts" (DefaultPromptsRequest => DefaultPrompts) { body: Json, inline: false, access: Authenticated } => generate_job::default_prompts;
+        ANALYZE_SESSIONS = "analyze_sessions" (AnalyzeSessionsRequest => JobId) { body: Json, inline: false, access: Authenticated } => analyze::analyze_sessions;
+
+        GENERATE_REPORT = "generate_report" (GenerateReportRequest => JobId) { body: Json, inline: false, access: Authenticated } => report_ops::generate_report;
+        CANCEL_REPORT = "cancel_report" (CancelReportRequest => ()) { body: Json, inline: false, access: Authenticated } => report_ops::cancel_report;
+        LIST_REPORTS = "list_reports" (ListReportsRequest => Vec<reports::ReportSummary>) { body: Json, inline: false, access: Authenticated } => report_ops::list_reports;
+        GET_REPORT = "get_report" (GetReportRequest => Option<reports::Report>) { body: Json, inline: false, access: Authenticated } => report_ops::get_report;
+        REPORT_ANNOTATIONS = "report_annotations" (ReportAnnotationsRequest => Vec<reports::CitedAnnotation>) { body: Json, inline: false, access: Authenticated } => report_ops::report_annotations;
+        DELETE_REPORT = "delete_report" (DeleteReportRequest => ()) { body: Json, inline: false, access: Authenticated } => report_ops::delete_report;
+        ACTION_RESPONSES = "action_responses" (ActionResponsesRequest => Vec<reports::ActionResponse>) { body: Json, inline: false, access: Authenticated } => report_ops::action_responses;
+        SET_ACTION_RESPONSE = "set_action_response" (SetActionResponseRequest => Option<reports::ActionResponse>) { body: Json, inline: false, access: Authenticated } => report_ops::set_action_response;
+        ACTION_VERDICTS = "action_verdicts" (ActionVerdictsRequest => Vec<reports::LatestVerdict>) { body: Json, inline: false, access: Authenticated } => report_ops::action_verdicts;
+    }
+    raw {
+        // JSON in, the bundle file out (Bytes).
+        EXPORT_SESSION = "export_session" { body: Json, inline: false, access: Authenticated } => export::export_session;
+        // The bundle file in, an ImportReport out.
+        IMPORT_BUNDLE = "import_bundle" { body: Raw, inline: false, access: Authenticated } => import::import_bundle;
+        // JSON in, a sync stream out (Stream).
+        EXPORT_PROJECT = "export_project" { body: Json, inline: false, access: Authenticated } => import::export_project;
+    }
 }
 
 /// Every operation this Ctx answers: the core ones and the extensions it was opened with.

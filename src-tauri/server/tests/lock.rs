@@ -12,6 +12,10 @@ use session_player_core::ops::{HELLO, HelloRequest};
 use session_player_server::{ServeParams, serve};
 use tempdir::TempDir;
 
+/// The socket check below sees every listener in this process, so the other test's servers must
+/// not start or stop while it runs.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Inodes of the TCP sockets in LISTEN state this process holds open.
 fn listening_sockets_of_this_process() -> HashSet<String> {
     let mut listening = HashSet::new();
@@ -40,6 +44,7 @@ fn listening_sockets_of_this_process() -> HashSet<String> {
 
 #[test]
 fn a_second_server_on_the_same_data_folder_is_refused_without_disturbing_the_first_and_can_start_after_it_stops() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let dir = TempDir::new("server-lock");
     let ctx = open_ctx(CtxParams { dir: &dir, clock: None, event_capacity: None, fixtures: false });
     let data = ctx.paths().data.clone();
@@ -68,6 +73,7 @@ fn a_second_server_on_the_same_data_folder_is_refused_without_disturbing_the_fir
 
 #[test]
 fn server_token_is_owner_only_and_new_on_each_start() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let dir = TempDir::new("server-lock-token");
     let ctx = open_ctx(CtxParams { dir: &dir, clock: None, event_capacity: None, fixtures: false });
     let data = ctx.paths().data.clone();

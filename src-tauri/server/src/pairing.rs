@@ -25,6 +25,7 @@ pub const SERVER_EXTENSIONS: &[Extension] = &[
     Extension { spec: OpSpec { name: "connect", body: Body::Json, inline: false, access: Access::Anonymous }, handler: connect },
     Extension { spec: OpSpec { name: "devices", body: Body::Json, inline: false, access: Access::Authenticated }, handler: devices },
     Extension { spec: OpSpec { name: "unpair", body: Body::Json, inline: false, access: Access::Authenticated }, handler: unpair },
+    crate::service::SERVICE,
 ];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -1,6 +1,7 @@
 //! The Session Player server: `POST /api/v1/<operation>` and one event stream over the operations in
 //! session-player-core. See .plans/server-api/ for the design.
 
+pub mod assets;
 pub mod auth;
 pub mod listener;
 pub mod lockfile;
@@ -8,6 +9,7 @@ pub mod pairing;
 pub mod service;
 pub mod stream;
 pub mod tls;
+mod watcher;
 
 use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr};
@@ -28,7 +30,7 @@ use http_body_util::channel::Channel;
 use ring::rand::SecureRandom;
 use serde::{Deserialize, Serialize};
 use session_player_core::ops::{
-    Access, Body, Ctx, DeviceId, DispatchParams, ErrorCode, EventsSince, Input, OpError, OpSpec, Output, RawBody, RawData, ServerEvent, dispatch,
+    Access, ApiError, Body, Ctx, DeviceId, DispatchParams, ErrorCode, EventsSince, Input, OpError, ImageRef, OpSpec, Output, RawBody, RawData, ServerEvent, dispatch,
     spec_of,
 };
 use tokio::sync::{Notify, broadcast};
@@ -98,6 +100,7 @@ struct Running {
     runtime: tokio::runtime::Runtime,
     pump: std::thread::JoinHandle<()>,
     stop: Arc<AtomicBool>,
+    watcher: Option<watcher::Watcher>,
     lock: lockfile::ServerLock,
 }
 
@@ -114,6 +117,9 @@ impl ServerHandle {
     fn stop(&mut self) {
         let Some(running) = self.running.take() else { return };
         running.stop.store(true, Ordering::SeqCst);
+        if let Some(watcher) = running.watcher {
+            watcher.stop();
+        }
         // Dropping the runtime's tasks closes both listeners and every open connection.
         running.runtime.shutdown_timeout(Duration::from_secs(2));
         let _ = running.pump.join();
@@ -236,6 +242,8 @@ pub fn serve(params: ServeParams) -> anyhow::Result<ServerHandle> {
 
     let stop = Arc::new(AtomicBool::new(false));
     let pump = start_pump(&ctx, events, stop.clone());
+    // A server that can't watch still serves; new sessions then wait for a reindex.
+    let watcher = watcher::start(&ctx).inspect_err(|e| eprintln!("Couldn't watch the session folders: {e:#}")).ok();
 
     {
         let _entered = runtime.enter();
@@ -250,7 +258,7 @@ pub fn serve(params: ServeParams) -> anyhow::Result<ServerHandle> {
         runtime.spawn(control_external(shared.clone()));
     }
     RUNNING.lock().unwrap().push(shared.clone());
-    Ok(ServerHandle { loopback, shared, running: Some(Running { runtime, pump, stop, lock }) })
+    Ok(ServerHandle { loopback, shared, running: Some(Running { runtime, pump, stop, watcher, lock }) })
 }
 
 /// The one thread that reads the core event ring and hands each event to every connected stream.
@@ -394,7 +402,7 @@ async fn answer(state: &AppState, req: Request, origin: Option<&str>) -> Respons
     }
     let path = req.uri().path().to_string();
     if path != "/api" && !path.starts_with("/api/") {
-        return error_response(ErrorCode::NotFound, "Nothing is here.");
+        return assets::response(req.method(), &path);
     }
     let anonymous = path == "/api/v1/connect" && req.method() == Method::POST;
     let device = if anonymous {
@@ -419,6 +427,12 @@ async fn answer(state: &AppState, req: Request, origin: Option<&str>) -> Respons
             Err(Refusal::Forbidden) => return forbidden(),
         }
     };
+    if let Some(ids) = path.strip_prefix("/api/v1/image/") {
+        if req.method() != Method::GET && req.method() != Method::HEAD {
+            return error_response(ErrorCode::MethodNotAllowed, "Images take GET.");
+        }
+        return image(&shared.ctx, ids, req.headers());
+    }
     if path == "/api/v1/events" {
         if req.method() != Method::GET {
             return error_response(ErrorCode::MethodNotAllowed, "The event stream takes GET.");
@@ -436,6 +450,27 @@ async fn answer(state: &AppState, req: Request, origin: Option<&str>) -> Respons
         return error_response(ErrorCode::MethodNotAllowed, "Operations take POST.");
     }
     run_operation(state, spec, device, req).await
+}
+
+/// `{generation}/{event}/{image}` from a `load_session` image URL.
+fn image(ctx: &Ctx, ids: &str, headers: &HeaderMap) -> Response {
+    let not_found = || error_response(ErrorCode::NotFound, "No such image.");
+    let [generation, event, image] = ids.split('/').collect::<Vec<_>>()[..] else { return not_found() };
+    let (Ok(generation), Ok(event), Ok(image)) = (generation.parse(), event.parse(), image.parse()) else {
+        let error = ApiError { code: ErrorCode::BadRequest, message: "An image URL ends in three whole numbers.".to_string() };
+        return (StatusCode::BAD_REQUEST, axum::Json(error)).into_response();
+    };
+    let Ok(found) = ctx.image(ImageRef { generation, event, image }) else { return not_found() };
+    let digest = ring::digest::digest(&ring::digest::SHA256, &found.bytes);
+    let etag = format!("\"{}\"", auth::hex(&digest.as_ref()[..16]));
+    let matched = header(headers, header::IF_NONE_MATCH).is_some_and(|v| v.split(',').any(|t| t.trim() == etag || t.trim() == "*"));
+    let builder = Response::builder().header(header::ETAG, &etag).header(header::CACHE_CONTROL, "private, max-age=3600");
+    let built = if matched {
+        builder.status(StatusCode::NOT_MODIFIED).body(axum::body::Body::empty())
+    } else {
+        builder.status(StatusCode::OK).header(header::CONTENT_TYPE, found.content_type).body(axum::body::Body::from(found.bytes))
+    };
+    built.unwrap_or_else(|e| error_response(ErrorCode::Internal, &e.to_string()))
 }
 
 fn preflight() -> Response {
@@ -500,9 +535,18 @@ fn raw_response(raw: RawBody) -> Response {
     };
     let mut builder = Response::builder().status(StatusCode::OK).header(header::CONTENT_TYPE, raw.content_type);
     if let Some(name) = raw.filename {
-        builder = builder.header(header::CONTENT_DISPOSITION, format!("attachment; filename=\"{}\"", name.replace(['"', '\\'], "_")));
+        builder = builder.header(header::CONTENT_DISPOSITION, format!("attachment; filename=\"{}\"", safe_filename(&name)));
     }
     builder.body(body).unwrap_or_else(|e| error_response(ErrorCode::Internal, &e.to_string()))
+}
+
+/// Printable ASCII without quotes, backslashes or slashes, so the name fits a quoted
+/// Content-Disposition filename in every browser. A name with nothing left but its extension
+/// becomes `export.{extension}`.
+fn safe_filename(name: &str) -> String {
+    let safe: String = name.chars().map(|c| if c == ' ' || (c.is_ascii_graphic() && !matches!(c, '"' | '\\' | '/')) { c } else { '_' }).collect();
+    let (stem, extension) = safe.rsplit_once('.').unwrap_or((&safe, "spsession"));
+    if stem.chars().any(|c| c.is_ascii_alphanumeric()) { safe.clone() } else { format!("export.{extension}") }
 }
 
 fn op_error(e: OpError) -> Response {

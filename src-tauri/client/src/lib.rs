@@ -11,6 +11,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
+use http_body_util::channel::Channel;
+use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
 use hyper::body::{Bytes, Incoming};
 use hyper::{Method, Request, Response, StatusCode};
@@ -111,7 +113,7 @@ impl Client {
 
     /// A JSON operation by name: the server crate's extensions, which have no typed `Op`.
     pub fn call_named<Req: Serialize, Res: DeserializeOwned>(&self, name: &str, req: &Req) -> Result<Res, ApiError> {
-        let body = serde_json::to_vec(req).map_err(|e| failure(ErrorCode::BadRequest, e))?;
+        let body = full(serde_json::to_vec(req).map_err(|e| failure(ErrorCode::BadRequest, e))?);
         let path = format!("/api/v1/{name}");
         let answer = self.exchange(Exchange { method: Method::POST, path: &path, content_type: Some("application/json"), last_event_id: None, body })?;
         if !(200..300).contains(&answer.status) {
@@ -122,7 +124,7 @@ impl Client {
 
     /// A non-2xx answer is the server's ApiError.
     pub fn call_raw(&self, call: RawCall) -> Result<RawBody, ApiError> {
-        let (path, body) = raw_request(call)?;
+        let (path, body) = self.raw_request(call);
         let response = self.runtime.block_on(self.send(Exchange { method: Method::POST, path: &path.0, content_type: Some(&path.1), last_event_id: None, body }))?;
         let status = response.status().as_u16();
         if !(200..300).contains(&status) {
@@ -141,18 +143,18 @@ impl Client {
 
     /// Any status comes back as a RawAnswer; only a failure to reach the server is an error.
     pub fn call_raw_answer(&self, call: RawCall) -> Result<RawAnswer, ApiError> {
-        let (path, body) = raw_request(call)?;
+        let (path, body) = self.raw_request(call);
         self.exchange(Exchange { method: Method::POST, path: &path.0, content_type: Some(&path.1), last_event_id: None, body })
     }
 
     /// `GET {path}` with the token, such as an image URL from `load_session`.
     pub fn get(&self, path: &str) -> Result<RawAnswer, ApiError> {
-        self.exchange(Exchange { method: Method::GET, path, content_type: None, last_event_id: None, body: Vec::new() })
+        self.exchange(Exchange { method: Method::GET, path, content_type: None, last_event_id: None, body: full(Vec::new()) })
     }
 
     /// `GET /api/v1/events`, resuming after `last_id` (sent as `Last-Event-ID`).
     pub fn events(&self, last_id: Option<u64>) -> Result<EventStream, ApiError> {
-        let exchange = Exchange { method: Method::GET, path: "/api/v1/events", content_type: None, last_event_id: last_id, body: Vec::new() };
+        let exchange = Exchange { method: Method::GET, path: "/api/v1/events", content_type: None, last_event_id: last_id, body: full(Vec::new()) };
         let response = self.runtime.block_on(self.send(exchange))?;
         let status = response.status().as_u16();
         if !(200..300).contains(&status) {
@@ -160,6 +162,51 @@ impl Client {
             return Err(api_error(status, &body));
         }
         Ok(EventStream { runtime: self.runtime.clone(), body: response.into_body(), buf: Vec::new(), ended: false })
+    }
+
+    /// `((path with query, content type), body)` for a raw call. A reader is sent as it is read
+    /// (chunked), so an upload never sits in memory whole, and a server that refuses it early stops
+    /// the reading.
+    fn raw_request(&self, call: RawCall) -> ((String, String), RequestBody) {
+        let body = match call.body {
+            RawData::Bytes(bytes) => full(bytes),
+            RawData::Stream(reader) => self.streamed(reader),
+        };
+        let mut path = format!("/api/v1/{}", call.name);
+        for (i, (name, value)) in call.query.iter().enumerate() {
+            path.push(if i == 0 { '?' } else { '&' });
+            path.push_str(&percent_encode(name));
+            path.push('=');
+            path.push_str(&percent_encode(value));
+        }
+        ((path, call.content_type), body)
+    }
+
+    /// A request body fed from a blocking reader on its own thread.
+    fn streamed(&self, mut reader: Box<dyn Read + Send>) -> RequestBody {
+        let (mut sender, body) = Channel::<Bytes, std::io::Error>::new(4);
+        let handle = self.runtime.handle().clone();
+        std::thread::spawn(move || {
+            let mut buf = vec![0u8; 64 * 1024];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => return,
+                    Ok(n) => {
+                        // Fails once the connection is gone, such as after the server refused the
+                        // upload; returning stops reading.
+                        if handle.block_on(sender.send_data(Bytes::copy_from_slice(&buf[..n]))).is_err() {
+                            return;
+                        }
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(e) => {
+                        sender.abort(e);
+                        return;
+                    }
+                }
+            }
+        });
+        body.boxed()
     }
 
     fn exchange(&self, exchange: Exchange) -> Result<RawAnswer, ApiError> {
@@ -185,7 +232,7 @@ impl Client {
         if let Some(id) = exchange.last_event_id {
             request = request.header("last-event-id", id.to_string());
         }
-        let request = request.body(Full::new(Bytes::from(exchange.body))).map_err(|e| failure(ErrorCode::BadRequest, e))?;
+        let request = request.body(exchange.body).map_err(|e| failure(ErrorCode::BadRequest, e))?;
         let connect_host = self.host.trim_start_matches('[').trim_end_matches(']').to_string();
         let tcp = tokio::net::TcpStream::connect((connect_host.as_str(), self.port)).await.map_err(|e| unreachable(&e))?;
         match &self.tls {
@@ -204,10 +251,16 @@ struct Exchange<'a> {
     path: &'a str,
     content_type: Option<&'a str>,
     last_event_id: Option<u64>,
-    body: Vec<u8>,
+    body: RequestBody,
 }
 
-async fn over<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(io: S, request: Request<Full<Bytes>>) -> Result<Response<Incoming>, hyper::Error> {
+type RequestBody = BoxBody<Bytes, std::io::Error>;
+
+fn full(bytes: Vec<u8>) -> RequestBody {
+    Full::new(Bytes::from(bytes)).map_err(|never| match never {}).boxed()
+}
+
+async fn over<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(io: S, request: Request<RequestBody>) -> Result<Response<Incoming>, hyper::Error> {
     let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(io)).await?;
     tokio::spawn(connection);
     sender.send_request(request).await
@@ -223,26 +276,6 @@ fn failure(code: ErrorCode, message: impl std::fmt::Display) -> ApiError {
 
 fn api_error(status: u16, body: &[u8]) -> ApiError {
     serde_json::from_slice(body).unwrap_or_else(|_| failure(ErrorCode::Internal, format!("The server answered {}", StatusCode::from_u16(status).map_or(status.to_string(), |s| s.to_string()))))
-}
-
-/// `((path with query, content type), body)` for a raw call.
-fn raw_request(call: RawCall) -> Result<((String, String), Vec<u8>), ApiError> {
-    let body = match call.body {
-        RawData::Bytes(bytes) => bytes,
-        RawData::Stream(mut reader) => {
-            let mut bytes = Vec::new();
-            reader.read_to_end(&mut bytes).map_err(|e| failure(ErrorCode::BadRequest, format!("Couldn't read the upload: {e}")))?;
-            bytes
-        }
-    };
-    let mut path = format!("/api/v1/{}", call.name);
-    for (i, (name, value)) in call.query.iter().enumerate() {
-        path.push(if i == 0 { '?' } else { '&' });
-        path.push_str(&percent_encode(name));
-        path.push('=');
-        path.push_str(&percent_encode(value));
-    }
-    Ok(((path, call.content_type), body))
 }
 
 fn percent_encode(text: &str) -> String {

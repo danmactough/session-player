@@ -2,18 +2,18 @@
 // back to sessions and annotation versions, splitting long input, and how
 // saving and deleting a report keeps or releases annotation versions.
 use std::cell::RefCell;
-use std::path::PathBuf;
 
 use serde_json::{Value, json};
 use session_player_core::test_support::{annotations as notes, generate, index, reports};
 
-fn temp_db(name: &str) -> (PathBuf, rusqlite::Connection) {
-    let path = std::env::temp_dir().join(format!("sp-reports-{name}-{}.sqlite", std::process::id()));
-    for suffix in ["", "-wal", "-shm"] {
-        let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
-    }
-    let conn = index::open(&path).unwrap();
-    (path, conn)
+#[path = "../../testutil/tempdir.rs"]
+mod tempdir;
+use tempdir::TempDir;
+
+fn temp_db(name: &str) -> (TempDir, rusqlite::Connection) {
+    let dir = TempDir::new(&format!("reports-{name}"));
+    let conn = index::open(&dir.join("index.sqlite")).unwrap();
+    (dir, conn)
 }
 
 fn at() -> Vec<notes::EventRef> {
@@ -38,7 +38,7 @@ fn out(structured: Value) -> generate::ClaudeOutput {
 
 #[test]
 fn refs_map_back_to_sessions_and_annotation_versions() {
-    let (_, conn) = temp_db("refs");
+    let (_dir, conn) = temp_db("refs");
     analyzed(&conn, "local:claude:a", notes::Outcome::Failed, "Never got the tests passing");
     let stuck = annotate(&conn, "local:claude:a", notes::Kind::AgentStuck, "Retried the same fix four times");
     analyzed(&conn, "local:claude:b", notes::Outcome::Succeeded, "Done");
@@ -95,7 +95,7 @@ fn refs_map_back_to_sessions_and_annotation_versions() {
 
 #[test]
 fn long_input_is_sent_in_groups_of_whole_sessions_then_merged() {
-    let (_, conn) = temp_db("chunks");
+    let (_dir, conn) = temp_db("chunks");
     for (key, note) in [("local:pi:one", "first"), ("local:pi:two", "second"), ("local:pi:three", "third")] {
         annotate(&conn, key, notes::Kind::ToolError, &format!("{note} {}", "x".repeat(200)));
     }
@@ -126,7 +126,7 @@ fn long_input_is_sent_in_groups_of_whole_sessions_then_merged() {
 
 #[test]
 fn sessions_with_nothing_to_report_on_are_refused() {
-    let (_, conn) = temp_db("empty");
+    let (_dir, conn) = temp_db("empty");
     let mut ask = |_: &str, _: &str, _: &Value| -> anyhow::Result<generate::ClaudeOutput> { panic!("no call expected") };
     let err = reports::generate(&conn, &[pick("local:claude:none", "Nothing")], None, &mut ask, &mut |_, _| {}).unwrap_err();
     assert!(err.to_string().contains("Analyze them first"));
@@ -139,7 +139,7 @@ fn versions(conn: &rusqlite::Connection, id: &str) -> Vec<u32> {
 
 #[test]
 fn a_saved_report_keeps_the_versions_it_was_given_until_it_is_deleted() {
-    let (_, conn) = temp_db("keep");
+    let (_dir, conn) = temp_db("keep");
     let key = "local:claude:a";
     let edited = annotate(&conn, key, notes::Kind::ToolError, "as reported");
     let deleted = annotate(&conn, key, notes::Kind::Other, "deleted later");
@@ -171,7 +171,7 @@ fn a_saved_report_keeps_the_versions_it_was_given_until_it_is_deleted() {
 
 #[test]
 fn a_report_shows_annotations_as_it_was_given_them() {
-    let (_, conn) = temp_db("cited");
+    let (_dir, conn) = temp_db("cited");
     let key = "local:claude:a";
     let kept = annotate(&conn, key, notes::Kind::ToolError, "as reported");
     let gone = annotate(&conn, key, notes::Kind::Other, "deleted later");
@@ -189,7 +189,7 @@ fn a_report_shows_annotations_as_it_was_given_them() {
 
 #[test]
 fn a_report_sends_and_records_the_users_own_focus() {
-    let (_, conn) = temp_db("focus");
+    let (_dir, conn) = temp_db("focus");
     let key = "local:claude:a";
     annotate(&conn, key, notes::Kind::ToolError, "npm test failed");
     let systems = RefCell::new(Vec::new());
@@ -269,7 +269,7 @@ fn empty_reply() -> Value {
 
 #[test]
 fn a_response_saves_updates_and_goes_with_its_report() {
-    let (_, conn) = temp_db("response");
+    let (_dir, conn) = temp_db("response");
     let report = earlier_report(&conn, "a", "/p");
     let done = respond(&conn, &report, json!({ "status": "done", "note": " added it " })).unwrap();
     assert_eq!(done.status, Some(reports::ActionStatus::Done));
@@ -294,7 +294,7 @@ fn a_response_saves_updates_and_goes_with_its_report() {
 
 #[test]
 fn a_response_needs_an_action_that_exists() {
-    let (_, conn) = temp_db("response-missing");
+    let (_dir, conn) = temp_db("response-missing");
     let report = earlier_report(&conn, "a", "/p");
     let input = serde_json::from_value(json!({ "report_id": report.id, "action_index": 5, "status": "done", "note": null, "user_impact": null })).unwrap();
     assert!(reports::set_action_response(&conn, &input).is_err());
@@ -302,7 +302,7 @@ fn a_response_needs_an_action_that_exists() {
 
 #[test]
 fn only_responses_from_reports_sharing_a_project_reach_the_prompt() {
-    let (_, conn) = temp_db("projects");
+    let (_dir, conn) = temp_db("projects");
     let same = earlier_report(&conn, "same", "/shared");
     let other = earlier_report(&conn, "other", "/elsewhere");
     let unknown = earlier_report(&conn, "unknown", "(unknown)");
@@ -325,7 +325,7 @@ fn only_responses_from_reports_sharing_a_project_reach_the_prompt() {
 
 #[test]
 fn a_report_with_no_responses_sends_only_the_sessions() {
-    let (_, conn) = temp_db("no-responses");
+    let (_dir, conn) = temp_db("no-responses");
     earlier_report(&conn, "a", "/p");
     index_session(&conn, "b", "/p", 5_000);
     let (_, input) = next_report(&conn, &["b"], empty_reply());
@@ -334,7 +334,7 @@ fn a_report_with_no_responses_sends_only_the_sessions() {
 
 #[test]
 fn the_prompt_lists_sessions_started_after_an_action_was_done() {
-    let (_, conn) = temp_db("later");
+    let (_dir, conn) = temp_db("later");
     let report = earlier_report(&conn, "a", "/p");
     let done_at = respond(&conn, &report, json!({ "status": "done", "note": "added", "user_impact": "did_not_help" })).unwrap().done_at.unwrap();
     index_session(&conn, "before", "/p", done_at - 1_000);
@@ -361,7 +361,7 @@ fn before_and_after(conn: &rusqlite::Connection, status: &str) -> reports::Repor
 
 #[test]
 fn did_not_work_citing_later_sessions_is_kept_and_shown_on_the_earlier_action() {
-    let (_, conn) = temp_db("verdict");
+    let (_dir, conn) = temp_db("verdict");
     let earlier = before_and_after(&conn, "done");
     let (report, _) = next_report(&conn, &["before", "after"], verdict_reply("did_not_work", json!(["s2", "s1"])));
     assert_eq!(report.rejected, 0);
@@ -385,7 +385,7 @@ fn did_not_work_citing_later_sessions_is_kept_and_shown_on_the_earlier_action() 
 
 #[test]
 fn a_verdict_citing_only_earlier_sessions_is_rejected() {
-    let (_, conn) = temp_db("verdict-earlier");
+    let (_dir, conn) = temp_db("verdict-earlier");
     before_and_after(&conn, "done");
     let (report, _) = next_report(&conn, &["before", "after"], verdict_reply("did_not_work", json!(["s1"])));
     assert!(report.impact.is_empty());
@@ -394,7 +394,7 @@ fn a_verdict_citing_only_earlier_sessions_is_rejected() {
 
 #[test]
 fn a_verdict_on_an_action_not_done_is_rejected() {
-    let (_, conn) = temp_db("verdict-not-done");
+    let (_dir, conn) = temp_db("verdict-not-done");
     before_and_after(&conn, "in_progress");
     let (report, _) = next_report(&conn, &["before", "after"], verdict_reply("worked", json!(["s2"])));
     assert!(report.impact.is_empty());
@@ -403,7 +403,7 @@ fn a_verdict_on_an_action_not_done_is_rejected() {
 
 #[test]
 fn too_early_needs_no_citations_but_needs_later_sessions() {
-    let (_, conn) = temp_db("too-early");
+    let (_dir, conn) = temp_db("too-early");
     before_and_after(&conn, "done");
     let (report, _) = next_report(&conn, &["before", "after"], verdict_reply("too_early", json!([])));
     assert_eq!(report.impact.len(), 1);
@@ -414,7 +414,7 @@ fn too_early_needs_no_citations_but_needs_later_sessions() {
 
 #[test]
 fn an_action_can_follow_up_an_earlier_one_and_unknown_refs_are_cleared() {
-    let (_, conn) = temp_db("follow-up");
+    let (_dir, conn) = temp_db("follow-up");
     let earlier = earlier_report(&conn, "a", "/p");
     respond(&conn, &earlier, json!({ "status": "declined" }));
     index_session(&conn, "b", "/p", 5_000);
@@ -429,7 +429,7 @@ fn an_action_can_follow_up_an_earlier_one_and_unknown_refs_are_cleared() {
 
 #[test]
 fn the_merge_call_gets_the_earlier_actions_too() {
-    let (_, conn) = temp_db("merge-prior");
+    let (_dir, conn) = temp_db("merge-prior");
     let earlier = earlier_report(&conn, "a", "/p");
     respond(&conn, &earlier, json!({ "status": "declined", "note": "no thanks" }));
     for n in ["one", "two"] {

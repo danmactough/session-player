@@ -1037,8 +1037,13 @@ fn main() {
 }
 
 #[cfg(test)]
+#[path = "../../testutil/tempdir.rs"]
+mod tempdir;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use super::tempdir::TempDir;
 
     fn row(id: &str, project: &str, started_at: i64) -> SessionRow {
         SessionRow {
@@ -1127,8 +1132,7 @@ mod tests {
 
     #[test]
     fn another_machine_is_asked_for_a_repository_by_name_wherever_it_keeps_the_checkout() {
-        let dir = std::env::temp_dir().join(format!("sp-in-repo-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = TempDir::new("in-repo");
         let checkout = dir.join("somewhere/Widgets");
         std::fs::create_dir_all(checkout.join(".git")).unwrap();
         std::fs::write(checkout.join(".git/config"), "[remote \"origin\"]\n\turl = git@github.com:dan/widgets.git\n").unwrap();
@@ -1148,8 +1152,7 @@ mod tests {
     #[test]
     fn the_command_for_the_other_machine_runs_the_installed_sp_with_the_repository_name_intact() {
         use std::os::unix::fs::PermissionsExt;
-        let home = std::env::temp_dir().join(format!("sp-remote-command-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&home);
+        let home = TempDir::new("remote-command");
         let installed = home.join(".local/bin/sp");
         std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
         std::fs::write(&installed, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n").unwrap();
@@ -1158,11 +1161,11 @@ mod tests {
         let command = remote_command(&["export-project".into(), "--repo".into(), "github.com/it's/a repo".into(), "--since".into(), "42".into()]);
 
         // sshd hands the command to the account's shell as one string, without ~/.local/bin on the PATH.
-        let run = std::process::Command::new("sh").arg("-c").arg(&command).env("HOME", &home).env("PATH", "/usr/bin:/bin").output().unwrap();
+        let run = std::process::Command::new("sh").arg("-c").arg(&command).env("HOME", home.path()).env("PATH", "/usr/bin:/bin").output().unwrap();
         assert_eq!(String::from_utf8_lossy(&run.stdout), "export-project\n--repo\ngithub.com/it's/a repo\n--since\n42\n");
 
         std::fs::remove_file(&installed).unwrap();
-        let run = std::process::Command::new("sh").arg("-c").arg(&command).env("HOME", &home).env("PATH", "/usr/bin:/bin").output().unwrap();
+        let run = std::process::Command::new("sh").arg("-c").arg(&command).env("HOME", home.path()).env("PATH", "/usr/bin:/bin").output().unwrap();
         assert_eq!(run.status.code(), Some(127), "with no sp anywhere the shell reports the command as not found");
     }
 }

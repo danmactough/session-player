@@ -6,11 +6,12 @@ use std::sync::atomic::AtomicBool;
 
 use session_player_core::test_support::generate;
 
-fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("sp-generate-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+#[path = "../../testutil/tempdir.rs"]
+mod tempdir;
+use tempdir::TempDir;
+
+fn scratch(name: &str) -> TempDir {
+    TempDir::new(&format!("generate-{name}"))
 }
 
 /// A stand-in `claude` that records its arguments and stdin, then prints `reply`.
@@ -66,7 +67,6 @@ fn the_transcript_goes_in_on_stdin_and_claude_gets_no_tools() {
     // An empty folder of its own, so no project instructions are picked up.
     let cwd = std::fs::read_to_string(dir.join("cwd.txt")).unwrap();
     assert!(!cwd.trim().starts_with(&dir.to_string_lossy().to_string()) && cwd.contains("sp-claude-"), "{cwd}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -90,7 +90,6 @@ fn failures_and_cancellation_are_reported() {
 
     let missing = generate::run_claude(&claude(&dir.join("nope")), "S", "x", &serde_json::json!({}), &Arc::new(AtomicBool::new(false))).unwrap_err().to_string();
     assert!(missing.contains("Couldn't run"), "{missing}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 use session_player_core::test_support::{annotations as notes, index, parse};
@@ -171,17 +170,15 @@ fn long_sessions_are_split_and_the_metadata_merged() {
 
 const KEY: &str = "local:claude:abc";
 
-fn temp_db(name: &str) -> rusqlite::Connection {
-    let path = std::env::temp_dir().join(format!("sp-generate-db-{name}-{}.sqlite", std::process::id()));
-    for suffix in ["", "-wal", "-shm"] {
-        let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
-    }
-    index::open(&path).unwrap()
+fn temp_db(name: &str) -> (TempDir, rusqlite::Connection) {
+    let dir = TempDir::new(&format!("generate-db-{name}"));
+    let conn = index::open(&dir.join("index.sqlite")).unwrap();
+    (dir, conn)
 }
 
 #[test]
 fn regenerating_keeps_annotations_people_wrote_or_edited() {
-    let conn = temp_db("apply");
+    let (_dir, conn) = temp_db("apply");
     let events = fixture_events();
     notes::save_meta(&conn, &notes::SessionMeta { key: KEY.into(), components: vec!["mine".into()], ..Default::default() }).unwrap();
     let event = events.iter().find(|e| e.anchor.as_deref() == Some("e1")).unwrap();
@@ -248,7 +245,7 @@ fn real_claude_generates_valid_notes() {
     let mut ask = |system: &str, input: &str, schema: &serde_json::Value| generate::run_claude(&real, system, input, schema, &cancel);
     let out = generate::generate(&events, None, &mut ask, &mut |_, _| {}).unwrap();
     println!("{out:#?}");
-    let conn = temp_db("real");
+    let (_dir, conn) = temp_db("real");
     generate::apply(&conn, KEY, &out, &events).unwrap();
     println!("{:#?}", notes::meta(&conn, KEY).unwrap());
     assert!(!out.annotations.is_empty() || !out.components.is_empty());
@@ -256,7 +253,7 @@ fn real_claude_generates_valid_notes() {
 
 #[test]
 fn only_a_change_marks_a_generated_annotation_as_edited() {
-    let conn = temp_db("edit");
+    let (_dir, conn) = temp_db("edit");
     let events = fixture_events();
     let mut calls = Vec::new();
     let g = generate::generate(&events, None, &mut stub(answer(), &mut calls), &mut |_, _| {}).unwrap();
@@ -276,7 +273,7 @@ fn only_a_change_marks_a_generated_annotation_as_edited() {
 
 #[test]
 fn analyze_replaces_what_a_person_wrote_or_emptied() {
-    let conn = temp_db("replaces");
+    let (_dir, conn) = temp_db("replaces");
     let events = fixture_events();
     let mut calls = Vec::new();
     let g = generate::generate(&events, None, &mut stub(answer(), &mut calls), &mut |_, _| {}).unwrap();
@@ -305,7 +302,7 @@ fn analyze_replaces_what_a_person_wrote_or_emptied() {
     assert_eq!(meta.components, ["packages/auth", "apps/web"]);
 }
 
-fn config_dir(name: &str, settings: serde_json::Value, local: Option<serde_json::Value>) -> PathBuf {
+fn config_dir(name: &str, settings: serde_json::Value, local: Option<serde_json::Value>) -> TempDir {
     let dir = scratch(name);
     std::fs::write(dir.join("settings.json"), settings.to_string()).unwrap();
     if let Some(local) = local {

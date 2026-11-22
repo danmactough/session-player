@@ -88,9 +88,11 @@ fi
 
 VERSION=$(jq -r .version package.json)
 TAG="v$VERSION"
-DMG="src-tauri/target/release/bundle/dmg/Session Player_${VERSION}_aarch64.dmg"
-UPDATE_ARCHIVE="src-tauri/target/release/bundle/macos/Session Player.app.tar.gz"
-UPDATE_MANIFEST="src-tauri/target/release/bundle/macos/latest.json"
+# Cargo may be configured with a shared target folder, so ask it instead of assuming src-tauri/target.
+TARGET_DIR=$(cargo metadata --no-deps --format-version 1 --manifest-path src-tauri/Cargo.toml | jq -r .target_directory)
+DMG="$TARGET_DIR/release/bundle/dmg/Session Player_${VERSION}_aarch64.dmg"
+UPDATE_ARCHIVE="$TARGET_DIR/release/bundle/macos/Session Player.app.tar.gz"
+UPDATE_MANIFEST="$TARGET_DIR/release/bundle/macos/latest.json"
 
 step "Checking release $TAG"
 if [ "$PUBLISH" = 1 ] && tag_exists "$TAG"; then
@@ -125,13 +127,16 @@ step "Building the sp command"
 # Tauri bundles a program named <name>-<target triple> as Contents/MacOS/<name> and signs
 # it with the app, so the notarization below covers it.
 TARGET=$(rustc -vV | sed -n 's/^host: //p')
+# sp serves the web UI from dist/, embedded at compile time, so the web build must come first.
+# Without it, sp would ship a placeholder page.
+npm ci --ignore-scripts
+npm run build
 cargo build --release --locked --manifest-path src-tauri/Cargo.toml -p session-player-cli
 mkdir -p src-tauri/binaries
-cp src-tauri/target/release/sp "src-tauri/binaries/sp-$TARGET"
-[ "$(src-tauri/target/release/sp --version)" = "sp $VERSION" ] || die "sp reports $(src-tauri/target/release/sp --version), not $VERSION"
+cp "$TARGET_DIR/release/sp" "src-tauri/binaries/sp-$TARGET"
+[ "$("$TARGET_DIR/release/sp" --version)" = "sp $VERSION" ] || die "sp reports $("$TARGET_DIR/release/sp" --version), not $VERSION"
 
 step "Building, signing and notarizing the app"
-npm ci --ignore-scripts
 # Update archives and the bundled sp are turned on here, not in tauri.conf.json, so that
 # `npm run bundle`, `npm run app` and the tests keep working without the signing key or a built sp.
 npx tauri build --bundles app,dmg --config '{"bundle":{"createUpdaterArtifacts":true,"externalBin":["binaries/sp"]}}'

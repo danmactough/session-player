@@ -20,7 +20,7 @@
 
 | Usage | Development |
 |---|---|
-| [Install](#install)<br>[Add your sessions](#add-your-sessions)<br>[Find a session](#find-a-session)<br>[Search](#search)<br>[Read a session](#read-a-session)<br>[Continue a session](#continue-a-session)<br>[Add notes](#add-notes)<br>[Analyze sessions](#analyze-sessions)<br>[See patterns across sessions](#see-patterns-across-sessions)<br>[Get Insights](#get-insights)<br>[Share a session](#share-a-session)<br>[Use the command line](#use-the-command-line)<br>[Settings](#settings)<br>[Keyboard shortcuts](#keyboard-shortcuts) | [Run it locally](#run-it-locally)<br>[Test](#test)<br>[Build](#build)<br>[Release](#release)<br>[Add support for a new agent](#add-support-for-a-new-agent)<br>[How it works](#how-it-works)<br>[License](#license) |
+| [Install](#install)<br>[Choose a server](#choose-a-server)<br>[Add your sessions](#add-your-sessions)<br>[Find a session](#find-a-session)<br>[Search](#search)<br>[Read a session](#read-a-session)<br>[Continue a session](#continue-a-session)<br>[Add notes](#add-notes)<br>[Analyze sessions](#analyze-sessions)<br>[See patterns across sessions](#see-patterns-across-sessions)<br>[Get Insights](#get-insights)<br>[Share a session](#share-a-session)<br>[Use the command line](#use-the-command-line)<br>[Use it in a browser](#use-it-in-a-browser)<br>[Settings](#settings)<br>[Keyboard shortcuts](#keyboard-shortcuts) | [Run it locally](#run-it-locally)<br>[Test](#test)<br>[Build](#build)<br>[Release](#release)<br>[Add support for a new agent](#add-support-for-a-new-agent)<br>[How it works](#how-it-works)<br>[HTTP API](docs/api.md)<br>[License](#license) |
 
 ## Usage
 
@@ -31,6 +31,15 @@ The icons on the window's left edge switch between three views: **Transcripts** 
 ### Install
 
 Download the latest `.dmg` from [Releases](https://github.com/danmactough/session-player/releases/latest) and drag Session Player to Applications. It runs on Macs with Apple silicon.
+
+### Choose a server
+
+The app reads your sessions through a server, `sp serve`, which keeps running in the background so indexing, analysis and reports go on with the window closed. The first time the app opens, it asks which server to use:
+
+- **This computer.** The app installs the server as a login item for your user (a LaunchAgent; no administrator password), starts it, and connects. If it is installed but stopped, the app starts it. The server listens only on this computer until you pair another device with it.
+- **A paired server.** Run `sp pair` on the other computer and paste the string it prints. The app then reads that computer's sessions. See [Work from another machine](#work-from-another-machine).
+
+The app shows one server at a time. To switch, open **Settings**. After an update moves the app, it rewrites the login item to use the new copy of `sp`.
 
 ### Add your sessions
 
@@ -136,6 +145,51 @@ To work on one repository from several machines, pull its sessions from the othe
 - `sp sessions <host>` lists what the other machine has. `sp pull <host> --dry-run` shows what a pull would do without writing anything: each file it would add or replace, where, and each file it would leave because the copy here is newer.
 - Pulling again copies only what changed. Deletions don't travel: something deleted here comes back from a machine that still has it.
 
+#### Run the server
+
+`sp` runs each command through the server on this machine when one is running, so the app and the terminal share one index and one set of jobs. With no server running, it works on the database directly.
+
+```bash
+sp serve                              # run the server in this terminal until Ctrl-C
+sp service install                    # install it as a per-user service (launchd on a Mac, systemd on Linux) and start it
+sp service status                     # also: start, stop, uninstall
+sp --local analyze                    # run in this process, even with a server running
+sp cancel <job>                       # stop a job running on the server
+```
+
+- The server listens on `127.0.0.1:47800`. Settings, such as listening for other machines, are in `server.json` in the data folder; see [docs/api.md](docs/api.md#configuration-serverjson).
+- `sp service install` writes `~/Library/LaunchAgents/com.danmactough.sessionplayer.server.plist` on a Mac and `~/.config/systemd/user/session-player.service` on Linux. Its output goes to `server.log` in the logs folder. The service's `PATH` includes `~/.local/bin` and `~/.claude/local`, so it finds `claude`.
+- Jobs belong to the server. Pressing Ctrl-C during `sp analyze` or `sp report` over the server leaves the job running and prints its id; `sp cancel <id>` stops it.
+
+#### Work from another machine
+
+Pairing lets one machine use another's server over the network, with a token for each device and a certificate pinned at pairing.
+
+1. On the machine with the sessions, set `external_bind` and `advertise` in `server.json` (see [docs/api.md](docs/api.md#configuration-serverjson)) and restart the server.
+2. There, run `sp pair`. It prints a pairing string starting with `sp1.`, good once, for 5 minutes.
+3. On the other machine, run `sp connect <string> --name studio`, or paste the string into the app's server dialog.
+
+Then:
+
+```bash
+sp --server studio sessions --since 7d   # run any command on the paired server
+sp pull studio --since 30d               # copy the repository's sessions from it over HTTPS instead of SSH
+sp devices                               # on the server: list paired devices
+sp unpair <device>                       # on the server: revoke one
+```
+
+- `sp pull <name>` uses the paired server when `<name>` is one saved by `sp connect`, and SSH otherwise.
+- The server opens its network listener (port 47801) only while a device is paired or a pairing string is waiting to be used.
+
+### Use it in a browser
+
+`sp serve` also serves the app's interface, so you can use Session Player from a browser, including on Linux.
+
+1. With the server running, open http://127.0.0.1:47800.
+2. The page asks you to pair the browser. Run `sp pair` and paste the string.
+
+The browser stays paired until you remove it with `sp unpair` (`sp devices` lists it under the name you gave). To use a server on another machine, set it up as in [Work from another machine](#work-from-another-machine) and open `https://<advertise>:47801`. The certificate is self-signed, so the browser warns about it once. Native features, such as Reveal in Finder and opening a session in a terminal, are only in the app; export saves a download and import takes an upload.
+
 ### Settings
 
 Open **Settings** with `⌘,`, the gear at the bottom of the window's left edge, or **Session Player → Settings…**.
@@ -159,9 +213,13 @@ npm install
 npm run app
 ```
 
-`npm run app` starts a dev build with hot reload.
+`npm run app` starts a dev build with hot reload. A dev build has no `sp` inside it, so its server dialog can't install or start a server. Run one yourself first:
 
-To work on layout and styling without the native shell, run `sp serve`, then `npm run dev`, and open http://localhost:1420. Vite passes `/api` to the server on port 47800, and the page asks you to pair the browser (`sp pair`).
+```bash
+cargo run --manifest-path src-tauri/Cargo.toml -p session-player-cli -- serve
+```
+
+To work on layout and styling without the native shell, run that server, then `npm run dev`, and open http://localhost:1420. Vite passes `/api` to the server on port 47800, rewriting `Origin` so the server accepts it, and the page asks you to pair the browser (`sp pair`).
 
 ### Test
 
@@ -169,6 +227,8 @@ To work on layout and styling without the native shell, run `sp serve`, then `np
 npm run test:core   # parsers, indexing, annotations, bundles, sync
 npm run test:app    # the Tauri command layer
 npm run test:cli    # the sp command
+npm run test:server # the HTTP server: auth, pairing, events, images, the service unit
+npm run test:client # the HTTP client: pinning, pairing, pull
 npm run lint        # the frontend
 ```
 
@@ -195,10 +255,11 @@ The app is written to `src-tauri/target/release/bundle/macos/Session Player.app`
 To build `sp` on its own, which needs none of the app's GUI libraries and also works on Linux:
 
 ```bash
+npm run build
 cargo build --release --manifest-path src-tauri/Cargo.toml -p session-player-cli
 ```
 
-It is written to `src-tauri/target/release/sp`.
+It is written to `src-tauri/target/release/sp`. `sp` embeds the web interface from `dist/` when it is compiled, so run `npm run build` first. Without `dist/`, the build writes a placeholder page there and `sp serve` shows that instead of the app.
 
 ### Release
 
@@ -208,7 +269,7 @@ It is written to `src-tauri/target/release/sp`.
 
 Use `patch`, `minor`, `major` or an exact `x.y.z`. The script bumps the version with `npm version`, commits the bump, builds a signed and notarized `.dmg`, and publishes it as GitHub release `v<version>`.
 
-- The script builds `sp` and bundles it into the app as `Contents/MacOS/sp`, signed and notarized with it.
+- The script builds the web interface, then `sp` (which embeds it), and bundles `sp` into the app as `Contents/MacOS/sp`, signed and notarized with it.
 - Publishing the release starts the Release CLI workflow (`.github/workflows/release-cli.yml`), which builds statically linked `sp` binaries for Linux on x86-64 and ARM64 and adds them to the release. `install.sh` downloads them from there. To add them to an existing release, run the workflow by hand with the release's tag.
 
 - Without a bump argument, it releases the current version.
@@ -251,11 +312,16 @@ src-tauri/core/src/            no Tauri dependency, so its tests need no GUI lib
   generate.rs                  suggesting metadata and annotations with Claude Haiku via the claude CLI
   reports.rs                   reports on sets of sessions: takeaways and recommended actions, kept for good
   sync.rs                      copying a repository's sessions, analysis and reports between machines
-src-tauri/cli/src/             the sp command; depends on core only, so it builds without the GUI stack
+  ops/                         every operation the server, the CLI and the app run (see docs/api.md)
+src-tauri/server/src/          sp serve: HTTP server, auth, pairing, TLS, event stream, file watcher, service unit, embedded web UI
+src-tauri/client/src/          HTTP client with certificate pinning, finding the local server, paired servers, pull over HTTPS
+src-tauri/cli/src/             the sp command; builds without the GUI stack
   main.rs                      commands, session and report lookup, the doctor prompt, pull over SSH
+  backend.rs                   runs an operation in process, on the local server, or on a paired one
   markdown.rs                  a report as Markdown
 src-tauri/src/
-  lib.rs                       Tauri commands, background indexing, file watcher, spimg:// image protocol
+  lib.rs                       Tauri commands: native features, the local server, paired servers
+  relay.rs                     passes the page's requests to paired servers, so their tokens never reach the page
   apps.rs                      desktop apps that can open a session
   terminals.rs                 terminals that can run a resume command
 src/

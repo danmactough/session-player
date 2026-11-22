@@ -187,7 +187,10 @@ fn run_in(claude: &Claude, model: &str, cwd: &Path, system: &str, input: &str, s
             break status;
         }
         if cancel.load(Ordering::SeqCst) || started.elapsed() > TIMEOUT {
-            let _ = Command::new("/bin/kill").args(["-KILL", &format!("-{}", child.id())]).status();
+            // The shell's own kill, in the one spelling dash and bash both read as a negative
+            // group id. procps-ng 4.0.2's /bin/kill reads `-KILL -<pgid>` as a signal to process
+            // group 9, which killed whatever unrelated process led that group.
+            let _ = Command::new("/bin/sh").args(["-c", "kill -s KILL -- \"-$1\"", "sh", &child.id().to_string()]).status();
             let _ = child.kill();
             let _ = child.wait();
             if cancel.load(Ordering::SeqCst) {

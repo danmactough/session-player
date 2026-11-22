@@ -124,7 +124,8 @@ pub fn host_allowed(params: HostParams) -> bool {
     }
 }
 
-/// CORS: `tauri://localhost` (the app's webview) and the listener's own origins, never `*`.
+/// CORS: the app's webview (`tauri://localhost` on macOS, `http://tauri.localhost` on Linux and
+/// Windows) and the listener's own origins, never `*`.
 pub fn origin_allowed(origin: &str, own_origins: &[String]) -> bool {
-    origin == "tauri://localhost" || own_origins.iter().any(|o| o == origin)
+    origin == "tauri://localhost" || origin == "http://tauri.localhost" || own_origins.iter().any(|o| o == origin)
 }

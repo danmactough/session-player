@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
-import { api } from "../api";
+import { api, onServerEvent } from "../api";
+import { ServerError } from "./transport";
 import type { SessionRow } from "../types";
 import { sessionKey } from "./notes";
 
-export type QueueStatus = "waiting" | "checking" | "running" | "done" | "skipped" | "failed" | "cancelled";
+/** "interrupted": the server lost the job (it restarted while the session was being analyzed). */
+export type QueueStatus = "waiting" | "checking" | "running" | "done" | "skipped" | "failed" | "cancelled" | "interrupted";
 
 export interface QueueItem {
   /** The row's path; a pi branch has its own. */
@@ -18,6 +19,8 @@ export interface QueueItem {
   /** What Analyze focuses on; absent uses the built-in text. */
   focus?: string;
   status: QueueStatus;
+  /** The server's job for this session, once it has started. */
+  job?: string;
   progress?: { done: number; total: number };
   message?: string;
 }
@@ -93,7 +96,8 @@ export function useAnalyzeQueue() {
         // Cancelled while its notes were being checked.
         if (current.current !== next.id) return;
         patch(next.id, { status: "running", progress: { done: 0, total: 0 } });
-        await api.generateNotes(next.key, next.path, next.branch, next.focus);
+        const job = await api.generateNotes(next.key, next.path, next.branch, next.focus);
+        setItems((list) => list.map((i) => (i.id === next.id && i.status === "running" ? { ...i, job } : i)));
       } catch (e) {
         finish(next.id, { status: "failed", message: String(e) });
       }
@@ -102,19 +106,36 @@ export function useAnalyzeQueue() {
 
   useEffect(() => {
     const running = (key: string) => itemsRef.current.find((i) => i.key === key && i.status === "running");
+    const followed = () => itemsRef.current.filter((i) => i.status === "running" && i.job);
     const un = [
-      listen<{ key: string; done: number; total: number }>("generate-progress", (e) => {
-        const item = running(e.payload.key);
-        if (item) patch(item.id, { progress: { done: e.payload.done, total: e.payload.total } });
+      onServerEvent("generate-progress", ({ key, done, total }) => {
+        const item = running(key);
+        if (item) patch(item.id, { progress: { done, total } });
       }),
-      listen<{ key: string; error: string | null; cancelled: boolean }>("generate-done", (e) => {
-        const item = running(e.payload.key);
+      onServerEvent("generate-done", ({ key, error, cancelled }) => {
+        const item = running(key);
         if (!item) return;
-        const { error, cancelled } = e.payload;
         finish(item.id, { status: error ? "failed" : cancelled ? "cancelled" : "done", message: error ?? undefined });
       }),
+      // Sent when the page missed events, such as after the server restarted.
+      onServerEvent("snapshot", ({ running: jobs }) => {
+        const live = new Set(jobs.map((j) => j.id));
+        for (const i of followed()) if (!live.has(i.job!)) finish(i.id, { status: "interrupted" });
+      }),
+      // After a reconnect, ask about each followed job in case its end was missed.
+      onServerEvent("stream-open", () => {
+        for (const i of followed()) {
+          api.job(i.job!).then(
+            (j) => {
+              if (j.state === "running") return;
+              finish(i.id, { status: j.state === "failed" ? "failed" : j.state === "cancelled" ? "cancelled" : "done", message: j.error ?? undefined });
+            },
+            (e) => e instanceof ServerError && e.code === "not_found" && finish(i.id, { status: "interrupted" }),
+          );
+        }
+      }),
     ];
-    return () => un.forEach((p) => p.then((f) => f()));
+    return () => un.forEach((f) => f());
   }, [patch, finish]);
 
   const cancel = useCallback(

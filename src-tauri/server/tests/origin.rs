@@ -80,7 +80,7 @@ fn a_request_from_the_app_webview_or_the_listeners_own_origin_is_answered_with_t
     let addr = server.addrs().loopback;
     let bearer = format!("Bearer {}", read_token(&ctx.paths().data));
 
-    for origin in ["tauri://localhost".to_string(), format!("http://{addr}"), format!("http://localhost:{}", addr.port())] {
+    for origin in ["tauri://localhost".to_string(), "http://tauri.localhost".to_string(), format!("http://{addr}"), format!("http://localhost:{}", addr.port())] {
         let answer = raw(addr, RawRequest {
             method: "POST",
             path: "/api/v1/hello",

@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { save } from "@tauri-apps/plugin-dialog";
 import { api } from "../api";
 import type { ExportPreview, SessionRow } from "../types";
 import { basename, bytes } from "../lib/format";
+import { downloadBlob } from "../lib/download";
+import { isApp, saveDialog, saveFile } from "../lib/native";
 
 const RELATION: Record<string, string> = { parent: "Parent", subagent: "Subagent", branch: "Branch" };
 const CONTEXT_KIND = { instructions: "Instruction file", skill: "Skill", agent: "Agent definition", mcp: "MCP server instructions" };
@@ -10,8 +11,9 @@ const CONTEXT_KIND = { instructions: "Instruction file", skill: "Skill", agent: 
 /**
  * Shows exactly what an export bundle holds before it is written: the
  * sessions, which related sessions are left out, and every attachment. Saving
- * writes the bundle previewed here (the backend keeps it), so the file always
- * matches what the user reviewed.
+ * downloads the bundle previewed here (the server keeps it), so the file always
+ * matches what the user reviewed. The app writes it where the save dialog says;
+ * a browser saves it as a download.
  */
 export function ExportSheet({
   session,
@@ -29,6 +31,7 @@ export function ExportSheet({
   const [subagents, setSubagents] = useState<string[] | undefined>(undefined);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // The path written (app), or the downloaded file's name (browser).
   const [saved, setSaved] = useState<string | null>(null);
   // Asked for here when Settings has no name yet. The field stays while the
   // sheet is open, so typing the first letter doesn't make it vanish.
@@ -68,15 +71,20 @@ export function ExportSheet({
   const saveBundle = async () => {
     if (!preview) return;
     setErr(null);
-    const dest = await save({
-      title: "Export session",
-      defaultPath: preview.summary.file_name,
-      filters: [{ name: "Session bundle", extensions: ["spsession"] }],
-    });
-    if (!dest) return;
+    let dest: string | null = null;
+    if (isApp) {
+      dest = await saveDialog({
+        title: "Export session",
+        defaultPath: preview.summary.file_name,
+        filters: [{ name: "Session bundle", extensions: ["spsession"] }],
+      });
+      if (!dest) return;
+    }
     setBusy(true);
     try {
-      setSaved(await api.exportSave(preview.token, dest, authorName.trim()));
+      const file = await api.exportDownload(preview.token, authorName.trim());
+      if (dest) setSaved(await saveFile(dest, file.blob));
+      else setSaved(downloadBlob({ blob: file.blob, filename: file.filename ?? preview.summary.file_name }));
     } catch (e) {
       setErr(String(e));
     } finally {
@@ -213,13 +221,13 @@ export function ExportSheet({
         )}
 
         {err && <div className="sheet-err">{err}</div>}
-        {saved && <div className="sheet-saved">Saved to {saved}</div>}
+        {saved && <div className="sheet-saved">{isApp ? `Saved to ${saved}` : `Downloaded ${saved}`}</div>}
         <div className="sheet-foot">
-          {saved ? (
+          {saved && isApp ? (
             <button className="primary" onClick={() => api.reveal(saved)}>
               Reveal in Finder
             </button>
-          ) : (
+          ) : saved ? null : (
             <button className="primary" disabled={!preview || busy || needsName} onClick={saveBundle} title={needsName ? "Set your name first" : undefined}>
               Save…
             </button>

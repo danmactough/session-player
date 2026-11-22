@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
-import { message, open as openDialog } from "@tauri-apps/plugin-dialog";
-import { api } from "./api";
+import { api, onServerEvent } from "./api";
+import { message, onMenuEvent } from "./lib/native";
 import type { AnnotationKind, IndexStats, NoteSummary, OnConflict, Outcome, SearchHit, SessionRow, SortKey, Source } from "./types";
 import { KINDS, KIND_LABEL, OUTCOME_LABEL, sessionKey } from "./lib/notes";
 import { FilterMenu } from "./components/FilterMenu";
@@ -12,7 +11,7 @@ const ANALYZED_OPTIONS: { key: AnalyzedState; label: string }[] = [
   { key: "analyzed", label: "Analyzed" },
   { key: "not_analyzed", label: "Not analyzed" },
 ];
-import { basename, relTime, setHome, SOURCE_LABEL, tildify } from "./lib/format";
+import { basename, relTime, SOURCE_LABEL, tildify } from "./lib/format";
 import { SessionList, type ClickHow, type ListMemo } from "./components/SessionList";
 import { QueueStatus } from "./components/QueueStatus";
 import { AnalyzeNotice } from "./components/AnalyzeNotice";
@@ -223,7 +222,9 @@ export default function App() {
   const [sheet, setSheet] = useState(false);
   const [help, setHelp] = useState(false);
   const [exporting, setExporting] = useState<SessionRow | null>(null);
-  const [importing, setImporting] = useState<{ path: string; state: ImportState } | null>(null);
+  const [importing, setImporting] = useState<{ file: File; state: ImportState } | null>(null);
+  // The bundle picker. A file input works in the app and in a browser, and the page reads the file itself.
+  const bundleInput = useRef<HTMLInputElement>(null);
   // Resolves the promise of an Analyze notice waiting for OK or Cancel.
   const [noticeAsk, setNoticeAsk] = useState<{ count: number; resolve: (ok: boolean) => void } | null>(null);
   // The prompt editor, open for Analyze or for a report.
@@ -246,25 +247,16 @@ export default function App() {
     insights: { list: {} },
   });
 
-  const importBundle = useCallback(async (path: string, onConflict?: OnConflict) => {
-    const file = basename(path);
-    setImporting({ path, state: { status: "working" } });
+  const importBundle = useCallback(async (file: File, onConflict?: OnConflict) => {
+    setImporting({ file, state: { status: "working" } });
     try {
-      setImporting({ path, state: { status: "done", file, report: await api.importBundle(path, onConflict) } });
+      setImporting({ file, state: { status: "done", file: file.name, report: await api.importBundle(file, onConflict) } });
     } catch (e) {
-      setImporting({ path, state: { status: "failed", file, error: String(e) } });
+      setImporting({ file, state: { status: "failed", file: file.name, error: String(e) } });
     }
   }, []);
 
-  const chooseBundle = useCallback(async () => {
-    const path = await openDialog({
-      title: "Import session",
-      multiple: false,
-      directory: false,
-      filters: [{ name: "Session bundle", extensions: ["spsession"] }],
-    });
-    if (typeof path === "string") await importBundle(path);
-  }, [importBundle]);
+  const chooseBundle = useCallback(() => bundleInput.current?.click(), []);
 
   // Titles, outcomes, tags and annotation kinds people have added, by session key.
   const [notes, setNotes] = useState<Map<string, NoteSummary>>(() => new Map());
@@ -290,7 +282,6 @@ export default function App() {
   }, [reloadNotes, showNotice]);
 
   useEffect(() => {
-    api.homeDir().then(setHome);
     api
       .getSetting("prefs")
       .then((raw) => {
@@ -320,32 +311,37 @@ export default function App() {
       .catch(() => setPrefs(DEFAULT_PREFS));
     reload();
     const un = [
-      listen<{ done: number; total: number }>("index-progress", (e) => setProgress(e.payload)),
-      listen<IndexStats>("index-done", (e) => {
+      onServerEvent("index-progress", (p) => setProgress(p)),
+      onServerEvent("index-done", (s) => {
         setProgress(null);
-        setStats(e.payload);
-        const s = e.payload;
+        setStats(s);
         showNotice(`Indexed · ${s.elapsed_ms} ms`, NOTICE_MS);
         // scanned === 0 is the synthetic event sent after a folder is removed.
         if (s.updated || s.removed || s.scanned === 0) reload();
       }),
-      listen("import-session", () => void chooseBundle()),
+      onMenuEvent("import-session", chooseBundle),
       // Generated notes change titles, outcomes and search hits, even for a session no longer open.
-      listen("generate-done", () => {
+      onServerEvent("generate-done", () => {
         reloadNotes();
         setVersion((v) => v + 1);
       }),
       // Settings… in the app menu (⌘,).
-      listen("open-settings", () => {
+      onMenuEvent("open-settings", () => {
         setHelp(false);
         setSheet(true);
       }),
-      listen<string>("index-error", (e) => {
+      onServerEvent("index-error", (error) => {
         setProgress(null);
-        showNotice(`Index error: ${e.payload}`, 8000);
+        showNotice(`Index error: ${error}`, 8000);
+      }),
+      // Events were missed (the server restarted, or this page fell behind): an index pass may
+      // have ended unseen, and anything may have changed.
+      onServerEvent("snapshot", ({ running }) => {
+        if (!running.some((j) => j.kind === "index")) setProgress(null);
+        reload();
       }),
     ];
-    return () => un.forEach((p) => p.then((f) => f()));
+    return () => un.forEach((f) => f());
   }, [reload, chooseBundle, reloadNotes, showNotice]);
 
   const update = useCallback((patch: Partial<Prefs>) => {
@@ -385,8 +381,7 @@ export default function App() {
   const updater = useUpdater({ autoCheck: prefs !== null && p.autoCheckUpdates, onNotice: showNotice });
   const { checkNow } = updater;
   useEffect(() => {
-    const un = listen("check-for-updates", () => void checkNow());
-    return () => void un.then((f) => f());
+    return onMenuEvent("check-for-updates", () => void checkNow());
   }, [checkNow]);
 
   useEffect(() => applyTheme(p.theme), [p.theme]);
@@ -880,7 +875,7 @@ export default function App() {
   // Getting insights analyzes the chosen sessions that need it first (all of
   // them when re-analyzing is ticked), waits for that to finish, then writes
   // the report on every chosen session.
-  const [pendingReport, setPendingReport] = useState<{ picks: { key: string; title: string }[]; waiting: string[]; focus?: string } | null>(null);
+  const [pendingReport, setPendingReport] = useState<{ picks: string[]; waiting: string[]; focus?: string } | null>(null);
   // Whether the waited-for sessions have reached the queue yet; until then, absent doesn't mean finished.
   const pendingSeen = useRef(false);
   const getInsights = useCallback(async (edited?: string) => {
@@ -889,7 +884,7 @@ export default function App() {
     if (!rows.length) return;
     const toAnalyze = p.reanalyzeForInsights ? rows : rows.filter((s) => !notes.get(sessionKey(s))?.analyzed);
     if (toAnalyze.length && !(await confirmGenerate(toAnalyze.length))) return;
-    const picks = rows.map((s) => ({ key: sessionKey(s), title: s.title }));
+    const picks = rows.map((s) => s.path);
     clearPicked();
     setBuilding(false);
     // The list shows the report on its way; it opens when it's saved.
@@ -1251,7 +1246,7 @@ export default function App() {
                         if (a === "analyze") {
                           if (choosing) stopChoosing();
                           else startChoosing();
-                        } else if (a === "import") void chooseBundle();
+                        } else if (a === "import") chooseBundle();
                       }}
                       trigger={
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
@@ -1471,10 +1466,22 @@ export default function App() {
           onClose={() => setExporting(null)}
         />
       )}
+      <input
+        ref={bundleInput}
+        type="file"
+        accept=".spsession"
+        hidden
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          // Cleared so choosing the same file again still fires a change.
+          e.target.value = "";
+          if (file) void importBundle(file);
+        }}
+      />
       {importing && (
         <ImportSheet
           state={importing.state}
-          onResolve={(choice) => void importBundle(importing.path, choice)}
+          onResolve={(choice) => void importBundle(importing.file, choice)}
           onClose={() => setImporting(null)}
         />
       )}

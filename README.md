@@ -161,7 +161,7 @@ npm run app
 
 `npm run app` starts a dev build with hot reload.
 
-To work on layout and styling without the native shell, run `npm run dev` and open http://localhost:1420. Outside Tauri, `src/devBridge.ts` stands in for the backend with synthetic sessions.
+To work on layout and styling without the native shell, run `sp serve`, then `npm run dev`, and open http://localhost:1420. Vite passes `/api` to the server on port 47800, and the page asks you to pair the browser (`sp pair`).
 
 ### Test
 
@@ -233,7 +233,7 @@ Supporting a new agent means teaching the backend to read its session files, the
    - `src/components/AppIcon.tsx`: add its glyph to `GLYPHS` and `GLYPH_FOR`.
    - `src/index.css`: add a `--<agent>` color in all three theme blocks, the `.src-<agent>` rules, and the `.glyph-<agent>` rule.
 5. **Add the resume command.** Change both `resumeCommand` in `src/lib/format.ts` and `resume_command` in `src-tauri/src/terminals.rs`, and keep the two the same. If the agent has a desktop app, add it to `targets` and `SCHEMES` in `src-tauri/src/apps.rs`, and to `HOME_APP` in `src/components/OpenButton.tsx`.
-6. **Update the text that lists the agents.** These are the note in `src/components/SettingsSheet.tsx`, the `SYSTEM` prompt in `src-tauri/core/src/generate.rs`, `source` in `docs/bundle-format.md`, the sample data in `src/devBridge.ts`, and this README.
+6. **Update the text that lists the agents.** These are the note in `src/components/SettingsSheet.tsx`, the `SYSTEM` prompt in `src-tauri/core/src/generate.rs`, `source` in `docs/bundle-format.md`, and this README.
 7. **Add tests.** Add a small synthetic log to `src-tauri/core/tests/fixtures` and test it in `src-tauri/core/tests/parse.rs`, then check the parser against real sessions with the commands under [Test](#test).
 
 The compilers catch some of these changes: `cargo build` reports missing arms in `as_str` and `parse_file`, and `npm run build` reports a missing `SOURCE_LABEL` entry, zero count or `resumeCommand` case. They don't catch the lists and string matches, such as `ALL_SOURCES`, `SOURCES`, `GLYPH_FOR` and `resume_command`.
@@ -261,7 +261,6 @@ src-tauri/src/
 src/
   App.tsx                      sidebar, filters, search, keyboard navigation
   components/                  SessionList (virtualized), Transcript (virtualized), SettingsSheet
-  devBridge.ts                 synthetic backend for previewing the UI in a browser
 ```
 
 #### Index

@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ask } from "@tauri-apps/plugin-dialog";
-import { relaunch } from "@tauri-apps/plugin-process";
-import { check, type Update } from "@tauri-apps/plugin-updater";
 import { api } from "../api";
+import { ask, checkForUpdate, isApp, relaunch, type Update } from "./native";
 
 const FIRST_CHECK_DELAY_MS = 5_000;
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
@@ -35,7 +33,7 @@ export function useUpdater({ autoCheck, onNotice }: Options) {
 
   const runCheck = useCallback(
     async (manual: boolean) => {
-      if (checkingRef.current) return;
+      if (checkingRef.current || !isApp) return;
       // Replacing the Update object here would discard a finished or running download.
       const { phase } = statusRef.current;
       if (phase === "downloading" || phase === "ready" || phase === "installing") {
@@ -46,7 +44,7 @@ export function useUpdater({ autoCheck, onNotice }: Options) {
       setChecking(true);
       if (manual) setCheckResult(null);
       try {
-        const found = await check();
+        const found = await checkForUpdate();
         const previous = statusRef.current;
         const sameVersion = previous.phase === "available" && previous.version === found?.version;
         await update.current?.close().catch(() => {});
@@ -132,7 +130,7 @@ export function useUpdater({ autoCheck, onNotice }: Options) {
 
   useEffect(() => {
     // `tauri dev` and the browser preview shouldn't offer to replace themselves with a release.
-    if (!autoCheck || import.meta.env.DEV) return;
+    if (!autoCheck || !isApp || import.meta.env.DEV) return;
     const first = window.setTimeout(() => void runCheck(false), FIRST_CHECK_DELAY_MS);
     const repeat = window.setInterval(() => void runCheck(false), CHECK_INTERVAL_MS);
     return () => {

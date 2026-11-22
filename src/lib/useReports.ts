@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
-import { api } from "../api";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { api, onServerEvent } from "../api";
 import type { ReportSummary } from "../types";
+import { ServerError } from "./transport";
+
+const INTERRUPTED = "Interrupted: the server stopped while this report was being written.";
 
 /** A report being written in the background, or one that failed. */
 export interface ReportJob {
@@ -20,6 +22,10 @@ export function useReports(onWritten: (id: string) => void) {
   // Until the first list arrives, "no reports" isn't known yet.
   const [loaded, setLoaded] = useState(false);
   const [jobs, setJobs] = useState<ReportJob[]>([]);
+  const jobsRef = useRef(jobs);
+  useLayoutEffect(() => {
+    jobsRef.current = jobs;
+  });
   const written = useRef(onWritten);
   useEffect(() => {
     written.current = onWritten;
@@ -37,25 +43,46 @@ export function useReports(onWritten: (id: string) => void) {
 
   useEffect(() => {
     reload();
+    const fail = (job: string, error: string) => setJobs((list) => list.map((j) => (j.job === job ? { ...j, error, progress: undefined } : j)));
+    const followed = () => jobsRef.current.filter((j) => !j.error);
     const un = [
-      listen<{ job: string; done: number; total: number }>("report-progress", (e) => {
-        const { job, done, total } = e.payload;
+      onServerEvent("report-progress", ({ job, done, total }) => {
         setJobs((list) => list.map((j) => (j.job === job ? { ...j, progress: { done, total } } : j)));
       }),
-      listen<{ job: string; report: string | null; error: string | null; cancelled: boolean }>("report-done", (e) => {
-        const { job, report, error } = e.payload;
+      onServerEvent("report-done", ({ job, report, error }) => {
         // A failed job stays, with its error, until dismissed; others go.
-        setJobs((list) => (error ? list.map((j) => (j.job === job ? { ...j, error, progress: undefined } : j)) : list.filter((j) => j.job !== job)));
+        if (error) fail(job, error);
+        else setJobs((list) => list.filter((j) => j.job !== job));
         if (report) {
           reload();
           written.current(report);
         }
       }),
+      // Sent when the page missed events, such as after the server restarted.
+      onServerEvent("snapshot", ({ running }) => {
+        const live = new Set(running.map((j) => j.id));
+        for (const j of followed()) if (!live.has(j.job)) fail(j.job, INTERRUPTED);
+      }),
+      // After a reconnect, ask about each followed job in case its end was missed.
+      onServerEvent("stream-open", () => {
+        for (const j of followed()) {
+          api.job(j.job).then(
+            (found) => {
+              if (found.state === "running") return;
+              if (found.state === "failed") fail(j.job, found.error ?? "The report failed.");
+              else setJobs((list) => list.filter((x) => x.job !== j.job));
+              reload();
+            },
+            (e) => e instanceof ServerError && e.code === "not_found" && fail(j.job, INTERRUPTED),
+          );
+        }
+      }),
     ];
-    return () => un.forEach((p) => p.then((f) => f()));
+    return () => un.forEach((f) => f());
   }, [reload]);
 
-  const start = useCallback(async (sessions: { key: string; title: string }[], model?: string, focus?: string) => {
+  /** `sessions` are session files as list_sessions gives them. */
+  const start = useCallback(async (sessions: string[], model?: string, focus?: string) => {
     const job = await api.generateReport(sessions, model, focus);
     setJobs((list) => [{ job, sessions: sessions.length }, ...list]);
   }, []);

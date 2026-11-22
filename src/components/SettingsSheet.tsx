@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { getVersion } from "@tauri-apps/api/app";
-import { open } from "@tauri-apps/plugin-dialog";
 import { api } from "../api";
+import { appVersion, chooseFolder, isApp } from "../lib/native";
+import { useServer } from "../lib/useServer";
 import type { IndexStats, LibraryError, RootInfo } from "../types";
 import { basename, tildify } from "../lib/format";
 import type { Theme } from "../lib/theme";
@@ -63,7 +63,11 @@ export function SettingsSheet({
   const [suggested, setSuggested] = useState<string[]>([]);
   const [damaged, setDamaged] = useState<LibraryError[]>([]);
   const [err, setErr] = useState<string | null>(null);
-  const [appVersion, setAppVersion] = useState<string | null>(null);
+  const [shellVersion, setAppVersion] = useState<string | null>(null);
+  const [typedPath, setTypedPath] = useState("");
+  const { server, switchServer } = useServer();
+  // The folder dialog shows this computer's folders, which only its own server can read.
+  const pickFolders = isApp && server.kind === "local";
 
   const refresh = () => {
     api.getRoots().then(setRoots).catch((e) => setErr(String(e)));
@@ -72,7 +76,7 @@ export function SettingsSheet({
   };
   useEffect(refresh, [version]);
   useEffect(() => {
-    getVersion().then(setAppVersion).catch(() => {});
+    if (isApp) appVersion().then(setAppVersion).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -83,9 +87,13 @@ export function SettingsSheet({
 
   const add = async (path?: string) => {
     setErr(null);
-    const p = path ?? ((await open({ directory: true, multiple: false, title: "Choose a session directory" })) as string | null);
+    const p = path ?? (pickFolders ? await chooseFolder({ title: "Choose a session directory" }) : typedPath.trim());
     if (!p) return;
-    await api.addRoot(p).catch((e) => setErr(String(e)));
+    const added = await api.addRoot(p).then(
+      () => true,
+      (e) => (setErr(String(e)), false),
+    );
+    if (added && !path && !pickFolders) setTypedPath("");
     refresh();
   };
 
@@ -103,6 +111,18 @@ export function SettingsSheet({
             Done
           </button>
         </div>
+        {isApp && (
+          <>
+            <h3 className="settings-head">Server</h3>
+            <div className="sheet-foot">
+              <span className="server-name">{server.name}</span>
+              <button className="ghost" onClick={switchServer}>
+                Switch…
+              </button>
+            </div>
+          </>
+        )}
+
         <h3 className="settings-head">Appearance</h3>
         <div className="segmented" role="radiogroup" aria-label="Appearance">
           {THEMES.map((t) => (
@@ -133,7 +153,7 @@ export function SettingsSheet({
         </ul>
         {suggested.length > 0 && (
           <div className="suggest">
-            <div className="suggest-head">Found on this Mac</div>
+            <div className="suggest-head">Found on {server.kind === "local" ? "this Mac" : server.name}</div>
             {suggested.map((p) => (
               <button key={p} className="chip" onClick={() => add(p)}>
                 + {tildify(p)}
@@ -142,9 +162,21 @@ export function SettingsSheet({
           </div>
         )}
         {err && <div className="sheet-err">{err}</div>}
+        {!pickFolders && (
+          <label className="setting-field">
+            <span>Folder on {server.name}</span>
+            <input
+              value={typedPath}
+              onChange={(e) => setTypedPath(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && void add()}
+              placeholder="~/.claude/projects"
+              spellCheck={false}
+            />
+          </label>
+        )}
         <div className="sheet-foot">
-          <button className="primary" onClick={() => add()}>
-            Add folder…
+          <button className="primary" disabled={!pickFolders && !typedPath.trim()} onClick={() => add()}>
+            {pickFolders ? "Add folder…" : "Add folder"}
           </button>
           <button className="ghost" disabled={indexing} onClick={() => api.reindex(true)}>
             {indexing ? "Indexing…" : "Rebuild index"}
@@ -198,7 +230,7 @@ export function SettingsSheet({
             </span>
           </span>
         </label>
-        <div className="setting-field">
+        {isApp && server.kind === "local" && <div className="setting-field">
           <span>Analyze log</span>
           <button className="ghost setting-button" onClick={() => void api.openAnalyzeLog()}>
             Open Log
@@ -206,7 +238,7 @@ export function SettingsSheet({
           <span className="setting-note">
             Each Analyze and report run, and each call to claude. When one fails, the log has claude&rsquo;s own error output.
           </span>
-        </div>
+        </div>}
 
         <h3 className="settings-head">Imported sessions</h3>
         <p className="sheet-note">
@@ -252,24 +284,28 @@ export function SettingsSheet({
           {hidden.length === 0 && <li className="none">None. Hover a project in the sidebar and click Hide.</li>}
         </ul>
 
-        <h3 className="settings-head">Updates</h3>
-        <label className="setting-toggle">
-          <input type="checkbox" checked={autoCheckUpdates} onChange={(e) => onAutoCheckUpdates(e.target.checked)} />
-          <span>
-            Check for updates automatically
-            <span className="setting-note">
-              Asks GitHub for the latest version when the app opens and every 6 hours. Your sessions aren&rsquo;t sent,
-              and nothing installs until you choose to.
-            </span>
-          </span>
-        </label>
-        <div className="sheet-foot">
-          <button className="ghost" disabled={checkingForUpdates} onClick={onCheckForUpdates}>
-            {checkingForUpdates ? "Checking…" : "Check now"}
-          </button>
-          {appVersion && <span className="sheet-stats">Version {appVersion}</span>}
-        </div>
-        {updateCheckResult && <p className="sheet-note">{updateCheckResult}</p>}
+        {isApp && (
+          <>
+            <h3 className="settings-head">Updates</h3>
+            <label className="setting-toggle">
+              <input type="checkbox" checked={autoCheckUpdates} onChange={(e) => onAutoCheckUpdates(e.target.checked)} />
+              <span>
+                Check for updates automatically
+                <span className="setting-note">
+                  Asks GitHub for the latest version when the app opens and every 6 hours. Your sessions aren&rsquo;t sent,
+                  and nothing installs until you choose to.
+                </span>
+              </span>
+            </label>
+            <div className="sheet-foot">
+              <button className="ghost" disabled={checkingForUpdates} onClick={onCheckForUpdates}>
+                {checkingForUpdates ? "Checking…" : "Check now"}
+              </button>
+              {shellVersion && <span className="sheet-stats">Version {shellVersion}</span>}
+            </div>
+            {updateCheckResult && <p className="sheet-note">{updateCheckResult}</p>}
+          </>
+        )}
       </div>
     </div>
   );

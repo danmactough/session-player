@@ -368,3 +368,80 @@ export interface ReportSummary {
   sessions: number;
   actions: number;
 }
+
+export interface HelloResponse {
+  api_version: number;
+  api_minor: number;
+  server_version: string;
+  /** The server's home folder, for showing its paths with `~`. */
+  home: string;
+  loopback_only: boolean;
+}
+
+export type JobKind = "index" | "generate" | "analyze" | "report";
+export type JobState = "running" | "finished" | "failed" | "cancelled";
+
+export interface Job {
+  id: string;
+  kind: JobKind;
+  state: JobState;
+  /** The session key of a generate job. */
+  key: string | null;
+  progress: { done: number; total: number } | null;
+  started_at: number;
+  ended_at: number | null;
+  error: string | null;
+}
+
+/** What the server pushes on its event stream, by name. */
+export interface ServerEventPayloads {
+  "index-started": undefined;
+  "index-progress": { done: number; total: number };
+  "index-done": IndexStats;
+  "index-error": string;
+  "generate-progress": { key: string; done: number; total: number };
+  "generate-done": { key: string; error: string | null; cancelled: boolean; rejected: number };
+  "report-progress": { job: string; done: number; total: number };
+  "report-done": { job: string; report: string | null; error: string | null; cancelled: boolean };
+  "analyze-progress": { job: string; done: number; total: number; key: string | null; title: string | null; summary: string | null; error: string | null };
+  "analyze-done": { job: string; analyzed: number; skipped: number; failed: number; cancelled: boolean };
+  /** Sent in place of events the page missed: the jobs running now. */
+  snapshot: { running: Job[] };
+}
+
+export type ServerEventName = keyof ServerEventPayloads;
+
+export interface ServerEvent {
+  id: number;
+  at: number;
+  event: { [N in ServerEventName]: { name: N; payload: ServerEventPayloads[N] } }[ServerEventName];
+}
+
+/** The local server, as the app shell sees it. */
+export type LocalServerState = { state: "not_installed" } | { state: "installed" } | { state: "running"; port: number };
+
+/** A paired remote server saved in the shell's servers.json. */
+export interface ServerRef {
+  name: string;
+  address: string;
+  port: number;
+  pinned: boolean;
+}
+
+export interface PullCounts {
+  added: number;
+  replaced: number;
+  kept_local: number;
+  unchanged: number;
+}
+
+export interface PullResponse {
+  exporter: string;
+  dry_run: boolean;
+  files: { path: string; change: string; is_session: boolean }[];
+  sessions: PullCounts;
+  analyses: PullCounts;
+  annotations: PullCounts;
+  responses: PullCounts;
+  reports_added: number;
+}

@@ -5,13 +5,10 @@ import App from "./App.tsx";
 import { api } from "./api";
 import { applyTheme, storedTheme } from "./lib/theme";
 import { openLinksInBrowser } from "./lib/links";
+import { ServerProvider } from "./lib/ServerProvider";
 
 applyTheme(storedTheme());
 openLinksInBrowser();
-
-if (import.meta.env.DEV && !("__TAURI_INTERNALS__" in window)) {
-  await import("./devBridge");
-}
 
 window.addEventListener("error", (e) => {
   // The virtualizer's ResizeObserver can trip this benign browser warning.
@@ -22,6 +19,8 @@ window.addEventListener("unhandledrejection", (e) => api.log("error", `unhandled
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <App />
+    <ServerProvider>
+      <App />
+    </ServerProvider>
   </StrictMode>,
 );

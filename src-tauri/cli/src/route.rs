@@ -25,8 +25,20 @@ pub struct RouteParams<'a> {
 }
 
 pub fn resolve(params: RouteParams) -> anyhow::Result<Route> {
-    let _ = params;
-    todo!("route::resolve")
+    if let Some(name) = params.server_flag {
+        if params.servers.iter().any(|s| s.name == name) {
+            return Ok(Route::Remote { name: name.to_string() });
+        }
+        anyhow::bail!("No server is named {name}. Pair with it first: sp connect <pairing string> --name {name}");
+    }
+    if params.local_flag {
+        return Ok(Route::Local);
+    }
+    match params.probe {
+        LocalProbe::Live { port, token: Some(token) } => Ok(Route::LocalServer { port, token }),
+        // Without its token the server can't be called, so the command runs here, as with --local.
+        LocalProbe::Live { token: None, .. } | LocalProbe::NotLive => Ok(Route::Local),
+    }
 }
 
 #[cfg(test)]

@@ -1,31 +1,40 @@
 //! `sp`: Session Player from the command line. It reads and writes the same
 //! database as the app, so analysis and reports made here show up there.
 
-// Wired into the commands by the green half of batch 5.
-#[allow(dead_code)]
 mod backend;
 mod markdown;
-#[allow(dead_code)]
 mod route;
 
 use std::collections::{HashMap, HashSet};
 use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use anyhow::{Context, bail};
+use anyhow::{Context, anyhow, bail};
 use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, TimeZone};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use rusqlite::Connection;
-use session_player_core::model::{Event, SessionRow, Source};
-use session_player_core::{annotations, bundle, generate, index, parse, reports, runlog, sync};
+use session_player_client::{
+    Client, ConnectParams, LocalProbe, PullChange, PullCounts, PullRequest, PullResponse, ServersStore, check_compat, connect, probe_local,
+};
+use session_player_core::model::SessionRow;
+use session_player_core::ops::{
+    self, ACTION_RESPONSES, ACTION_VERDICTS, ANALYZE_SESSIONS, ActionResponseChange, ActionResponsesRequest, ActionVerdictsRequest, AnalyzeSessionsRequest,
+    CANCEL_JOB, CancelJobRequest, GENERATE_REPORT, GET_REPORT, GET_ROOTS, GenerateReportRequest, GetReportRequest, GetRootsRequest, HELLO, HelloRequest, Job,
+    JobId, JobState, LIST_REPORTS, LIST_SESSIONS, ListReportsRequest, ListSessionsRequest, NOTE_SUMMARIES, NoteSummariesRequest, Paths, PushedEvent,
+    REINDEX, REPORT_ANNOTATIONS, ReindexRequest, ReportAnnotationsRequest, SESSION_NOTES, SET_ACTION_RESPONSE, SessionNotesRequest, SetActionResponseRequest,
+};
+use session_player_core::{annotations, generate, index, reports, sync};
+use session_player_server::pairing::{DeviceInfo, DevicesRequest, PairRequest, PairResponse, UnpairRequest};
+use session_player_server::service::{ServiceAction, ServiceReport, ServiceRequest};
+use session_player_server::{ServeParams, ServerConfig, serve};
+
+use backend::{Backend, Detached, RunParams};
+use route::{Route, RouteParams};
 
 /// The app's identifier, which names its data folder.
 const APP_ID: &str = "com.danmactough.sessionplayer";
-
-/// How many sessions are analyzed at the same time.
-const ANALYZE_AT_ONCE: usize = 3;
 
 #[derive(Parser)]
 #[command(name = "sp", version, about = "Session Player from the command line")]
@@ -240,13 +249,6 @@ enum Status {
     Considering,
 }
 
-struct Paths {
-    data: PathBuf,
-    db: PathBuf,
-    library: PathBuf,
-    log: PathBuf,
-}
-
 /// The folders the app uses (Tauri's `app_data_dir` and `app_log_dir`), so
 /// both work on one database. `SESSION_PLAYER_DATA_DIR` points both elsewhere.
 fn paths() -> anyhow::Result<Paths> {
@@ -263,7 +265,7 @@ fn paths() -> anyhow::Result<Paths> {
         }
     };
     std::fs::create_dir_all(&data).with_context(|| format!("Couldn't create {}", data.display()))?;
-    Ok(Paths { db: data.join("index.sqlite"), library: data.join("library"), log: logs.join("analyze.log"), data })
+    Ok(Paths { db: data.join("index.sqlite"), library: data.join("library"), logs, data })
 }
 
 /// Registers the agents' session folders. They are added once, the first time
@@ -292,6 +294,21 @@ fn open_indexed(paths: &Paths) -> anyhow::Result<Connection> {
         }
     })?;
     Ok(conn)
+}
+
+/// Where the command runs (see `route`), and the paired server's name when it is one.
+fn open_backend(cli: &Cli, paths: &Paths, index: bool) -> anyhow::Result<(Backend, Option<String>)> {
+    let servers = match &cli.server {
+        Some(_) => ServersStore::new(&paths.data).list()?,
+        None => Vec::new(),
+    };
+    let probe = if cli.local || cli.server.is_some() { LocalProbe::NotLive } else { probe_local(&paths.data) };
+    let route = route::resolve(RouteParams { local_flag: cli.local, server_flag: cli.server.as_deref(), probe, servers: &servers })?;
+    let remote = match &route {
+        Route::Remote { name } => Some(name.clone()),
+        _ => None,
+    };
+    Ok((Backend::open(backend::OpenParams { route, paths, index })?, remote))
 }
 
 /// The project a folder belongs to, named as the index names it.
@@ -333,6 +350,11 @@ fn parse_since(text: &str, now: DateTime<Local>) -> anyhow::Result<i64> {
     bail!("Couldn't read --since {text}. Use a date (2026-11-01), a date and time (2026-11-01T09:30) or an age (7d, 12h, 2w).")
 }
 
+/// A time resolved here, sent as UTC, so the other machine's time zone doesn't change what "since" means.
+fn utc(ms: i64) -> Option<String> {
+    chrono::DateTime::from_timestamp_millis(ms).map(|t| t.to_rfc3339())
+}
+
 /// A project's sessions, most recently active first, optionally only those
 /// started at or after `since`. Subagents are left out: their parent's
 /// transcript is the one a person reads and analyzes.
@@ -343,15 +365,29 @@ fn in_scope<'a>(rows: &'a [SessionRow], project: &str, since: Option<i64>) -> Ve
         .collect()
 }
 
-fn scoped<'a>(rows: &'a [SessionRow], scope: &Scope) -> anyhow::Result<(String, Vec<&'a SessionRow>)> {
-    let project = project_of(&scope.project)?;
+/// The project's sessions and the name to report them under. A paired server keeps its checkout
+/// in a folder of its own, so there they are the sessions of the same repository, without
+/// imported copies, as `sp sessions <host>` lists them.
+fn scope_rows(backend: &Backend, remote: Option<&str>, project: &ProjectArg, since: Option<i64>) -> anyhow::Result<(String, Vec<SessionRow>)> {
+    let project = project_of(project)?;
+    if remote.is_some() {
+        let repo = sync::repo_name(Path::new(&project)).with_context(|| format!("Couldn't work out which repository {project} is"))?;
+        let rows = backend.call(&LIST_SESSIONS, &ListSessionsRequest { repo: Some(repo.0.clone()), since: since.and_then(utc) })?;
+        return Ok((repo.0, rows.into_iter().filter(|r| !r.is_subagent && !r.from_bundle).collect()));
+    }
+    let rows = backend.call(&LIST_SESSIONS, &ListSessionsRequest::default())?;
+    let found = in_scope(&rows, &project, since).into_iter().cloned().collect();
+    Ok((project, found))
+}
+
+fn scoped(backend: &Backend, remote: Option<&str>, scope: &Scope) -> anyhow::Result<(String, Vec<SessionRow>)> {
     let since = scope.since.as_deref().map(|s| parse_since(s, Local::now())).transpose()?;
-    let found = in_scope(rows, &project, since);
+    let (label, found) = scope_rows(backend, remote, &scope.project, since)?;
     if found.is_empty() {
         let range = scope.since.as_deref().map(|s| format!(" since {s}")).unwrap_or_default();
-        bail!("No sessions found for {project}{range}.");
+        bail!("No sessions found for {label}{range}.");
     }
-    Ok((project, found))
+    Ok((label, found))
 }
 
 /// The session `arg` names: a file's path, or a session id or its start.
@@ -370,38 +406,15 @@ fn find_session<'a>(rows: &'a [SessionRow], arg: &str) -> anyhow::Result<&'a Ses
     }
 }
 
-/// The transcript as the app shows it: a library bundle or a session file.
-fn session_events(path: &str) -> anyhow::Result<Vec<Event>> {
-    let p = Path::new(path);
-    if bundle::is_bundle_path(p) {
-        return bundle::load_events(p);
-    }
-    let source: Source = parse::detect(p).context("Unrecognized session format")?;
-    Ok(parse::parse_file(p, source)?.events)
-}
-
-/// The `claude` command with this shell's environment and the Claude settings.
-fn claude_command(paths: &Paths) -> anyhow::Result<generate::Claude> {
-    let bin = find_claude().context("Couldn't find the claude command. Install Claude Code and sign in, then try again.")?;
-    let config_dir = std::env::var_os("CLAUDE_CONFIG_DIR")
-        .filter(|d| !d.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".claude"));
-    // `Claude` decides how to authenticate from the variables it is given, so it gets this process's.
-    let mut claude = generate::Claude::new(bin, std::env::vars().collect(), &config_dir)?;
-    claude.log = Some(paths.log.clone());
-    Ok(claude)
-}
-
 fn find_claude() -> Option<PathBuf> {
     let home = dirs::home_dir().unwrap_or_default();
     let on_path: Vec<PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).map(|d| d.join("claude")).collect()).unwrap_or_default();
     on_path.into_iter().chain([home.join(".local/bin/claude"), home.join(".claude/local/claude")]).find(|p| p.is_file())
 }
 
-/// The focus text for a run: what the flags give, else the prompt saved in
-/// the app's settings under `field`. `None` uses the built-in text.
-fn focus(conn: &Connection, prompt: &Prompt, field: &str) -> anyhow::Result<Option<String>> {
+/// The focus text the flags give. `None` leaves it to wherever the command
+/// runs: the prompt saved in the app there, else the built-in one.
+fn focus(prompt: &Prompt) -> anyhow::Result<Option<String>> {
     let given = match (&prompt.prompt, &prompt.prompt_file) {
         (Some(text), _) => Some(text.clone()),
         (None, Some(file)) if file == Path::new("-") => {
@@ -412,26 +425,16 @@ fn focus(conn: &Connection, prompt: &Prompt, field: &str) -> anyhow::Result<Opti
         (None, Some(file)) => Some(std::fs::read_to_string(file).with_context(|| format!("Couldn't read {}", file.display()))?),
         (None, None) => None,
     };
-    if let Some(text) = given {
-        if text.trim().is_empty() {
-            bail!("The prompt is empty.");
-        }
-        return Ok(Some(text));
+    if given.as_ref().is_some_and(|text| text.trim().is_empty()) {
+        bail!("The prompt is empty.");
     }
-    let saved: Option<String> = conn.query_row("SELECT value FROM settings WHERE key='ui.prefs'", [], |r| r.get(0)).ok();
-    Ok(saved
-        .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
-        .and_then(|prefs| prefs.get(field).and_then(|v| v.as_str()).map(str::to_string))
-        .filter(|text| !text.trim().is_empty()))
+    Ok(given)
 }
 
-fn first_line(e: &anyhow::Error) -> String {
-    format!("{e:#}").lines().next().unwrap_or_default().to_string()
-}
-
-/// A flag that Ctrl-C sets, which stops the `claude` calls in progress. They
-/// run in process groups of their own, so the terminal's interrupt doesn't
-/// reach them. A second Ctrl-C quits at once.
+/// A flag that Ctrl-C sets. In this process it stops the `claude` calls in
+/// progress (they run in process groups of their own, so the terminal's
+/// interrupt doesn't reach them); on a server it detaches. A second Ctrl-C
+/// quits at once.
 fn cancel_on_interrupt() -> anyhow::Result<Arc<AtomicBool>> {
     let cancel = Arc::new(AtomicBool::new(false));
     let flag = cancel.clone();
@@ -443,88 +446,33 @@ fn cancel_on_interrupt() -> anyhow::Result<Arc<AtomicBool>> {
     Ok(cancel)
 }
 
-/// Analyzes one session and saves the result. Returns a one-line summary.
-fn analyze_one(paths: &Paths, claude: &generate::Claude, row: &SessionRow, focus: Option<&str>, cancel: &Arc<AtomicBool>) -> anyhow::Result<String> {
-    let key = annotations::session_key(row);
-    runlog::append(&paths.log, &format!("Analyze {key} started from the command line\n{}", row.path));
-    let result = (|| {
-        let events = session_events(&row.path)?;
-        let mut ask = |system: &str, input: &str, schema: &serde_json::Value| generate::run_claude(claude, system, input, schema, cancel);
-        let generated = generate::generate(&events, focus, &mut ask, &mut |_, _| {})?;
-        let conn = index::open(&paths.db)?;
-        generate::apply(&conn, &key, &generated, &events)?;
-        Ok(format!(
-            "{}, {} components, {} annotations",
-            markdown::outcome_label(generated.outcome).to_lowercase(),
-            generated.components.len(),
-            generated.annotations.len()
-        ))
-    })();
-    match &result {
-        Ok(summary) => runlog::append(&paths.log, &format!("Analyze {key} done: {summary}")),
-        Err(e) if generate::is_cancelled(e) => runlog::append(&paths.log, &format!("Analyze {key} cancelled")),
-        Err(e) => runlog::append(&paths.log, &format!("Analyze {key} FAILED: {e:#}")),
+/// Ends the command the way the job ended.
+fn job_outcome(job: &Job) -> anyhow::Result<()> {
+    match job.state {
+        JobState::Finished | JobState::Running => Ok(()),
+        JobState::Cancelled => Err(Interrupted.into()),
+        JobState::Failed => bail!("{}", job.error.as_deref().unwrap_or("The job failed.")),
     }
-    result
 }
 
-/// Analyzes `rows`, a few at a time, reporting each on standard error.
-/// Returns how many failed. Stops early once `cancel` is set.
-fn analyze_many(paths: &Paths, claude: &generate::Claude, rows: &[&SessionRow], focus: Option<&str>, cancel: &Arc<AtomicBool>) -> usize {
-    let next = AtomicUsize::new(0);
-    let finished = AtomicUsize::new(0);
-    let failed = AtomicUsize::new(0);
-    std::thread::scope(|scope| {
-        for _ in 0..ANALYZE_AT_ONCE.min(rows.len()) {
-            scope.spawn(|| {
-                while !cancel.load(Ordering::SeqCst)
-                    && let Some(row) = rows.get(next.fetch_add(1, Ordering::SeqCst))
-                {
-                    let result = analyze_one(paths, claude, row, focus, cancel);
-                    let n = finished.fetch_add(1, Ordering::SeqCst) + 1;
-                    let title = markdown::one_line(&row.title);
-                    match result {
-                        Ok(summary) => eprintln!("[{n}/{}] {title}: {summary}", rows.len()),
-                        Err(e) if generate::is_cancelled(&e) => {}
-                        Err(e) => {
-                            failed.fetch_add(1, Ordering::SeqCst);
-                            eprintln!("[{n}/{}] {title}: failed: {}", rows.len(), first_line(&e));
-                        }
-                    }
-                }
-            });
-        }
-    });
-    failed.into_inner()
+fn analyzed_keys(backend: &Backend) -> anyhow::Result<HashSet<String>> {
+    Ok(backend.call(&NOTE_SUMMARIES, &NoteSummariesRequest {})?.into_iter().filter(|s| s.analyzed).map(|s| s.key).collect())
 }
 
-fn analyzed_keys(conn: &Connection) -> anyhow::Result<HashSet<String>> {
-    Ok(annotations::summaries(conn)?.into_iter().filter(|s| s.analyzed).map(|s| s.key).collect())
-}
-
-fn print_analysis(conn: &Connection, row: &SessionRow) -> anyhow::Result<()> {
-    let key = annotations::session_key(row);
-    let meta = annotations::meta(conn, &key)?.unwrap_or_default();
+fn print_analysis(backend: &Backend, row: &SessionRow) -> anyhow::Result<()> {
+    let notes = backend.call(&SESSION_NOTES, &SessionNotesRequest { key: annotations::session_key(row), path: row.path.clone(), branch: None })?;
+    let meta = notes.meta.unwrap_or_default();
     println!("{}", markdown::one_line(&row.title));
     let note = meta.outcome_note.as_deref().map(|n| format!(": {}", markdown::one_line(n))).unwrap_or_default();
     println!("Outcome: {}{note}", markdown::outcome_label(meta.outcome));
     if !meta.components.is_empty() {
         println!("Components: {}", meta.components.join(", "));
     }
-    let list = annotations::annotations(conn, &key)?;
-    if !list.is_empty() {
+    if !notes.annotations.is_empty() {
         println!("Annotations:");
-        for a in list {
+        for a in notes.annotations {
             println!("- {}: {}", markdown::kind_label(a.kind), markdown::one_line(&a.note));
         }
-    }
-    Ok(())
-}
-
-/// Ends the command after Ctrl-C stopped a batch partway.
-fn stop_if_cancelled(cancel: &AtomicBool) -> anyhow::Result<()> {
-    if cancel.load(Ordering::SeqCst) {
-        return Err(Interrupted.into());
     }
     Ok(())
 }
@@ -540,10 +488,6 @@ impl std::fmt::Display for Interrupted {
 
 impl std::error::Error for Interrupted {}
 
-fn log_file_hint(paths: &Paths) -> String {
-    format!("Details are in {}.", paths.log.display())
-}
-
 /// Sessions of the repository named `repo`, whichever folder its checkout is in
 /// here, most recently active first. This is what another machine asks for: it
 /// knows the repository's name but not where this machine keeps it.
@@ -556,18 +500,16 @@ fn in_repo<'a>(rows: &'a [SessionRow], repo: &str, since: Option<i64>) -> Vec<&'
         .collect()
 }
 
-fn cmd_sessions(paths: &Paths, host: Option<&str>, scope: &Scope, repo: Option<&str>) -> anyhow::Result<()> {
-    if let Some(host) = host {
-        return remote_sessions(host, scope);
-    }
-    let conn = open_indexed(paths)?;
-    let rows = index::list(&conn)?;
-    let found = match repo {
-        Some(repo) => in_repo(&rows, repo, scope.since.as_deref().map(|s| parse_since(s, Local::now())).transpose()?),
-        None => scoped(&rows, scope)?.1,
+fn cmd_sessions(backend: &Backend, remote: Option<&str>, scope: &Scope, repo: Option<&str>) -> anyhow::Result<()> {
+    let found: Vec<SessionRow> = match repo {
+        Some(repo) => {
+            let rows = backend.call(&LIST_SESSIONS, &ListSessionsRequest::default())?;
+            in_repo(&rows, repo, scope.since.as_deref().map(|s| parse_since(s, Local::now())).transpose()?).into_iter().cloned().collect()
+        }
+        None => scoped(backend, remote, scope)?.1,
     };
-    let analyzed = analyzed_keys(&conn)?;
-    for r in found {
+    let analyzed = analyzed_keys(backend)?;
+    for r in &found {
         let when = r.started_at.or(r.updated_at).and_then(|t| Local.timestamp_millis_opt(t).single());
         println!(
             "{:<8}  {}  {:<6}  {}  {}",
@@ -581,114 +523,113 @@ fn cmd_sessions(paths: &Paths, host: Option<&str>, scope: &Scope, repo: Option<&
     Ok(())
 }
 
-fn cmd_analyze(paths: &Paths, session: Option<&str>, scope: &Scope, prompt: &Prompt, force: bool) -> anyhow::Result<()> {
-    let conn = open_indexed(paths)?;
-    let rows = index::list(&conn)?;
-    let focus = focus(&conn, prompt, "analyzePrompt")?;
-    let claude = claude_command(paths)?;
+/// Runs an Analyze job on `paths`, reporting progress on standard error.
+fn analyze(backend: &Backend, req: AnalyzeSessionsRequest, cancel: &AtomicBool) -> anyhow::Result<()> {
+    let job = backend.run(RunParams {
+        start: &|b| b.call(&ANALYZE_SESSIONS, &req),
+        on_event: &mut |e| {
+            if let PushedEvent::AnalyzeProgress(p) = &e.event
+                && p.done > 0
+            {
+                eprintln!("[{}/{}] done", p.done, p.total);
+            }
+        },
+        cancel,
+    })?;
+    job_outcome(&job)
+}
+
+fn cmd_analyze(backend: &Backend, remote: Option<&str>, session: Option<&str>, scope: &Scope, prompt: &Prompt, force: bool) -> anyhow::Result<()> {
+    let focus = focus(prompt)?;
     let cancel = cancel_on_interrupt()?;
     if session.is_none() && scope.since.is_some() {
-        let (_, found) = scoped(&rows, scope)?;
-        let analyzed = analyzed_keys(&conn)?;
+        let (_, found) = scoped(backend, remote, scope)?;
+        let analyzed = analyzed_keys(backend)?;
         // A pi session's branches share one analysis.
         let mut seen = HashSet::new();
-        let todo: Vec<&SessionRow> = found
-            .into_iter()
+        let todo: Vec<String> = found
+            .iter()
             .filter(|r| force || !analyzed.contains(&annotations::session_key(r)))
             .filter(|r| seen.insert(annotations::session_key(r)))
+            .map(|r| r.path.clone())
             .collect();
         if todo.is_empty() {
             eprintln!("Every session in range is already analyzed. Use --force to analyze them again.");
             return Ok(());
         }
-        let failed = analyze_many(paths, &claude, &todo, focus.as_deref(), &cancel);
-        stop_if_cancelled(&cancel)?;
-        if failed > 0 {
-            bail!("{failed} of {} sessions couldn't be analyzed. {}", todo.len(), log_file_hint(paths));
-        }
-        return Ok(());
+        return analyze(backend, AnalyzeSessionsRequest { paths: todo, force, focus }, &cancel);
     }
     let row = match session {
-        Some(arg) => find_session(&rows, arg)?,
+        Some(arg) => find_session(&backend.call(&LIST_SESSIONS, &ListSessionsRequest::default())?, arg)?.clone(),
         None => {
-            let project = project_of(&scope.project)?;
-            *in_scope(&rows, &project, None).first().with_context(|| format!("No sessions found for {project}."))?
+            let (label, rows) = scope_rows(backend, remote, &scope.project, None)?;
+            rows.into_iter().next().with_context(|| format!("No sessions found for {label}."))?
         }
     };
     eprintln!("Analyzing {}…", markdown::one_line(&row.title));
-    analyze_one(paths, &claude, row, focus.as_deref(), &cancel).map_err(|e| if generate::is_cancelled(&e) { e } else { e.context(log_file_hint(paths)) })?;
-    print_analysis(&conn, row)
+    analyze(backend, AnalyzeSessionsRequest { paths: vec![row.path.clone()], force: true, focus }, &cancel)?;
+    print_analysis(backend, &row)
 }
 
-fn render(conn: &Connection, report: &reports::Report) -> anyhow::Result<String> {
-    let cited = reports::cited_annotations(conn, report)?;
-    let responses = markdown::Responses { responses: reports::action_responses(conn, &report.id)?, verdicts: reports::action_verdicts(conn, &report.id)? };
+fn render(backend: &Backend, report: &reports::Report) -> anyhow::Result<String> {
+    let id = report.id.clone();
+    let cited = backend.call(&REPORT_ANNOTATIONS, &ReportAnnotationsRequest { id: id.clone() })?;
+    let responses = markdown::Responses {
+        responses: backend.call(&ACTION_RESPONSES, &ActionResponsesRequest { id: id.clone() })?,
+        verdicts: backend.call(&ACTION_VERDICTS, &ActionVerdictsRequest { id })?,
+    };
     Ok(markdown::report_markdown(report, &cited, &responses))
 }
 
-fn cmd_report(paths: &Paths, scope: &Scope, prompt: &Prompt, model: &str, no_analyze: bool, out: Option<&Path>) -> anyhow::Result<()> {
-    let conn = open_indexed(paths)?;
-    let rows = index::list(&conn)?;
-    let (project, found) = scoped(&rows, scope)?;
-    let focus = focus(&conn, prompt, "reportPrompt")?;
-    let claude = claude_command(paths)?;
+fn cmd_report(backend: &Backend, remote: Option<&str>, scope: &Scope, prompt: &Prompt, model: &str, no_analyze: bool, out: Option<&Path>) -> anyhow::Result<()> {
+    let (label, found) = scoped(backend, remote, scope)?;
+    let focus = focus(prompt)?;
     let cancel = cancel_on_interrupt()?;
 
     let mut seen = HashSet::new();
-    let found: Vec<&SessionRow> = found.into_iter().filter(|r| seen.insert(annotations::session_key(r))).collect();
-    let analyzed = analyzed_keys(&conn)?;
-    let unanalyzed: Vec<&SessionRow> = found.iter().copied().filter(|r| !analyzed.contains(&annotations::session_key(r))).collect();
-    if !no_analyze && !unanalyzed.is_empty() {
-        eprintln!("Analyzing {} of {} sessions first…", unanalyzed.len(), found.len());
-        // The saved Analyze prompt applies here; --prompt is for the report.
-        let analyze_focus = self::focus(&conn, &Prompt { prompt: None, prompt_file: None }, "analyzePrompt")?;
-        let failed = analyze_many(paths, &claude, &unanalyzed, analyze_focus.as_deref(), &cancel);
-        stop_if_cancelled(&cancel)?;
-        if failed > 0 {
-            eprintln!("{failed} sessions couldn't be analyzed and are left out of the report. {}", log_file_hint(paths));
+    let found: Vec<SessionRow> = found.into_iter().filter(|r| seen.insert(annotations::session_key(r))).collect();
+    let analyzed = analyzed_keys(backend)?;
+    let unanalyzed = found.iter().filter(|r| !analyzed.contains(&annotations::session_key(r))).count();
+    let writing = if no_analyze {
+        let picks = found.len() - unanalyzed;
+        if picks == 0 {
+            bail!("None of the {} sessions for {label} has an analysis to report on.", found.len());
         }
-    }
-    let analyzed = analyzed_keys(&conn)?;
-    let picks: Vec<reports::SessionPick> = found
-        .iter()
-        .filter(|r| analyzed.contains(&annotations::session_key(r)))
-        .map(|r| reports::SessionPick { key: annotations::session_key(r), title: r.title.clone() })
-        .collect();
-    if picks.is_empty() {
-        bail!("None of the {} sessions for {project} has an analysis to report on.", found.len());
-    }
+        picks
+    } else {
+        if unanalyzed > 0 {
+            eprintln!("Analyzing {unanalyzed} of {} sessions first…", found.len());
+        }
+        found.len()
+    };
 
-    eprintln!("Writing a report on {} sessions with {model}…", picks.len());
-    runlog::append(&paths.log, &format!("Report started from the command line on {} sessions with {model}", picks.len()));
-    let mut ask = |system: &str, input: &str, schema: &serde_json::Value| generate::run_claude_model(&claude, model, system, input, schema, &cancel);
-    let report = reports::generate(&conn, &picks, focus.as_deref(), &mut ask, &mut |done, total| {
-        if total > 1 {
-            eprintln!("Part {done} of {total} done");
-        }
-    })
-    .map_err(|e| {
-        if generate::is_cancelled(&e) {
-            runlog::append(&paths.log, "Report cancelled");
-            return e;
-        }
-        runlog::append(&paths.log, &format!("Report FAILED: {e:#}"));
-        e.context(log_file_hint(paths))
+    eprintln!("Writing a report on {writing} sessions with {model}…");
+    let req = GenerateReportRequest { paths: found.iter().map(|r| r.path.clone()).collect(), model: Some(model.to_string()), focus, analyze_first: !no_analyze };
+    let mut saved = None;
+    let job = backend.run(RunParams {
+        start: &|b| b.call(&GENERATE_REPORT, &req),
+        on_event: &mut |e| match &e.event {
+            PushedEvent::ReportProgress(p) if p.total > 1 => eprintln!("Part {} of {} done", p.done, p.total),
+            PushedEvent::ReportDone(d) => saved = d.report.clone(),
+            _ => {}
+        },
+        cancel: &cancel,
     })?;
-    reports::save_report(&conn, &report)?;
-    runlog::append(&paths.log, &format!("Report done, saved as {}", report.id));
+    job_outcome(&job)?;
+    let id = saved.context("The report was written, but its id didn't arrive. Find it with: sp reports")?;
+    let report = backend.call(&GET_REPORT, &GetReportRequest { id: id.clone() })?.context("That report no longer exists.")?;
 
-    let text = render(&conn, &report)?;
+    let text = render(backend, &report)?;
     match out {
         Some(file) => std::fs::write(file, text).with_context(|| format!("Couldn't write {}", file.display()))?,
         None => std::io::stdout().write_all(text.as_bytes())?,
     }
-    eprintln!("Saved as report {}. Work through it with: sp doctor {}", report.id, report.id);
+    eprintln!("Saved as report {id}. Work through it with: sp doctor {id}");
     Ok(())
 }
 
-fn cmd_reports(paths: &Paths) -> anyhow::Result<()> {
-    let conn = index::open(&paths.db)?;
-    for r in reports::reports(&conn)? {
+fn cmd_reports(backend: &Backend) -> anyhow::Result<()> {
+    for r in backend.call(&LIST_REPORTS, &ListReportsRequest {})? {
         let when = Local.timestamp_millis_opt(r.created_at).single().map(|t| t.format("%Y-%m-%d %H:%M").to_string()).unwrap_or_default();
         println!("{}  {when}  {} sessions, {} actions  {}", r.id, r.sessions, r.actions, markdown::one_line(&r.title));
     }
@@ -696,10 +637,10 @@ fn cmd_reports(paths: &Paths) -> anyhow::Result<()> {
 }
 
 /// The report `arg` names by id or its start. With no `arg`, the newest
-/// report that covers a session of `project`.
-fn find_report(conn: &Connection, arg: Option<&str>, project: &dyn Fn() -> anyhow::Result<String>) -> anyhow::Result<reports::Report> {
-    let all = reports::reports(conn)?;
-    let load = |id: &str| reports::report(conn, id)?.context("That report no longer exists.");
+/// report that covers one of the sessions `project` gives (with its name).
+fn find_report(backend: &Backend, arg: Option<&str>, project: &dyn Fn() -> anyhow::Result<(String, HashSet<String>)>) -> anyhow::Result<reports::Report> {
+    let all = backend.call(&LIST_REPORTS, &ListReportsRequest {})?;
+    let load = |id: &str| backend.call(&GET_REPORT, &GetReportRequest { id: id.to_string() })?.context("That report no longer exists.");
     if let Some(arg) = arg {
         let matches: Vec<&reports::ReportSummary> = all.iter().filter(|r| r.id.starts_with(arg)).collect();
         return match matches.len() {
@@ -708,21 +649,25 @@ fn find_report(conn: &Connection, arg: Option<&str>, project: &dyn Fn() -> anyho
             n => bail!("{n} reports have an id starting with {arg}. Give more of the id."),
         };
     }
-    let project = project()?;
-    let projects: HashMap<String, String> = index::list(conn)?.into_iter().map(|r| (annotations::session_key(&r), r.project)).collect();
+    let (project, keys) = project()?;
     for summary in &all {
         let report = load(&summary.id)?;
-        if report.sessions.iter().any(|s| projects.get(&s.key) == Some(&project)) {
+        if report.sessions.iter().any(|s| keys.contains(&s.key)) {
             return Ok(report);
         }
     }
     bail!("No report covers {project} yet. Write one with: sp report --since 7d")
 }
 
-fn cmd_show(paths: &Paths, report: Option<&str>, project: &ProjectArg) -> anyhow::Result<()> {
-    let conn = index::open(&paths.db)?;
-    let report = find_report(&conn, report, &|| project_of(project))?;
-    std::io::stdout().write_all(render(&conn, &report)?.as_bytes())?;
+/// The project's name and its sessions' keys, for `find_report`.
+fn project_keys(backend: &Backend, remote: Option<&str>, project: &ProjectArg) -> anyhow::Result<(String, HashSet<String>)> {
+    let (label, rows) = scope_rows(backend, remote, project, None)?;
+    Ok((label, rows.iter().map(annotations::session_key).collect()))
+}
+
+fn cmd_show(backend: &Backend, remote: Option<&str>, report: Option<&str>, project: &ProjectArg) -> anyhow::Result<()> {
+    let report = find_report(backend, report, &|| project_keys(backend, remote, project))?;
+    std::io::stdout().write_all(render(backend, &report)?.as_bytes())?;
     Ok(())
 }
 
@@ -756,17 +701,15 @@ Work through its \"Recommended actions\":
     )
 }
 
-fn cmd_doctor(paths: &Paths, report: Option<&str>, project: &ProjectArg, print: bool) -> anyhow::Result<()> {
-    let conn = open_indexed(paths)?;
-    let report = find_report(&conn, report, &|| project_of(project))?;
+fn cmd_doctor(backend: &Backend, remote: Option<&str>, paths: &Paths, report: Option<&str>, project: &ProjectArg, print: bool) -> anyhow::Result<()> {
+    let report = find_report(backend, report, &|| project_keys(backend, remote, project))?;
     if report.actions.is_empty() {
         bail!("Report {} recommends no actions.", report.id);
     }
     let dir = paths.data.join("doctor");
     std::fs::create_dir_all(&dir)?;
     let report_file = dir.join(format!("{}.md", report.id));
-    std::fs::write(&report_file, render(&conn, &report)?)?;
-    drop(conn);
+    std::fs::write(&report_file, render(backend, &report)?)?;
 
     // The full path, so the session can run it even when `sp` isn't on its PATH.
     let sp = std::env::current_exe().map(|p| shell_quote(&p.to_string_lossy())).unwrap_or_else(|_| "sp".into());
@@ -788,9 +731,8 @@ fn cmd_doctor(paths: &Paths, report: Option<&str>, project: &ProjectArg, print: 
     Err(failed).with_context(|| format!("Couldn't run {}", claude.display()))
 }
 
-fn cmd_action(paths: &Paths, report: &str, number: usize, status: Option<Status>, note: Option<String>) -> anyhow::Result<()> {
-    let conn = index::open(&paths.db)?;
-    let report = find_report(&conn, Some(report), &|| bail!("unused"))?;
+fn cmd_action(backend: &Backend, report: &str, number: usize, status: Option<Status>, note: Option<String>) -> anyhow::Result<()> {
+    let report = find_report(backend, Some(report), &|| bail!("unused"))?;
     if number == 0 || number > report.actions.len() {
         bail!("Report {} has actions 1 to {}.", report.id, report.actions.len());
     }
@@ -802,7 +744,7 @@ fn cmd_action(paths: &Paths, report: &str, number: usize, status: Option<Status>
     });
     let title = markdown::one_line(&report.actions[number - 1].title);
     // A response is replaced whole, so a flag left out keeps what was recorded before.
-    let before = reports::action_responses(&conn, &report.id)?.into_iter().find(|r| r.action_index == number - 1);
+    let before = backend.call(&ACTION_RESPONSES, &ActionResponsesRequest { id: report.id.clone() })?.into_iter().find(|r| r.action_index == number - 1);
     if status.is_none() && note.is_none() {
         match before {
             Some(r) => println!("{number}. {title}: {}{}", r.status.map(markdown::status_label).unwrap_or("No status"), r.note.map(|n| format!(". Note: {n}")).unwrap_or_default()),
@@ -810,14 +752,14 @@ fn cmd_action(paths: &Paths, report: &str, number: usize, status: Option<Status>
         }
         return Ok(());
     }
-    let input = reports::ActionResponseInput {
+    let input = ActionResponseChange {
         report_id: report.id.clone(),
         action_index: number - 1,
         status: status.or(before.as_ref().and_then(|r| r.status)),
         note: note.or(before.as_ref().and_then(|r| r.note.clone())),
         user_impact: before.as_ref().and_then(|r| r.user_impact),
     };
-    let saved = reports::set_action_response(&conn, &input)?;
+    let saved = backend.call(&SET_ACTION_RESPONSE, &SetActionResponseRequest { input })?;
     let label = saved.and_then(|r| r.status).map(markdown::status_label).unwrap_or("No status");
     println!("{number}. {title}: {label}");
     Ok(())
@@ -827,30 +769,43 @@ fn home() -> anyhow::Result<PathBuf> {
     dirs::home_dir().context("Couldn't find the home folder")
 }
 
-fn cmd_index(paths: &Paths, full: bool) -> anyhow::Result<()> {
-    let mut conn = index::open(&paths.db)?;
-    register_session_folders(&conn)?;
-    let roots = index::roots(&conn)?;
+fn cmd_index(backend: &Backend, full: bool) -> anyhow::Result<()> {
+    let roots = backend.call(&GET_ROOTS, &GetRootsRequest {})?;
     if roots.is_empty() {
         bail!("There are no session folders to read: none of ~/.claude/projects, ~/.codex/sessions and ~/.pi/agent/sessions exists.");
     }
     let show = std::io::stderr().is_terminal();
-    let stats = index::run(&mut conn, full, Some(&paths.library), &move |done, total| {
-        if show && total > 0 && (done % 50 == 0 || done == total) {
-            eprint!("\rReading sessions {done}/{total}{}", if done == total { "\n" } else { "" });
-        }
+    let mut stats = None;
+    // An index pass can't be cancelled, so Ctrl-C just ends sp.
+    let never = AtomicBool::new(false);
+    let job = backend.run(RunParams {
+        start: &|b| b.call(&REINDEX, &ReindexRequest { full }),
+        on_event: &mut |e| match &e.event {
+            PushedEvent::IndexProgress(p) if show && p.total > 0 && (p.done % 50 == 0 || p.done == p.total) => {
+                eprint!("\rReading sessions {}/{}{}", p.done, p.total, if p.done == p.total { "\n" } else { "" })
+            }
+            PushedEvent::IndexDone(s) => stats = Some(s.clone()),
+            _ => {}
+        },
+        cancel: &never,
     })?;
-    let listed = index::list(&conn)?.len();
-    println!("{} files found, {} new or changed, in {:.1}s. {} sessions listed.", stats.scanned, stats.updated + stats.failed, stats.elapsed_ms as f64 / 1000.0, listed);
-    if stats.removed > 0 {
-        println!("Dropped {} whose files are gone.", stats.removed);
-    }
-    if stats.failed > 0 {
-        println!("{} files couldn't be read.", stats.failed);
+    job_outcome(&job)?;
+    let listed = backend.call(&LIST_SESSIONS, &ListSessionsRequest::default())?.len();
+    match stats {
+        Some(stats) => {
+            println!("{} files found, {} new or changed, in {:.1}s. {} sessions listed.", stats.scanned, stats.updated + stats.failed, stats.elapsed_ms as f64 / 1000.0, listed);
+            if stats.removed > 0 {
+                println!("Dropped {} whose files are gone.", stats.removed);
+            }
+            if stats.failed > 0 {
+                println!("{} files couldn't be read.", stats.failed);
+            }
+        }
+        None => println!("{listed} sessions listed."),
     }
     println!("Session folders:");
     for root in roots {
-        println!("  {root}");
+        println!("  {}", root.path);
     }
     Ok(())
 }
@@ -1025,8 +980,8 @@ fn remote_scope(scope: &Scope) -> anyhow::Result<(String, sync::RepoName, Option
 fn remote_sessions(host: &str, scope: &Scope) -> anyhow::Result<()> {
     let (_, repo, since) = remote_scope(scope)?;
     let mut args = vec!["sessions".to_string(), "--repo".into(), repo.0.clone()];
-    if let Some(at) = since.and_then(|ms| chrono::DateTime::from_timestamp_millis(ms)) {
-        args.extend(["--since".into(), at.to_rfc3339()]);
+    if let Some(at) = since.and_then(utc) {
+        args.extend(["--since".into(), at]);
     }
     let mut child = remote_sp(host, &args)?;
     let mut listing = String::new();
@@ -1040,20 +995,54 @@ fn remote_sessions(host: &str, scope: &Scope) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_pull(paths: &Paths, host: &str, scope: &Scope, dry_run: bool) -> anyhow::Result<()> {
-    let (project, repo, since) = remote_scope(scope)?;
-    let mut args = vec!["export-project".to_string(), "--repo".into(), repo.0.clone()];
-    if let Some(since) = since {
-        args.extend(["--since".into(), since.to_string()]);
+/// `sync::PullSummary` from the `pull` operation's answer.
+fn pull_summary(pulled: PullResponse) -> sync::PullSummary {
+    let counts = |c: PullCounts| sync::Counts { added: c.added, replaced: c.replaced, kept_local: c.kept_local, unchanged: c.unchanged };
+    sync::PullSummary {
+        exporter: pulled.exporter,
+        files: pulled
+            .files
+            .into_iter()
+            .map(|f| sync::PulledFile {
+                path: PathBuf::from(f.path),
+                change: match f.change {
+                    PullChange::Added => sync::Change::Added,
+                    PullChange::Replaced => sync::Change::Replaced,
+                    PullChange::KeptLocal => sync::Change::KeptLocal,
+                    PullChange::Unchanged => sync::Change::Unchanged,
+                },
+                is_session: f.is_session,
+            })
+            .collect(),
+        sessions: counts(pulled.sessions),
+        analyses: counts(pulled.analyses),
+        annotations: counts(pulled.annotations),
+        responses: counts(pulled.responses),
+        reports_added: pulled.reports_added,
     }
+}
+
+/// A server paired with `sp connect` is pulled from over HTTPS; any other name is a host for ssh.
+fn cmd_pull(cli: &Cli, paths: &Paths, host: &str, scope: &Scope, dry_run: bool) -> anyhow::Result<()> {
+    let (project, repo, since) = remote_scope(scope)?;
     eprintln!("{} {} from {host}…", if dry_run { "Checking" } else { "Pulling" }, repo.0);
-    let mut child = remote_sp(host, &args)?;
-    let mut stdout = child.stdout.take().expect("stdout is piped");
-    let imported = import_project(paths, &project, &mut stdout, dry_run);
-    drop(stdout);
-    // When the other side failed, its exit status says more than the import's complaint about an empty stream.
-    remote_result(host, &mut child, "pull")?;
-    let summary = imported?;
+    let summary = if ServersStore::new(&paths.data).get(host)?.is_some() {
+        let (backend, _) = open_backend(cli, paths, true)?;
+        let pulled: PullResponse = backend.call_named("pull", &PullRequest { server: host.to_string(), project, since: since.and_then(utc), dry_run })?;
+        pull_summary(pulled)
+    } else {
+        let mut args = vec!["export-project".to_string(), "--repo".into(), repo.0.clone()];
+        if let Some(since) = since {
+            args.extend(["--since".into(), since.to_string()]);
+        }
+        let mut child = remote_sp(host, &args)?;
+        let mut stdout = child.stdout.take().expect("stdout is piped");
+        let imported = import_project(paths, &project, &mut stdout, dry_run);
+        drop(stdout);
+        // When the other side failed, its exit status says more than the import's complaint about an empty stream.
+        remote_result(host, &mut child, "pull")?;
+        imported?
+    };
     if dry_run {
         print_plan(&summary);
     }
@@ -1061,30 +1050,147 @@ fn cmd_pull(paths: &Paths, host: &str, scope: &Scope, dry_run: bool) -> anyhow::
     Ok(())
 }
 
+fn cmd_serve(paths: &Paths) -> anyhow::Result<()> {
+    let file = paths.data.join("server.json");
+    let config: ServerConfig = match std::fs::read(&file) {
+        Ok(bytes) => serde_json::from_slice(&bytes).with_context(|| format!("Couldn't read {}; fix or remove it", file.display()))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => ServerConfig::default(),
+        Err(e) => return Err(e).with_context(|| format!("Couldn't read {}", file.display())),
+    };
+    let ctx = backend::open_ctx(paths)?;
+    // Ctrl-C and SIGTERM (a service manager stopping the server) both shut it down cleanly.
+    let (stop, stopped) = std::sync::mpsc::channel();
+    ctrlc::set_handler(move || {
+        let _ = stop.send(());
+    })?;
+    let server = serve(ServeParams { ctx: ctx.clone(), data: paths.data.clone(), config })?;
+    // Sessions written while no server ran; the watcher picks up the ones written from now on.
+    ops::call(&ctx, &REINDEX, &ReindexRequest { full: false }).map_err(backend::op_error)?;
+    eprintln!("Serving {} on http://{}", paths.data.display(), server.addrs().loopback);
+    let _ = stopped.recv();
+    server.shutdown();
+    Ok(())
+}
+
+fn cmd_pair(backend: &Backend) -> anyhow::Result<()> {
+    let offer: PairResponse = backend.call_named("pair", &PairRequest {})?;
+    println!("{}", offer.pairing);
+    eprintln!("On the other machine, run: sp connect <the string above> --name <a name for this machine>");
+    eprintln!("The string works once, within 5 minutes.");
+    Ok(())
+}
+
+/// This machine's name, which the server lists it under.
+fn hostname() -> anyhow::Result<String> {
+    let output = std::process::Command::new("hostname").output().context("Couldn't run hostname")?;
+    let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if name.is_empty() {
+        bail!("hostname printed no name");
+    }
+    Ok(name)
+}
+
+fn cmd_connect(paths: &Paths, pairing: &str, name: &str) -> anyhow::Result<()> {
+    let mut server = connect(ConnectParams { pairing, name: &hostname()? }).map_err(|e| anyhow!(e.message))?;
+    server.name = name.to_string();
+    let hello = Client::paired(&server)?.call(&HELLO, &HelloRequest {}).map_err(|e| anyhow!(e.message))?;
+    check_compat(&hello).map_err(|e| anyhow!(e))?;
+    println!("Paired with {}:{} as {name}. Use it with: sp --server {name} <command>", server.address, server.port);
+    ServersStore::new(&paths.data).save(server)
+}
+
+fn cmd_devices(backend: &Backend) -> anyhow::Result<()> {
+    let devices: Vec<DeviceInfo> = backend.call_named("devices", &DevicesRequest {})?;
+    if devices.is_empty() {
+        println!("No devices are paired.");
+    }
+    for d in devices {
+        let when = Local.timestamp_millis_opt(d.paired_at as i64).single().map(|t| t.format("%Y-%m-%d %H:%M").to_string()).unwrap_or_default();
+        println!("{}  {when}  {}", d.id.0, d.name);
+    }
+    Ok(())
+}
+
+fn cmd_unpair(backend: &Backend, device: &str) -> anyhow::Result<()> {
+    let () = backend.call_named("unpair", &UnpairRequest { id: ops::DeviceId(device.to_string()) })?;
+    println!("Unpaired {device}.");
+    Ok(())
+}
+
+fn cmd_service(cli: &Cli, paths: &Paths, action: ServiceArg) -> anyhow::Result<()> {
+    if cli.server.is_some() {
+        bail!("sp service manages the server on this machine only. Run it on that machine, without --server.");
+    }
+    let action = match action {
+        ServiceArg::Install => ServiceAction::Install,
+        ServiceArg::Uninstall => ServiceAction::Uninstall,
+        ServiceArg::Start => ServiceAction::Start,
+        ServiceArg::Stop => ServiceAction::Stop,
+        ServiceArg::Status => ServiceAction::Status,
+    };
+    let backend = Backend::open(backend::OpenParams { route: Route::Local, paths, index: false })?;
+    let report: ServiceReport = backend.call_named("service", &ServiceRequest { action })?;
+    println!("{}: {}", if report.installed { "Installed" } else { "Not installed" }, report.unit_file.display());
+    println!("{}", if report.running { "Running" } else { "Not running" });
+    Ok(())
+}
+
+fn cmd_cancel(backend: &Backend, job: &str) -> anyhow::Result<()> {
+    backend.call(&CANCEL_JOB, &CancelJobRequest { id: JobId(job.to_string()) })?;
+    println!("Cancelling {job}.");
+    Ok(())
+}
+
+fn run(cli: &Cli, paths: &Paths) -> anyhow::Result<()> {
+    let open = |index: bool| open_backend(cli, paths, index);
+    match &cli.command {
+        Command::Sessions { host: Some(host), scope, .. } => remote_sessions(host, scope),
+        Command::Sessions { host: None, scope, repo } => {
+            let (b, remote) = open(true)?;
+            cmd_sessions(&b, remote.as_deref(), scope, repo.as_deref())
+        }
+        Command::Analyze { session, scope, prompt, force } => {
+            let (b, remote) = open(true)?;
+            cmd_analyze(&b, remote.as_deref(), session.as_deref(), scope, prompt, *force)
+        }
+        Command::Report { scope, prompt, model, no_analyze, out } => {
+            let (b, remote) = open(true)?;
+            cmd_report(&b, remote.as_deref(), scope, prompt, model, *no_analyze, out.as_deref())
+        }
+        Command::Reports => cmd_reports(&open(false)?.0),
+        Command::Show { report, project } => {
+            let (b, remote) = open(false)?;
+            cmd_show(&b, remote.as_deref(), report.as_deref(), project)
+        }
+        Command::Doctor { report, project, print } => {
+            let (b, remote) = open(true)?;
+            cmd_doctor(&b, remote.as_deref(), paths, report.as_deref(), project, *print)
+        }
+        Command::Action { report, number, status, note } => cmd_action(&open(false)?.0, report, *number, *status, note.clone()),
+        Command::Pull { host, scope, dry_run } => cmd_pull(cli, paths, host, scope, *dry_run),
+        // The job is the index pass, so none runs first.
+        Command::Index { full } => cmd_index(&open(false)?.0, *full),
+        Command::Install => cmd_install(),
+        Command::Serve => cmd_serve(paths),
+        Command::Pair => cmd_pair(&open(false)?.0),
+        Command::Connect { pairing, name } => cmd_connect(paths, pairing, name),
+        Command::Devices => cmd_devices(&open(false)?.0),
+        Command::Unpair { device } => cmd_unpair(&open(false)?.0, device),
+        Command::Service { action } => cmd_service(cli, paths, *action),
+        Command::Cancel { job } => cmd_cancel(&open(false)?.0, job),
+        Command::ExportProject { repo, since } => cmd_export_project(paths, repo, *since),
+        Command::ImportProject { project, dry_run } => cmd_import_project(paths, project, *dry_run),
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
-    let result = paths().and_then(|paths| match &cli.command {
-        Command::Sessions { host, scope, repo } => cmd_sessions(&paths, host.as_deref(), scope, repo.as_deref()),
-        Command::Analyze { session, scope, prompt, force } => cmd_analyze(&paths, session.as_deref(), scope, prompt, *force),
-        Command::Report { scope, prompt, model, no_analyze, out } => cmd_report(&paths, scope, prompt, model, *no_analyze, out.as_deref()),
-        Command::Reports => cmd_reports(&paths),
-        Command::Show { report, project } => cmd_show(&paths, report.as_deref(), project),
-        Command::Doctor { report, project, print } => cmd_doctor(&paths, report.as_deref(), project, *print),
-        Command::Action { report, number, status, note } => cmd_action(&paths, report, *number, *status, note.clone()),
-        Command::Pull { host, scope, dry_run } => cmd_pull(&paths, host, scope, *dry_run),
-        Command::Index { full } => cmd_index(&paths, *full),
-        Command::Install => cmd_install(),
-        Command::ExportProject { repo, since } => cmd_export_project(&paths, repo, *since),
-        Command::ImportProject { project, dry_run } => cmd_import_project(&paths, project, *dry_run),
-        Command::Serve => todo!("sp serve"),
-        Command::Pair => todo!("sp pair"),
-        Command::Connect { .. } => todo!("sp connect"),
-        Command::Devices => todo!("sp devices"),
-        Command::Unpair { .. } => todo!("sp unpair"),
-        Command::Service { .. } => todo!("sp service"),
-        Command::Cancel { .. } => todo!("sp cancel"),
-    });
+    let result = paths().and_then(|paths| run(&cli, &paths));
     if let Err(e) = result {
+        if let Some(detached) = e.downcast_ref::<Detached>() {
+            eprintln!("{detached}");
+            std::process::exit(130);
+        }
         if generate::is_cancelled(&e) || e.is::<Interrupted>() {
             eprintln!("Cancelled");
             std::process::exit(130);

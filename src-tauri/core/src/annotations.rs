@@ -544,7 +544,7 @@ pub fn session_key(row: &SessionRow) -> String {
 
 /// What the session list needs to show and filter by, and what the
 /// Analysis view adds up across the sessions shown.
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Summary {
     pub key: String,
     pub outcome: Outcome,

@@ -191,7 +191,7 @@ pub struct Report {
 }
 
 /// What the report list shows.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReportSummary {
     pub id: String,
     pub created_at: i64,
@@ -261,7 +261,7 @@ pub fn delete_report(conn: &Connection, id: &str) -> anyhow::Result<()> {
 }
 
 /// An annotation as a report was given it, and what has happened to it since.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CitedAnnotation {
     /// The version the report was given.
     pub annotation: annotations::Annotation,
@@ -433,7 +433,7 @@ pub(crate) fn saved_reports(conn: &Connection) -> anyhow::Result<Vec<Report>> {
 }
 
 /// The most recent verdict on an action, and the report that gave it.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LatestVerdict {
     pub action_index: usize,
     pub verdict: Verdict,

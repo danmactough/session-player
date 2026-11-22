@@ -218,7 +218,7 @@ impl Parsed {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionRow {
     pub path: String,
     pub source: String,

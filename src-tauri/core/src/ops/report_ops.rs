@@ -113,7 +113,7 @@ pub(super) fn generate_report(ctx: &Arc<Ctx>, _device: &DeviceId, req: &Generate
                 let unanalyzed: Vec<SessionRow> = rows.iter().filter(|r| !analyzed.contains(&annotations::session_key(r))).cloned().collect();
                 // The saved Analyze focus applies here; the request's focus is for the report.
                 let focus = saved_focus(&conn, "analyzePrompt");
-                analyze_many(&ctx, &AnalyzeMany { claude: &claude, rows: &unanalyzed, focus: focus.as_deref(), cancel: &cancel }, &|_| {});
+                analyze_many(&ctx, &AnalyzeMany { claude: &claude, rows: &unanalyzed, focus: focus.as_deref(), cancel: &cancel }, &|_, _| {});
                 if cancel.load(Ordering::SeqCst) {
                     bail!("Cancelled");
                 }

@@ -344,10 +344,14 @@ for a in "$@"; do
   [ "$prev" = --model ] && model="$a"
   prev="$a"
 done
-cat > /dev/null
+input=$(cat)
 echo "$model" >> "$dir/models"
 echo $$ >> "$dir/pids"
 while [ -f "$dir/hold" ]; do sleep 0.05; done
+if [ -f "$dir/fail" ] && printf '%s' "$input" | grep -qF "$(cat "$dir/fail")"; then
+  echo 'claude broke' >&2
+  exit 1
+fi
 if [ "$model" = haiku ]; then cat "$dir/analysis.json"; else cat "$dir/report.json"; fi
 "#,
                 dir = dir.display()
@@ -365,6 +369,11 @@ if [ "$model" = haiku ]; then cat "$dir/analysis.json"; else cat "$dir/report.js
 
     pub fn release(&self) {
         let _ = std::fs::remove_file(self.dir.join("hold"));
+    }
+
+    /// Calls whose input contains `text` exit 1 with "claude broke" on stderr.
+    pub fn fail_on(&self, text: &str) {
+        std::fs::write(self.dir.join("fail"), text).unwrap();
     }
 
     /// The `--model` of each call so far.

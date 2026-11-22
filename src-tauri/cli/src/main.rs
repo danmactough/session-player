@@ -531,7 +531,12 @@ fn analyze(backend: &Backend, req: AnalyzeSessionsRequest, cancel: &AtomicBool) 
             if let PushedEvent::AnalyzeProgress(p) = &e.event
                 && p.done > 0
             {
-                eprintln!("[{}/{}] done", p.done, p.total);
+                let title = markdown::one_line(p.title.as_deref().unwrap_or_default());
+                match (&p.summary, &p.error) {
+                    (_, Some(error)) => eprintln!("[{}/{}] {title}: failed: {error}", p.done, p.total),
+                    (Some(summary), None) => eprintln!("[{}/{}] {title}: {summary}", p.done, p.total),
+                    (None, None) => eprintln!("[{}/{}] done", p.done, p.total),
+                }
             }
         },
         cancel,

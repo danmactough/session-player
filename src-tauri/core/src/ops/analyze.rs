@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use serde::{Deserialize, Serialize};
 
 use super::generate_job::{AnalyzeSession, analyze_session};
-use super::{AnalyzeDone, AnalyzeProgress, Ctx, DeviceId, JobId, JobKind, JobState, OpError, Progress, PushedEvent, internal, saved_focus};
+use super::{AnalyzeDone, AnalyzeProgress, Ctx, DeviceId, JobId, JobKind, JobState, OpError, Progress, PushedEvent, first_line, internal, saved_focus};
 use crate::generate::{self, Claude};
 use crate::model::SessionRow;
 use crate::{annotations, index, runlog};
@@ -51,11 +51,20 @@ pub(super) fn analyze_sessions(ctx: &Arc<Ctx>, _device: &DeviceId, req: &Analyze
     let job = id.clone();
     std::thread::spawn(move || {
         let total = todo.len();
-        let progress = |done: usize| {
+        let progress = |done: usize, finished: Option<Finished>| {
             ctx.jobs.progress(&job, Progress { done, total });
-            ctx.publish(PushedEvent::AnalyzeProgress(AnalyzeProgress { job: job.clone(), done, total }));
+            let mut event = AnalyzeProgress { job: job.clone(), done, total, key: None, title: None, summary: None, error: None };
+            if let Some(f) = finished {
+                event.key = Some(f.key);
+                event.title = Some(f.title);
+                match f.result {
+                    Ok(summary) => event.summary = Some(summary),
+                    Err(error) => event.error = Some(error),
+                }
+            }
+            ctx.publish(PushedEvent::AnalyzeProgress(event));
         };
-        progress(0);
+        progress(0, None);
         let counts = match ctx.claude() {
             Ok(claude) => analyze_many(&ctx, &AnalyzeMany { claude: &claude, rows: &todo, focus: focus.as_deref(), cancel: &cancel }, &progress),
             Err(e) => {
@@ -90,14 +99,21 @@ pub(super) struct AnalyzeMany<'a> {
     pub cancel: &'a Arc<AtomicBool>,
 }
 
+/// A session `analyze_many` finished: its summary, or the first line of its error.
+pub(super) struct Finished {
+    pub key: String,
+    pub title: String,
+    pub result: Result<String, String>,
+}
+
 pub(super) struct Counts {
     pub analyzed: usize,
     pub failed: usize,
 }
 
-/// Analyzes `rows`, `ANALYZE_AT_ONCE` at a time, calling `progress` with the number finished after
-/// each. Starts no more once `cancel` is set; a cancelled session counts as neither.
-pub(super) fn analyze_many(ctx: &Ctx, m: &AnalyzeMany, progress: &(dyn Fn(usize) + Sync)) -> Counts {
+/// Analyzes `rows`, `ANALYZE_AT_ONCE` at a time, calling `progress` with the number finished and
+/// the session after each. Starts no more once `cancel` is set; a cancelled session counts as neither.
+pub(super) fn analyze_many(ctx: &Ctx, m: &AnalyzeMany, progress: &(dyn Fn(usize, Option<Finished>) + Sync)) -> Counts {
     let next = AtomicUsize::new(0);
     let finished = AtomicUsize::new(0);
     let analyzed = AtomicUsize::new(0);
@@ -111,16 +127,18 @@ pub(super) fn analyze_many(ctx: &Ctx, m: &AnalyzeMany, progress: &(dyn Fn(usize)
                     let key = annotations::session_key(row);
                     runlog::append(&ctx.analyze_log(), &format!("Analyze {key} started\n{}", row.path));
                     let session = AnalyzeSession { claude: m.claude, key: &key, path: &row.path, branch: None, focus: m.focus, cancel: m.cancel };
-                    match analyze_session(ctx, &session, &mut |_, _| {}) {
-                        Ok(_) => {
+                    let result = match analyze_session(ctx, &session, &mut |_, _| {}) {
+                        Ok(g) => {
                             analyzed.fetch_add(1, Ordering::SeqCst);
+                            Ok(format!("{}, {} components, {} annotations", format!("{:?}", g.outcome).to_lowercase(), g.components.len(), g.annotations.len()))
                         }
                         Err(e) if generate::is_cancelled(&e) => continue,
-                        Err(_) => {
+                        Err(e) => {
                             failed.fetch_add(1, Ordering::SeqCst);
+                            Err(first_line(&e))
                         }
-                    }
-                    progress(finished.fetch_add(1, Ordering::SeqCst) + 1);
+                    };
+                    progress(finished.fetch_add(1, Ordering::SeqCst) + 1, Some(Finished { key, title: row.title.clone(), result }));
                 }
             });
         }

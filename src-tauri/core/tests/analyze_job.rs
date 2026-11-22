@@ -60,7 +60,7 @@ fn analyze_sessions_is_one_job_that_skips_analyzed_sessions_counts_a_failed_one_
     assert_eq!(done.state, JobState::Failed, "a session that couldn't be analyzed fails the job: {done:?}");
     assert!(done.error.as_deref().is_some_and(|e| e.contains("1 of 4") && !e.contains('\n')), "{done:?}");
     assert_eq!(done.progress, Some(Progress { done: 4, total: 4 }));
-    assert_eq!(analyze_progress(&events).last(), Some(&AnalyzeProgress { job: id.clone(), done: 4, total: 4 }));
+    assert_eq!(analyze_progress(&events).last().map(|p| (&p.job, p.done, p.total)), Some((&id, 4, 4)));
     assert_eq!(fake.models(), ["haiku"; 4], "the analyzed session is skipped");
     for id in ["s3", "s4", "s5"] {
         assert!(common::is_analyzed(&ctx, &common::key(&common::row(&ctx, id))), "{id} not analyzed");

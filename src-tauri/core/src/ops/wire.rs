@@ -151,6 +151,17 @@ pub struct AnalyzeProgress {
     pub job: JobId,
     pub done: usize,
     pub total: usize,
+    /// The session that just finished; the first event (done 0) has none of these.
+    #[serde(default)]
+    pub key: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    /// What was saved, as "succeeded, 3 components, 5 annotations".
+    #[serde(default)]
+    pub summary: Option<String>,
+    /// The first line of why the session couldn't be analyzed.
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

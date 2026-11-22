@@ -36,7 +36,16 @@ pub enum ErrorCode {
 impl ErrorCode {
     /// The HTTP status the server answers with.
     pub fn status(self) -> u16 {
-        todo!()
+        match self {
+            ErrorCode::Unauthenticated => 401,
+            ErrorCode::ForbiddenOrigin => 403,
+            ErrorCode::UnknownOperation | ErrorCode::NotFound => 404,
+            ErrorCode::MethodNotAllowed => 405,
+            ErrorCode::Conflict => 409,
+            ErrorCode::TooLarge => 413,
+            ErrorCode::BadRequest => 422,
+            ErrorCode::Internal => 500,
+        }
     }
 }
 

@@ -30,7 +30,7 @@ use http_body_util::channel::Channel;
 use ring::rand::SecureRandom;
 use serde::{Deserialize, Serialize};
 use session_player_core::ops::{
-    Access, ApiError, Body, Ctx, DeviceId, DispatchParams, ErrorCode, EventsSince, Input, OpError, ImageRef, OpSpec, Output, RawBody, RawData, ServerEvent, dispatch,
+    Access, ApiError, Body, Ctx, DeviceId, DispatchParams, ErrorCode, EventsSince, Input, OpError, ImageRef, OpSpec, Output, PushedEvent, RawBody, RawData, ServerEvent, dispatch,
     spec_of,
 };
 use tokio::sync::{Notify, broadcast};
@@ -241,9 +241,9 @@ pub fn serve(params: ServeParams) -> anyhow::Result<ServerHandle> {
     });
 
     let stop = Arc::new(AtomicBool::new(false));
-    let pump = start_pump(&ctx, events, stop.clone());
     // A server that can't watch still serves; new sessions then wait for a reindex.
     let watcher = watcher::start(&ctx).inspect_err(|e| eprintln!("Couldn't watch the session folders: {e:#}")).ok();
+    let pump = start_pump(PumpParams { ctx: &ctx, events, stop: stop.clone(), roots_changed: watcher.as_ref().map(watcher::Watcher::roots_changed) });
 
     {
         let _entered = runtime.enter();
@@ -261,14 +261,29 @@ pub fn serve(params: ServeParams) -> anyhow::Result<ServerHandle> {
     Ok(ServerHandle { loopback, shared, running: Some(Running { runtime, pump, stop, watcher, lock }) })
 }
 
+struct PumpParams<'a> {
+    ctx: &'a Arc<Ctx>,
+    events: broadcast::Sender<ServerEvent>,
+    stop: Arc<AtomicBool>,
+    roots_changed: Option<watcher::RootsChanged>,
+}
+
 /// The one thread that reads the core event ring and hands each event to every connected stream.
-fn start_pump(ctx: &Arc<Ctx>, events: broadcast::Sender<ServerEvent>, stop: Arc<AtomicBool>) -> std::thread::JoinHandle<()> {
+/// It also tells the watcher when an index pass starts or ends, since add_root and remove_root
+/// (from any caller, in process or over HTTP) each cause one, so the watcher re-reads the roots.
+fn start_pump(params: PumpParams) -> std::thread::JoinHandle<()> {
+    let PumpParams { ctx, events, stop, roots_changed } = params;
     let ctx = ctx.clone();
     let mut cursor = newest_event(&ctx).id;
     std::thread::spawn(move || {
         while !stop.load(Ordering::SeqCst) {
             for event in ctx.events_since(EventsSince { after: Some(cursor), wait: Duration::from_millis(100) }) {
                 cursor = event.id;
+                if let Some(roots_changed) = &roots_changed
+                    && matches!(event.event, PushedEvent::IndexStarted | PushedEvent::IndexDone(_) | PushedEvent::IndexError(_))
+                {
+                    roots_changed.send();
+                }
                 let _ = events.send(event);
             }
         }

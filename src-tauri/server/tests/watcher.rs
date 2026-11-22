@@ -1,6 +1,7 @@
 // While `serve` runs, a file watcher on the session roots (raw notify, Access events ignored,
 // a 400 ms debounce) starts an index pass when a session file appears, so it is listed within
-// about two seconds. An idle server runs no index passes, including after a triggered one.
+// about two seconds. An idle server runs no index passes, including after a triggered one. A root
+// added while serving is watched from then on, and a removed one is no longer watched.
 #[path = "../../testutil/tempdir.rs"]
 mod tempdir;
 mod common;
@@ -8,8 +9,8 @@ mod common;
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::{CtxParams, SessionFile, loopback_config, open_ctx, rows, session_file, start, wait_until};
-use session_player_core::ops::{Ctx, EventsSince, PushedEvent};
+use common::{CtxParams, SessionFile, local_client, loopback_config, open_ctx, rows, session_file, start, wait_until};
+use session_player_core::ops::{ADD_ROOT, AddRootRequest, Ctx, EventsSince, PushedEvent, REMOVE_ROOT, RemoveRootRequest};
 use tempdir::TempDir;
 
 /// The newest event id, to read later events after.
@@ -83,5 +84,41 @@ fn after_a_triggered_pass_the_server_stays_idle() {
 
     let events = index_events(&ctx, settled);
     assert!(events.is_empty(), "the index pass fed the watcher: {events:?}");
+    server.shutdown();
+}
+
+#[test]
+fn a_root_added_while_serving_is_watched_and_a_removed_root_is_not() {
+    let dir = TempDir::new("server-watcher-roots");
+    let ctx = open_ctx(CtxParams { dir: &dir, clock: None, event_capacity: None, fixtures: true });
+    let server = start(&ctx, loopback_config());
+    let client = local_client(&server, &ctx.paths().data);
+    let elsewhere = dir.join("elsewhere");
+    let root = elsewhere.join(".claude/projects").to_string_lossy().to_string();
+    std::fs::create_dir_all(&root).unwrap();
+    let drop_elsewhere = |id: &str| {
+        session_file(SessionFile { home: &elsewhere, cwd: &elsewhere.join("code/added"), id, prompt: "A session in an added root", images: &[] });
+    };
+
+    let before = cursor(&ctx);
+    client.call(&ADD_ROOT, &AddRootRequest { path: root.clone() }).expect("add_root");
+    wait_until("the add_root pass ends", Duration::from_secs(5), || index_events(&ctx, before).iter().any(|e| matches!(e, PushedEvent::IndexDone(_))));
+    let added = cursor(&ctx);
+    std::thread::sleep(Duration::from_millis(200));
+    drop_elsewhere("added1");
+
+    wait_until("the session in the added root is listed", Duration::from_secs(2), || listed(&ctx, "added1"));
+    wait_until("the pass ends", Duration::from_secs(5), || index_events(&ctx, added).iter().any(|e| matches!(e, PushedEvent::IndexDone(_))));
+
+    client.call(&REMOVE_ROOT, &RemoveRootRequest { path: root.clone() }).expect("remove_root");
+    // Past the debounce, so nothing from before the removal starts a pass below.
+    std::thread::sleep(Duration::from_millis(600));
+    let removed = cursor(&ctx);
+    drop_elsewhere("removed1");
+
+    std::thread::sleep(Duration::from_secs(2));
+
+    let events = index_events(&ctx, removed);
+    assert!(!events.iter().any(|e| matches!(e, PushedEvent::IndexStarted)), "a removed root is still watched: {events:?}");
     server.shutdown();
 }

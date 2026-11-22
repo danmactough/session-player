@@ -2,6 +2,7 @@
 //! CLI and the client crate. See .plans/server-api/00-design.md.
 
 mod analyze;
+mod devices;
 mod events;
 mod export;
 mod generate_job;
@@ -25,6 +26,7 @@ use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, TimeZone};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 pub use analyze::*;
+pub use devices::{Device, Offer, Offers};
 pub use export::*;
 pub use generate_job::*;
 pub use import::*;
@@ -90,6 +92,9 @@ pub struct Ctx {
     reporting: Mutex<Option<JobId>>,
     exports: Mutex<HashMap<DeviceId, export::PendingExport>>,
     images: Mutex<sessions::ImageCache>,
+    devices: devices::DeviceStore,
+    offers: Mutex<Offers>,
+    external_open: AtomicBool,
 }
 
 /// Coalesces index requests: a request during a pass joins it and leaves at most one follow-up.
@@ -110,6 +115,7 @@ impl Ctx {
         }
         let clock = params.clock.unwrap_or_else(|| Arc::new(|| chrono::Utc::now().timestamp_millis() as u64));
         let started = clock();
+        let devices = devices::DeviceStore::open(&params.paths.data)?;
         Ok(Arc::new(Ctx {
             paths: params.paths,
             home: params.home,
@@ -129,6 +135,9 @@ impl Ctx {
             // Generations start at the start time, so an image URL from an earlier run is never
             // mistaken for one of this run's.
             images: Mutex::new(sessions::ImageCache::new(started)),
+            devices,
+            offers: Mutex::new(Offers::default()),
+            external_open: AtomicBool::new(false),
         }))
     }
 
@@ -151,7 +160,8 @@ impl Ctx {
         self.events.publish(event, (self.clock)());
     }
 
-    fn now(&self) -> u64 {
+    /// Ms since the Unix epoch by this Ctx's clock.
+    pub fn now(&self) -> u64 {
         (self.clock)()
     }
 
@@ -453,8 +463,7 @@ fn hello(ctx: &Arc<Ctx>, _device: &DeviceId, _req: &HelloRequest) -> Result<Hell
         api_minor: API_MINOR,
         server_version: ctx.version.clone(),
         home: ctx.home.to_string_lossy().into_owned(),
-        // No device can pair yet, so the server never listens off loopback.
-        loopback_only: true,
+        loopback_only: !ctx.external_open.load(Ordering::SeqCst),
     })
 }
 

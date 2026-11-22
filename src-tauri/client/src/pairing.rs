@@ -1,7 +1,12 @@
 //! Pairing strings and the servers they pair with.
 
+use anyhow::Context;
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::{Deserialize, Serialize};
-use session_player_core::ops::{ApiError, DeviceId};
+use session_player_core::ops::{ApiError, DeviceId, ErrorCode};
+
+use crate::{Client, ClientParams};
 
 /// `sp1.` + base64url (no padding) JSON of this struct.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -16,12 +21,18 @@ pub struct PairingString {
 
 impl PairingString {
     pub fn parse(text: &str) -> anyhow::Result<PairingString> {
-        let _ = text;
-        todo!("PairingString::parse")
+        let encoded = text.trim().strip_prefix("sp1.").context("A pairing string starts with sp1.")?;
+        let json = URL_SAFE_NO_PAD.decode(encoded).context("The pairing string is damaged")?;
+        serde_json::from_slice(&json).context("The pairing string is damaged")
     }
 
     pub fn encode(&self) -> String {
-        todo!("PairingString::encode")
+        format!("sp1.{}", URL_SAFE_NO_PAD.encode(serde_json::to_vec(self).expect("a pairing string serializes")))
+    }
+
+    pub fn url(&self) -> String {
+        let scheme = if self.fingerprint.is_some() { "https" } else { "http" };
+        format!("{scheme}://{}:{}", self.address, self.port)
     }
 }
 
@@ -45,6 +56,23 @@ pub struct ConnectParams<'a> {
 /// Redeems a pairing string. A pinned fingerprint that doesn't match fails before the secret is
 /// sent.
 pub fn connect(params: ConnectParams) -> Result<PairedServer, ApiError> {
-    let _ = params;
-    todo!("connect")
+    let pairing = PairingString::parse(params.pairing).map_err(|e| ApiError { code: ErrorCode::BadRequest, message: format!("{e:#}") })?;
+    let client = Client::new(ClientParams { url: pairing.url(), token: None, fingerprint: pairing.fingerprint.clone() })
+        .map_err(|e| ApiError { code: ErrorCode::BadRequest, message: format!("{e:#}") })?;
+    let answer: ConnectAnswer = client.call_named("connect", &ConnectAsk { secret: &pairing.secret, name: params.name })?;
+    let token = answer.token.ok_or_else(|| ApiError { code: ErrorCode::Internal, message: "The server sent no device token.".to_string() })?;
+    Ok(PairedServer { name: params.name.to_string(), address: pairing.address, port: pairing.port, fingerprint: pairing.fingerprint, token, device: answer.device })
+}
+
+/// The server crate's ConnectRequest and ConnectResponse, which this crate can't depend on.
+#[derive(Serialize)]
+struct ConnectAsk<'a> {
+    secret: &'a str,
+    name: &'a str,
+}
+
+#[derive(Deserialize)]
+struct ConnectAnswer {
+    device: DeviceId,
+    token: Option<String>,
 }

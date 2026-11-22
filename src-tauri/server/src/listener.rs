@@ -15,6 +15,5 @@ pub struct Wanted {
 }
 
 pub fn wanted(state: &Wanted) -> bool {
-    let _ = state;
-    todo!("listener::wanted")
+    state.external_bind && (state.devices > 0 || state.open_offers > 0)
 }

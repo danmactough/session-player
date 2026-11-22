@@ -4125,8 +4125,11 @@ dependencies = [
  "ctrlc",
  "dirs 6.0.0",
  "rusqlite",
+ "serde",
  "serde_json",
+ "session-player-client",
  "session-player-core",
+ "session-player-server",
 ]
 
 [[package]]

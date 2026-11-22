@@ -1,7 +1,12 @@
 //! `sp`: Session Player from the command line. It reads and writes the same
 //! database as the app, so analysis and reports made here show up there.
 
+// Wired into the commands by the green half of batch 5.
+#[allow(dead_code)]
+mod backend;
 mod markdown;
+#[allow(dead_code)]
+mod route;
 
 use std::collections::{HashMap, HashSet};
 use std::io::{IsTerminal, Read, Write};
@@ -25,6 +30,12 @@ const ANALYZE_AT_ONCE: usize = 3;
 #[derive(Parser)]
 #[command(name = "sp", version, about = "Session Player from the command line")]
 struct Cli {
+    /// Run in this process on this machine's database, even when a server is running here
+    #[arg(long, global = true, conflicts_with = "server")]
+    local: bool,
+    /// Run on a server paired with `sp connect`, by the name it was saved under
+    #[arg(long, global = true, value_name = "NAME")]
+    server: Option<String>,
     #[command(subcommand)]
     command: Command,
 }
@@ -134,6 +145,37 @@ enum Command {
     ///
     /// The sp inside the Mac app is linked, so updating the app updates it. Anywhere else it is copied.
     Install,
+    /// Run the Session Player server on this machine's data folder until stopped
+    ///
+    /// Settings are read from server.json in the data folder.
+    Serve,
+    /// Print a pairing string another machine passes to `sp connect`
+    Pair,
+    /// Pair with a server, using the string `sp pair` printed there
+    Connect {
+        /// The pairing string, starting with sp1.
+        pairing: String,
+        /// The name to save the server under, which `--server` and `sp pull` take
+        #[arg(long)]
+        name: String,
+    },
+    /// List the devices paired with this machine's server
+    Devices,
+    /// Revoke a paired device's access to this machine's server
+    Unpair {
+        /// The device's id, as `sp devices` lists it
+        device: String,
+    },
+    /// Install, remove, start, stop or check the server as a per-user service (launchd or systemd)
+    Service {
+        #[arg(value_enum)]
+        action: ServiceArg,
+    },
+    /// Stop a job running on the server
+    Cancel {
+        /// The job's id, as printed when it was started or detached from
+        job: String,
+    },
     /// What `sp pull` runs on the other machine: writes the repository's sessions to standard output
     #[command(hide = true)]
     ExportProject {
@@ -179,6 +221,15 @@ struct Prompt {
     /// A file holding that text; `-` reads standard input
     #[arg(long)]
     prompt_file: Option<PathBuf>,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum ServiceArg {
+    Install,
+    Uninstall,
+    Start,
+    Stop,
+    Status,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -1025,6 +1076,13 @@ fn main() {
         Command::Install => cmd_install(),
         Command::ExportProject { repo, since } => cmd_export_project(&paths, repo, *since),
         Command::ImportProject { project, dry_run } => cmd_import_project(&paths, project, *dry_run),
+        Command::Serve => todo!("sp serve"),
+        Command::Pair => todo!("sp pair"),
+        Command::Connect { .. } => todo!("sp connect"),
+        Command::Devices => todo!("sp devices"),
+        Command::Unpair { .. } => todo!("sp unpair"),
+        Command::Service { .. } => todo!("sp service"),
+        Command::Cancel { .. } => todo!("sp cancel"),
     });
     if let Err(e) = result {
         if generate::is_cancelled(&e) || e.is::<Interrupted>() {

@@ -67,7 +67,7 @@ fn an_uploaded_bundle_is_imported_into_the_library_and_its_session_listed() {
 
     let report = upload(&ctx, bytes, &[]).expect("import_bundle");
 
-    assert_eq!(report["imported"], json!(["s1"]));
+    assert_eq!(report["imported"], json!(["claude:s1"]));
     common::reindex(&ctx);
     let row = common::row(&ctx, "s1");
     assert!(row.from_bundle);
@@ -84,19 +84,19 @@ fn a_conflicting_upload_writes_nothing_until_on_conflict_is_given_in_the_query()
 
     let asked = upload(&ctx, changed.clone(), &[]).expect("import_bundle");
     assert_eq!(asked["imported"], json!([]));
-    assert_eq!(asked["conflicts"][0]["id"], "s1");
+    assert_eq!(asked["conflicts"][0]["id"], "claude:s1");
 
     let replaced = upload(&ctx, changed, &[("on_conflict", "replace")]).expect("import_bundle replacing");
-    assert_eq!(replaced["imported"], json!(["s1"]));
+    assert_eq!(replaced["imported"], json!(["claude:s1"]));
 }
 
 #[test]
 fn an_upload_over_the_cap_is_too_large_and_writes_nothing_permanent() {
     let dir = TempDir::new("import-cap");
     let bytes = bundle_bytes(&dir, "exporter", "s1", "Add a health check endpoint");
-    assert!(bytes.len() > 1024, "the bundle must be over the cap: {}", bytes.len());
+    assert!(bytes.len() > 256, "the bundle must be over the cap: {}", bytes.len());
     let importer = dir.join("importer");
-    let ctx = common::open(common::Open { dir: &importer, claude: None, upload_cap: Some(1024), register_claude_root: true });
+    let ctx = common::open(common::Open { dir: &importer, claude: None, upload_cap: Some(256), register_claude_root: true });
     let before = files_under(&importer);
 
     let refused = upload(&ctx, bytes, &[]);

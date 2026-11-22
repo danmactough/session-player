@@ -56,13 +56,16 @@ fn load_session_rewrites_data_image_urls_to_image_route_paths_whose_images_ctx_i
 
     let events = load(&ctx, &path);
 
-    let (at, event) = events.iter().enumerate().find(|(_, e)| !e.images.is_empty()).expect("an event with images");
-    assert_eq!(event.images.len(), 3);
-    assert!(event.images.iter().all(|u| !u.starts_with("data:")), "{:?}", event.images);
-    assert_eq!(event.images[2], LINKED, "a linked image is left as it was");
+    // The parser gives each image block of the prompt an event of its own.
+    let images: Vec<&String> = events.iter().flat_map(|e| &e.images).collect();
+    assert_eq!(images.len(), 3);
+    assert!(images.iter().all(|u| !u.starts_with("data:")), "{images:?}");
+    assert_eq!(images[2], LINKED, "a linked image is left as it was");
     let found = refs(&events);
     assert_eq!(found.len(), 2);
-    assert_eq!((found[0].event, found[0].image, found[1].event, found[1].image), (at, 0, at, 1));
+    for (r, url) in found.iter().zip(&images) {
+        assert_eq!(&&events[r.event].images[r.image], url, "{r:?} names the event and image the URL is on");
+    }
     assert_eq!(found[0].generation, found[1].generation);
     assert_eq!(ctx.image(found[0]).expect("the first image"), Image { content_type: "image/png".to_string(), bytes: b"png bytes".to_vec() });
     assert_eq!(ctx.image(found[1]).expect("the second image"), Image { content_type: "image/jpeg".to_string(), bytes: b"jpeg bytes".to_vec() });

@@ -17,6 +17,7 @@ pub mod wire;
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, bail};
@@ -74,11 +75,21 @@ pub struct Ctx {
     paths: Paths,
     home: PathBuf,
     version: String,
+    claude: Option<Claude>,
     clock: Clock,
+    upload_cap: u64,
     extensions: Vec<Extension>,
     jobs: Jobs,
     events: Events,
     gate: Mutex<IndexGate>,
+    /// The flag that stops each running job that can be cancelled.
+    cancels: Mutex<HashMap<JobId, Arc<AtomicBool>>>,
+    /// Session keys with a running Generate job, and that job.
+    generating: Mutex<HashMap<String, JobId>>,
+    analyzing: Mutex<Option<JobId>>,
+    reporting: Mutex<Option<JobId>>,
+    exports: Mutex<HashMap<DeviceId, export::PendingExport>>,
+    images: Mutex<sessions::ImageCache>,
 }
 
 /// Coalesces index requests: a request during a pass joins it and leaves at most one follow-up.
@@ -103,11 +114,21 @@ impl Ctx {
             paths: params.paths,
             home: params.home,
             version: params.version,
+            claude: params.claude,
             clock,
+            upload_cap: params.upload_cap.unwrap_or(DEFAULT_UPLOAD_CAP),
             extensions: params.extensions,
             jobs: Jobs::new(started),
             events: Events::new(params.event_capacity.unwrap_or(events::DEFAULT_CAPACITY), started),
             gate: Mutex::new(IndexGate { running: None, pending: false, pending_full: false }),
+            cancels: Mutex::new(HashMap::new()),
+            generating: Mutex::new(HashMap::new()),
+            analyzing: Mutex::new(None),
+            reporting: Mutex::new(None),
+            exports: Mutex::new(HashMap::new()),
+            // Generations start at the start time, so an image URL from an earlier run is never
+            // mistaken for one of this run's.
+            images: Mutex::new(sessions::ImageCache::new(started)),
         }))
     }
 
@@ -129,6 +150,80 @@ impl Ctx {
     fn publish(&self, event: PushedEvent) {
         self.events.publish(event, (self.clock)());
     }
+
+    fn now(&self) -> u64 {
+        (self.clock)()
+    }
+
+    /// The log of Analyze and report runs; see `runlog`.
+    fn analyze_log(&self) -> PathBuf {
+        self.paths.logs.join("analyze.log")
+    }
+
+    /// Starts a job that `cancel_job` can stop through the returned flag.
+    fn start_cancellable(&self, kind: JobKind, key: Option<String>) -> (JobId, Arc<AtomicBool>) {
+        let id = self.jobs.start(kind, key, self.now());
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.cancels.lock().unwrap().insert(id.clone(), cancel.clone());
+        (id, cancel)
+    }
+
+    fn end_job(&self, id: &JobId, state: JobState, error: Option<String>) {
+        self.cancels.lock().unwrap().remove(id);
+        self.jobs.finish(id, state, error, self.now());
+    }
+
+    /// The `claude` command: the stand-in the Ctx was opened with, else the one installed, with
+    /// this process's environment and the Claude settings.
+    fn claude(&self) -> anyhow::Result<Claude> {
+        if let Some(claude) = &self.claude {
+            return Ok(claude.clone());
+        }
+        let home = dirs::home_dir().unwrap_or_default();
+        let on_path: Vec<PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).map(|d| d.join("claude")).collect()).unwrap_or_default();
+        let bin = on_path
+            .into_iter()
+            .chain([home.join(".local/bin/claude"), home.join(".claude/local/claude")])
+            .find(|p| p.is_file())
+            .context("Couldn't find the claude command. Install Claude Code and sign in, then try again.")?;
+        let config_dir = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|d| !d.is_empty()).map(PathBuf::from).unwrap_or_else(|| home.join(".claude"));
+        let mut claude = Claude::new(bin, std::env::vars().collect(), &config_dir)?;
+        claude.log = Some(self.analyze_log());
+        Ok(claude)
+    }
+
+    /// The index rows of `paths`, one per session key (a pi session's branches share one).
+    fn rows_of(&self, paths: &[String]) -> Result<Vec<SessionRow>, OpError> {
+        let conn = index::open(&self.paths.db).map_err(internal)?;
+        let rows = index::list(&conn).map_err(internal)?;
+        let mut seen = HashSet::new();
+        let mut found = Vec::new();
+        for path in paths {
+            let row = rows.iter().find(|r| r.path == *path).ok_or_else(|| OpError::NotFound(format!("No session is indexed at {path}")))?;
+            if seen.insert(annotations::session_key(row)) {
+                found.push(row.clone());
+            }
+        }
+        Ok(found)
+    }
+}
+
+/// What a caller is shown of an error: its first line. The rest (claude's own output) is in the log.
+fn first_line(e: &anyhow::Error) -> String {
+    format!("{e:#}").lines().next().unwrap_or_default().to_string()
+}
+
+/// The focus text the UI saved under `field` of its `prefs` setting, if any.
+fn saved_focus(conn: &rusqlite::Connection, field: &str) -> Option<String> {
+    let saved: Option<String> = conn.query_row("SELECT value FROM settings WHERE key='ui.prefs'", [], |r| r.get(0)).ok();
+    saved
+        .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
+        .and_then(|prefs| prefs.get(field).and_then(|v| v.as_str()).map(str::to_string))
+        .filter(|text| !text.trim().is_empty())
+}
+
+fn focus_label(focus: Option<&str>) -> &'static str {
+    if focus.is_some_and(|f| !f.trim().is_empty()) { "your own focus" } else { "the built-in focus" }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -371,8 +466,12 @@ fn cancel_job(ctx: &Arc<Ctx>, _device: &DeviceId, req: &CancelJobRequest) -> Res
     let job = ctx.jobs.get(&req.id).ok_or_else(|| OpError::NotFound(format!("No job {}", req.id.0)))?;
     match job.kind {
         JobKind::Index => Err(OpError::Conflict("An index pass can't be cancelled".to_string())),
+        // The job's own thread ends it as Cancelled once its `claude` is stopped, after publishing
+        // its done event.
         _ => {
-            ctx.jobs.finish(&req.id, JobState::Cancelled, None, (ctx.clock)());
+            if let Some(flag) = ctx.cancels.lock().unwrap().get(&req.id) {
+                flag.store(true, Ordering::SeqCst);
+            }
             Ok(())
         }
     }
@@ -438,6 +537,15 @@ fn reindex(ctx: &Arc<Ctx>, _device: &DeviceId, req: &ReindexRequest) -> Result<J
     let full = req.full;
     std::thread::spawn(move || run_index(&ctx, &job, full));
     Ok(id)
+}
+
+/// Requests an index pass and waits for it, so what changed is listed when the caller returns.
+fn index_now(ctx: &Arc<Ctx>, device: &DeviceId) -> Result<(), OpError> {
+    let id = reindex(ctx, device, &ReindexRequest { full: false })?;
+    while ctx.jobs.get(&id).is_some_and(|j| j.state == JobState::Running) {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    Ok(())
 }
 
 /// Runs index passes for one job until no request is pending. Requests that arrive during a pass

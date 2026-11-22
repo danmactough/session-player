@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use super::{Ctx, DeviceId, Input, OpError, Output};
-use crate::bundle;
+use super::{Ctx, DeviceId, Input, OpError, Output, RawBody, RawData, internal};
+use crate::{bundle, index};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExportPreviewRequest {
@@ -49,50 +49,100 @@ pub struct ExportCancelRequest {}
 /// the user reviewed is what leaves the machine. Previews can overlap and finish in any order, so
 /// the sheet numbers its requests and only the newest one's bundle is kept.
 #[derive(Default)]
-#[expect(dead_code, reason = "used by the export handlers once they are implemented")]
 pub(super) struct PendingExport {
     latest: u64,
     bundle: Option<(u64, bundle::Bundle)>,
 }
 
-#[cfg_attr(not(test), expect(dead_code, reason = "used by the export handlers once they are implemented"))]
 impl PendingExport {
-    fn begin(&mut self, _request: u64) {
-        todo!("PendingExport::begin")
+    fn begin(&mut self, request: u64) {
+        if request > self.latest {
+            self.latest = request;
+            self.bundle = None;
+        }
     }
 
-    fn finish(&mut self, _token: u64, _built: bundle::Bundle) {
-        todo!("PendingExport::finish")
+    fn finish(&mut self, token: u64, built: bundle::Bundle) {
+        if token == self.latest {
+            self.bundle = Some((token, built));
+        }
     }
 
-    fn take(&mut self, _token: u64) -> Option<bundle::Bundle> {
-        todo!("PendingExport::take")
+    fn take(&mut self, token: u64) -> Option<bundle::Bundle> {
+        match self.bundle.take() {
+            Some((t, built)) if t == token => Some(built),
+            other => {
+                self.bundle = other;
+                None
+            }
+        }
     }
 
     /// Returns a bundle whose download failed, so the user can try again.
-    fn put_back(&mut self, _token: u64, _built: bundle::Bundle) {
-        todo!("PendingExport::put_back")
+    fn put_back(&mut self, token: u64, built: bundle::Bundle) {
+        if token == self.latest && self.bundle.is_none() {
+            self.bundle = Some((token, built));
+        }
     }
 
     fn cancel(&mut self) {
-        todo!("PendingExport::cancel")
+        self.latest += 1;
+        self.bundle = None;
     }
 }
 
 /// Builds the bundle for a session into the caller's slot and describes it for the export sheet.
-pub(super) fn export_preview(_ctx: &Arc<Ctx>, _device: &DeviceId, _req: &ExportPreviewRequest) -> Result<ExportPreview, OpError> {
-    todo!("export_preview")
+pub(super) fn export_preview(ctx: &Arc<Ctx>, device: &DeviceId, req: &ExportPreviewRequest) -> Result<ExportPreview, OpError> {
+    let token = req.request;
+    ctx.exports.lock().unwrap().entry(device.clone()).or_default().begin(token);
+    let conn = index::open(&ctx.paths.db).map_err(internal)?;
+    let choices = if req.branch.is_some() { Vec::new() } else { bundle::subagents_of(&conn, &req.path).map_err(internal)? };
+    let request = bundle::ExportRequest { path: &req.path, branch: req.branch.as_deref(), subagents: req.subagents.clone() };
+    let built = bundle::build(&conn, request, &format!("Session Player {}", ctx.version)).map_err(internal)?;
+    let summary = bundle::summarize(&built);
+    ctx.exports.lock().unwrap().entry(device.clone()).or_default().finish(token, built);
+    Ok(ExportPreview {
+        token,
+        summary,
+        subagents: choices
+            .into_iter()
+            .map(|(path, title)| SubagentChoice { included: req.subagents.as_ref().is_none_or(|wanted| wanted.contains(&path)), path, title })
+            .collect(),
+    })
 }
 
 /// The caller's previewed bundle as a file (`RawData::Bytes`), once. NotFound when the caller has
 /// no bundle for `token`; BadRequest without a name.
-pub(super) fn export_session(_ctx: &Arc<Ctx>, _device: &DeviceId, _input: Input) -> Result<Output, OpError> {
-    todo!("export_session")
+pub(super) fn export_session(ctx: &Arc<Ctx>, device: &DeviceId, input: Input) -> Result<Output, OpError> {
+    let Input::Json(value) = input else { return Err(OpError::BadRequest("export_session takes a JSON body".to_string())) };
+    let req: ExportSessionRequest = serde_json::from_value(value).map_err(|e| OpError::BadRequest(e.to_string()))?;
+    let exported_by = req.exported_by.trim().to_string();
+    if exported_by.is_empty() {
+        return Err(OpError::BadRequest("Set your name before exporting.".to_string()));
+    }
+    let taken = ctx.exports.lock().unwrap().get_mut(device).and_then(|slot| slot.take(req.token));
+    let Some(mut built) = taken else {
+        return Err(OpError::NotFound("This preview is out of date. Review the export again before saving.".to_string()));
+    };
+    built.exported_by = Some(exported_by);
+    match serde_json::to_vec(&built) {
+        Ok(bytes) => {
+            let filename = bundle::summarize(&built).file_name;
+            Ok(Output::Raw(RawBody { data: RawData::Bytes(bytes), content_type: "application/octet-stream".to_string(), filename: Some(filename) }))
+        }
+        Err(e) => {
+            ctx.exports.lock().unwrap().entry(device.clone()).or_default().put_back(req.token, built);
+            Err(OpError::Internal(e.to_string()))
+        }
+    }
 }
 
 /// Drops the caller's previewed bundle when the export sheet closes without saving.
-pub(super) fn export_cancel(_ctx: &Arc<Ctx>, _device: &DeviceId, _req: &ExportCancelRequest) -> Result<(), OpError> {
-    todo!("export_cancel")
+pub(super) fn export_cancel(ctx: &Arc<Ctx>, device: &DeviceId, _req: &ExportCancelRequest) -> Result<(), OpError> {
+    if let Some(slot) = ctx.exports.lock().unwrap().get_mut(device) {
+        slot.cancel();
+    }
+    Ok(())
 }
 
 #[cfg(test)]

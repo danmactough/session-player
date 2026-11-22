@@ -53,10 +53,10 @@ fn a_preview_describes_the_bundle_and_downloading_gives_that_bundle_once() {
 
     let shown = preview(&ctx, "local", "s1", 1);
     assert_eq!(shown["token"], 1);
-    assert_eq!(shown["summary"]["sessions"][0]["id"], "s1");
+    assert_eq!(shown["summary"]["sessions"][0]["id"], "claude:s1");
     let (bundle, filename) = download(&ctx, &dir, "local", 1, "Dana").expect("export_session");
 
-    assert_eq!(bundle.sessions[0].id, "s1");
+    assert_eq!(bundle.sessions[0].id, "claude:s1");
     assert_eq!(bundle.exported_by.as_deref(), Some("Dana"));
     assert_eq!(bundle.exporter, "Session Player 9.9.9");
     assert_eq!(filename.as_deref(), shown["summary"]["file_name"].as_str());
@@ -74,8 +74,8 @@ fn a_token_reads_only_its_own_devices_slot() {
 
     let stranger = download(&ctx, &dir, "cccc", 1, "Eve");
     assert!(matches!(stranger, Err(OpError::NotFound(_))), "{stranger:?}");
-    assert_eq!(download(&ctx, &dir, "bbbb", 1, "Bo").expect("b's bundle").0.sessions[0].id, "s2");
-    assert_eq!(download(&ctx, &dir, "aaaa", 1, "Al").expect("a's bundle").0.sessions[0].id, "s1");
+    assert_eq!(download(&ctx, &dir, "bbbb", 1, "Bo").expect("b's bundle").0.sessions[0].id, "claude:s2");
+    assert_eq!(download(&ctx, &dir, "aaaa", 1, "Al").expect("a's bundle").0.sessions[0].id, "claude:s1");
 }
 
 #[test]
@@ -88,7 +88,7 @@ fn a_newer_preview_replaces_an_older_one_from_the_same_device() {
 
     let stale = download(&ctx, &dir, "local", 1, "Dana");
     assert!(matches!(stale, Err(OpError::NotFound(_))), "{stale:?}");
-    assert_eq!(download(&ctx, &dir, "local", 2, "Dana").expect("the newer bundle").0.sessions[0].id, "s2");
+    assert_eq!(download(&ctx, &dir, "local", 2, "Dana").expect("the newer bundle").0.sessions[0].id, "claude:s2");
 }
 
 #[test]
@@ -100,7 +100,7 @@ fn a_download_without_a_name_is_a_bad_request_and_keeps_the_preview() {
     let refused = download(&ctx, &dir, "local", 1, "   ");
 
     assert!(matches!(refused, Err(OpError::BadRequest(_))), "{refused:?}");
-    assert_eq!(download(&ctx, &dir, "local", 1, "Dana").expect("still there").0.sessions[0].id, "s1");
+    assert_eq!(download(&ctx, &dir, "local", 1, "Dana").expect("still there").0.sessions[0].id, "claude:s1");
 }
 
 #[test]
@@ -114,5 +114,5 @@ fn export_cancel_drops_only_the_callers_preview() {
 
     let dropped = download(&ctx, &dir, "aaaa", 1, "Al");
     assert!(matches!(dropped, Err(OpError::NotFound(_))), "{dropped:?}");
-    assert_eq!(download(&ctx, &dir, "bbbb", 1, "Bo").expect("b's bundle").0.sessions[0].id, "s2");
+    assert_eq!(download(&ctx, &dir, "bbbb", 1, "Bo").expect("b's bundle").0.sessions[0].id, "claude:s2");
 }

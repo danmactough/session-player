@@ -1,0 +1,11 @@
+[package]
+name = "session-player-server"
+version.workspace = true
+description = "The persistent Session Player server: one HTTP API over the operations in session-player-core"
+authors = ["Dan MacTough"]
+license = "MIT"
+edition = "2024"
+rust-version = "1.90"
+
+[dependencies]
+session-player-core = { path = "../core" }

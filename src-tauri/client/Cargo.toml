@@ -1,0 +1,11 @@
+[package]
+name = "session-player-client"
+version.workspace = true
+description = "Client for the Session Player server: pinned TLS, pairing, operation calls and the event stream"
+authors = ["Dan MacTough"]
+license = "MIT"
+edition = "2024"
+rust-version = "1.90"
+
+[dependencies]
+session-player-core = { path = "../core" }

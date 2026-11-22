@@ -1,5 +1,5 @@
 [workspace]
-members = ["core", "cli"]
+members = ["core", "cli", "server", "client"]
 
 # The sp command ships with the app and reports the app's version. `npm version`
 # rewrites every line here that starts with "version".

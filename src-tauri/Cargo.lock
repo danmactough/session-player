@@ -3725,6 +3725,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "session-player-client"
+version = "0.16.0"
+dependencies = [
+ "session-player-core",
+]
+
+[[package]]
 name = "session-player-core"
 version = "0.1.0"
 dependencies = [
@@ -3738,6 +3745,13 @@ dependencies = [
  "serde_json",
  "walkdir",
  "zstd",
+]
+
+[[package]]
+name = "session-player-server"
+version = "0.16.0"
+dependencies = [
+ "session-player-core",
 ]
 
 [[package]]

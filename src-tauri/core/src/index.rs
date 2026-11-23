@@ -4,7 +4,7 @@ use std::time::UNIX_EPOCH;
 
 use rayon::prelude::*;
 use rusqlite::{Connection, OptionalExtension, params};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
 use crate::model::{EventKind, Parsed, SessionRow, Source};
@@ -45,6 +45,7 @@ pub fn open(db_path: &Path) -> anyhow::Result<Connection> {
     )?;
     crate::annotations::create_tables(&conn)?;
     crate::reports::create_tables(&conn)?;
+    crate::sync::create_tables(&conn)?;
     let version: Option<String> = conn
         .query_row("SELECT value FROM settings WHERE key='index_version'", [], |r| r.get(0))
         .optional()?;
@@ -118,7 +119,7 @@ pub fn remove_root(conn: &mut Connection, path: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Default, Clone, Serialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct IndexStats {
     pub scanned: usize,
     pub updated: usize,
@@ -242,6 +243,7 @@ pub fn run(
         .collect();
 
     let mut stats = IndexStats { scanned, removed: removed.len(), ..Default::default() };
+    let pulled = crate::sync::pulled_projects(conn)?;
     let tx = conn.transaction()?;
     for path in &removed {
         tx.execute("DELETE FROM files WHERE path=?1", [path])?;
@@ -265,7 +267,13 @@ pub fn run(
         if r.error.is_some() {
             stats.failed += 1;
         }
-        let Some((row, body)) = r.row else { continue };
+        let Some((mut row, body)) = r.row else { continue };
+        // A session pulled from another machine records that machine's folder. Its file is in the
+        // agent's folder for the local checkout, which is also where resuming it has to run.
+        if let Some(project) = pulled.get(&row.path) {
+            row.project = project.clone();
+            row.cwd = Some(project.clone());
+        }
         stats.updated += 1;
         tx.execute(
             "INSERT INTO sessions(path, root, source, native_id, cwd, project, title, title_source,
@@ -521,7 +529,7 @@ fn clean_title(t: &str) -> Option<String> {
 /// The directory a session is grouped under: the main checkout of the git
 /// repository containing `cwd`. The path markers come first because they still
 /// identify the repository after a worktree has been deleted from disk.
-fn project_of(cwd: Option<&str>) -> String {
+pub fn project_of(cwd: Option<&str>) -> String {
     let Some(cwd) = cwd.filter(|c| !c.is_empty()) else {
         return "(unknown)".into();
     };
@@ -860,12 +868,16 @@ pub fn root_counts(conn: &Connection) -> anyhow::Result<HashMap<String, i64>> {
 }
 
 #[cfg(test)]
+#[path = "../../testutil/tempdir.rs"]
+mod tempdir;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use super::tempdir::TempDir;
 
-    fn temp_tree(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("sp-project-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+    fn temp_tree(name: &str) -> TempDir {
+        let dir = TempDir::new(&format!("project-{name}"));
         std::fs::create_dir_all(dir.join("repo/.git/worktrees/feat")).unwrap();
         std::fs::create_dir_all(dir.join("repo/src/deep")).unwrap();
         std::fs::create_dir_all(dir.join("elsewhere/feat/src")).unwrap();

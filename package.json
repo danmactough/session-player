@@ -15,6 +15,10 @@
     "test": "cd src-tauri && cargo test",
     "test:core": "cd src-tauri && cargo test -p session-player-core",
     "test:app": "cd src-tauri && cargo test -p session-player",
+    "test:cli": "cd src-tauri && cargo test -p session-player-cli",
+    "test:server": "cd src-tauri && cargo test -p session-player-server",
+    "test:client": "cd src-tauri && cargo test -p session-player-client",
+    "test:cli": "cd src-tauri && cargo test -p session-player-cli",
     "version": "sed -i '' \"s/^version = .*/version = \\\"$npm_new_version\\\"/\" src-tauri/Cargo.toml && cargo update --workspace --offline --manifest-path src-tauri/Cargo.toml && git add src-tauri/Cargo.toml src-tauri/Cargo.lock"
   },
   "dependencies": {

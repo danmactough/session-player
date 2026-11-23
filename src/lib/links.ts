@@ -1,5 +1,5 @@
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { api } from "../api";
+import { openUrl } from "./native";
 
 /**
  * Opens every link in the default browser. Clicks, ⌘-clicks and middle
@@ -16,8 +16,7 @@ export function openLinksInBrowser() {
     // Links in transcripts point outside the app; anything else (an in-page
     // anchor, a relative path from a README) has nowhere useful to go.
     if (!/^(https?:|mailto:)/i.test(href)) return;
-    if ("__TAURI_INTERNALS__" in window) void openUrl(href).catch((err) => api.log("error", `open ${href}: ${err}`));
-    else window.open(href, "_blank", "noopener");
+    void openUrl(href).catch((err) => api.log("error", `open ${href}: ${err}`));
   };
   document.addEventListener("click", onClick, true);
   document.addEventListener("auxclick", onClick, true);

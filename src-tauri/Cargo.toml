@@ -1,5 +1,10 @@
 [workspace]
-members = ["core"]
+members = ["core", "cli", "server", "client"]
+
+# The sp command ships with the app and reports the app's version. `npm version`
+# rewrites every line here that starts with "version".
+[workspace.package]
+version = "0.16.0"
 
 [package]
 name = "session-player"
@@ -24,11 +29,12 @@ tauri = { version = "2.12.5", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 rusqlite = { version = "0.37", features = ["bundled"] }
-notify = "8"
-notify-debouncer-mini = "0.7"
 dirs = "6"
-anyhow = "1"
-base64 = "0.22"
 session-player-core = { path = "core" }
+session-player-client = { path = "client" }
 tauri-plugin-updater = "2.14.1"
 tauri-plugin-process = "2.4.0"
+
+[dev-dependencies]
+base64 = "0.22"
+session-player-server = { path = "server" }

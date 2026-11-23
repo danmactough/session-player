@@ -1,4 +1,4 @@
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { setWindowTheme } from "./native";
 
 export type Theme = "system" | "light" | "dark";
 
@@ -19,13 +19,7 @@ export function applyTheme(theme: Theme) {
   } catch {
     // Storage can be unavailable; the saved preference still applies once loaded.
   }
-  try {
-    void getCurrentWindow()
-      .setTheme(theme === "system" ? null : theme)
-      .catch(() => {});
-  } catch {
-    // Not running inside Tauri (browser preview).
-  }
+  setWindowTheme(theme === "system" ? null : theme);
 }
 
 export function storedTheme(): Theme {

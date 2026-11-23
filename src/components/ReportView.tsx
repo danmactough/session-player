@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ask, save } from "@tauri-apps/plugin-dialog";
 import { api } from "../api";
+import { downloadBlob } from "../lib/download";
+import { ask, isApp, saveMarkdown } from "../lib/native";
 import type { ActionResponse, ActionStatus, CitedAnnotation, Evidence, LatestVerdict, Report, UserImpact } from "../types";
 import { KIND_LABEL, OUTCOME_LABEL } from "../lib/notes";
 import { fullDate } from "../lib/format";
@@ -55,10 +56,13 @@ export function ReportView({ id, onOpenSession, canOpenSession, onDeleted, onOpe
   };
   const saveFile = async () => {
     const name = report.title.replace(/[/\\:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 80) || "Report";
-    const dest = await save({ title: "Save report", defaultPath: `${name}.md`, filters: [{ name: "Markdown", extensions: ["md"] }] });
-    if (!dest) return;
+    if (!isApp) {
+      setNotice(`Downloaded ${downloadBlob({ blob: new Blob([markdown], { type: "text/markdown" }), filename: `${name}.md` })}`);
+      return;
+    }
     try {
-      setNotice(`Saved to ${await api.saveMarkdown(dest, markdown)}`);
+      const saved = await saveMarkdown(`${name}.md`, markdown);
+      if (saved) setNotice(`Saved to ${saved}`);
     } catch (e) {
       setNotice(`Couldn’t save: ${e}`);
     }

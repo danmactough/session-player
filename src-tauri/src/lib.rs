@@ -1,847 +1,223 @@
 mod apps;
+mod cli;
+pub mod local;
+pub mod paired;
+pub mod relay;
+pub mod save;
 mod terminals;
 
-// The parsing, indexing, note generation and bundle code lives in session-player-core, which
-// has no Tauri dependency and holds all the integration tests. Re-exported here so the
-// command layer can keep referring to the modules by their short names.
-pub use session_player_core::{annotations, bundle, generate, index, model, parse, reports, runlog};
+// The app's data lives on the server (`sp serve`, on this machine or a paired one). The page talks
+// to the local server directly over loopback HTTP, and to a paired remote one through the relay
+// here, which holds that server's token. What stays in the shell is native: Finder, terminals,
+// other apps, dialogs, the updater, and managing the local server as a service.
 
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
-use notify::RecursiveMode;
-use notify_debouncer_mini::{DebouncedEvent, Debouncer, new_debouncer};
-use serde::Serialize;
+use session_player_client::ServersStore;
+use session_player_core::ops::ServerEvent;
+use session_player_core::{bundle, runlog};
+use tauri::ipc::{Channel, InvokeBody, Request, Response};
+use tauri::webview::PageLoadEvent;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use model::{Event, SessionRow};
-
 struct AppState {
-    db_path: PathBuf,
+    /// Where the server keeps its data (`server.lock`, `server.token`) and this app keeps
+    /// `servers.json`: the same folder `sp` uses.
+    data_dir: PathBuf,
     /// The log of Analyze and report runs; see `runlog`.
     log_path: PathBuf,
-    /// Images from the most recently opened session, served over spimg:// so
-    /// large screenshots stay out of the IPC payload. Keyed by a generation
-    /// number that changes with every load.
-    images: Mutex<(u64, Vec<Vec<String>>)>,
-    running: AtomicBool,
-    pending: AtomicBool,
-    pending_full: AtomicBool,
-    watcher: Mutex<Option<Debouncer<notify::RecommendedWatcher>>>,
-    export: Mutex<PendingExport>,
-    /// Sessions (by key) a model is generating notes for, with the flag that cancels each.
-    generating: Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>,
-    /// Reports being written, by job id, with the flag that cancels each.
-    reporting: Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>,
-    /// Where the `claude` command is and the login shell's environment, once found.
-    claude: Mutex<Option<(PathBuf, Vec<(String, String)>)>>,
-}
-
-/// The bundle shown in the export sheet. Saving writes this exact bundle,
-/// so what the user reviewed is what leaves the machine. Previews can
-/// overlap and finish in any order (the sheet asks again when a subagent is
-/// ticked, and React runs effects twice in development), so the sheet
-/// numbers its requests and only the newest one's bundle is kept.
-#[derive(Default)]
-struct PendingExport {
-    latest: u64,
-    bundle: Option<(u64, bundle::Bundle)>,
-}
-
-impl PendingExport {
-    fn begin(&mut self, request: u64) {
-        if request > self.latest {
-            self.latest = request;
-            self.bundle = None;
-        }
-    }
-
-    fn finish(&mut self, token: u64, built: bundle::Bundle) {
-        if token == self.latest {
-            self.bundle = Some((token, built));
-        }
-    }
-
-    fn take(&mut self, token: u64) -> Option<bundle::Bundle> {
-        match self.bundle.take() {
-            Some((t, built)) if t == token => Some(built),
-            other => {
-                self.bundle = other;
-                None
-            }
-        }
-    }
-
-    /// Returns a bundle whose save failed, so the user can try again.
-    fn put_back(&mut self, token: u64, built: bundle::Bundle) {
-        if token == self.latest && self.bundle.is_none() {
-            self.bundle = Some((token, built));
-        }
-    }
-
-    fn cancel(&mut self) {
-        self.latest += 1;
-        self.bundle = None;
-    }
+    /// The `sp` inside the app, which manages the local server as a service. None in a build
+    /// without one (`npm run app`).
+    sp: Option<PathBuf>,
+    /// One Client per paired server, which relayed calls share.
+    clients: relay::Clients,
+    /// Open relayed event streams.
+    streams: relay::Streams,
 }
 
 type Shared = Arc<AppState>;
 
-/// Where imported bundles live: next to the index, inside the app's own data.
-fn library_dir(state: &AppState) -> PathBuf {
-    state.db_path.with_file_name("library")
-}
+/// How long install and start wait for the server to take its lock.
+const START_WAIT: Duration = Duration::from_secs(15);
 
 fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
 
-#[derive(Serialize, Clone)]
-struct Progress {
-    done: usize,
-    total: usize,
+fn store(state: &AppState) -> ServersStore {
+    ServersStore::new(&state.data_dir)
 }
 
-/// Runs an index pass on a background thread. Requests that arrive while a
-/// pass is running are coalesced into one follow-up pass.
-fn request_index(app: &AppHandle, state: &Shared, full: bool) {
-    if full {
-        state.pending_full.store(true, Ordering::SeqCst);
-    }
-    state.pending.store(true, Ordering::SeqCst);
-    if state.running.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
-        return;
-    }
-    let app = app.clone();
-    let state = state.clone();
-    std::thread::spawn(move || {
-        loop {
-            state.pending.store(false, Ordering::SeqCst);
-            let full = state.pending_full.swap(false, Ordering::SeqCst);
-            let _ = app.emit("index-started", ());
-            let library = library_dir(&state);
-            let result = index::open(&state.db_path).and_then(|mut conn| {
-                let app2 = app.clone();
-                index::run(&mut conn, full, Some(&library), &move |done, total| {
-                    let _ = app2.emit("index-progress", Progress { done, total });
-                })
-            });
-            match result {
-                Ok(stats) => {
-                    let _ = app.emit("index-done", stats);
-                }
-                Err(e) => {
-                    let _ = app.emit("index-error", e.to_string());
-                }
-            }
-            if !state.pending.load(Ordering::SeqCst) {
-                state.running.store(false, Ordering::SeqCst);
-                // A request may have landed between the check and the store.
-                if state.pending.load(Ordering::SeqCst)
-                    && state
-                        .running
-                        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-                        .is_ok()
-                {
-                    continue;
-                }
-                break;
-            }
-        }
-    });
+async fn blocking<T: Send + 'static>(work: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(work).await.map_err(err)?
 }
 
-fn restart_watcher(app: &AppHandle, state: &Shared) -> anyhow::Result<()> {
-    let conn = index::open(&state.db_path)?;
-    let roots = index::roots(&conn)?;
-    let app2 = app.clone();
-    let state2 = state.clone();
-    let mut debouncer = new_debouncer(
-        Duration::from_millis(1500),
-        move |res: Result<Vec<DebouncedEvent>, notify::Error>| {
-            if let Ok(events) = res
-                && events
-                    .iter()
-                    .any(|e| parse::is_session_path(&e.path))
-            {
-                request_index(&app2, &state2, false);
-            }
-        },
-    )?;
-    for root in roots {
-        let p = Path::new(&root);
-        if p.is_dir() {
-            let _ = debouncer.watcher().watch(p, RecursiveMode::Recursive);
-        }
-    }
-    *state.watcher.lock().unwrap() = Some(debouncer);
-    Ok(())
-}
-
-#[derive(Serialize)]
-struct RootInfo {
-    path: String,
-    exists: bool,
-    sessions: i64,
-}
-
+/// A call to a paired server's operation. The body is the request's raw body (JSON or an upload);
+/// the headers name the server (`server`, percent-encoded), the operation (`op`), its query
+/// (`query`, URL-encoded) and `content-type`. Returns the framed response (see `relay`).
 #[tauri::command]
-fn get_roots(state: State<Shared>) -> Result<Vec<RootInfo>, String> {
-    let conn = index::open(&state.db_path).map_err(err)?;
-    let counts = index::root_counts(&conn).map_err(err)?;
-    Ok(index::roots(&conn)
-        .map_err(err)?
-        .into_iter()
-        .map(|path| RootInfo {
-            exists: Path::new(&path).is_dir(),
-            sessions: counts.get(&path).copied().unwrap_or(0),
-            path,
-        })
-        .collect())
+async fn relay_request(state: State<'_, Shared>, request: Request<'_>) -> Result<Response, String> {
+    let headers: Vec<(String, String)> = request.headers().iter().filter_map(|(n, v)| Some((n.as_str().to_string(), v.to_str().ok()?.to_string()))).collect();
+    let relay::RequestHeaders { server, op, query, content_type } = relay::request_headers(&headers)?;
+    let body = match request.body() {
+        InvokeBody::Raw(bytes) => bytes.clone(),
+        InvokeBody::Json(serde_json::Value::Null) => Vec::new(),
+        InvokeBody::Json(value) => serde_json::to_vec(value).map_err(err)?,
+    };
+    let paired = store(&state).list().map_err(|e| format!("{e:#}"))?;
+    let shared = state.inner().clone();
+    let framed = blocking(move || relay::relay_call(relay::RelayCall { clients: &shared.clients, paired: &paired, server: &server, op: &op, query: &query, content_type: &content_type, body })).await?;
+    Ok(Response::new(framed))
 }
 
-#[tauri::command]
-fn suggested_roots(state: State<Shared>) -> Result<Vec<String>, String> {
-    let conn = index::open(&state.db_path).map_err(err)?;
-    let existing = index::roots(&conn).map_err(err)?;
-    Ok(index::default_roots()
-        .into_iter()
-        .map(|p| p.to_string_lossy().into_owned())
-        .filter(|p| !existing.contains(p))
-        .collect())
-}
-
-#[tauri::command]
-fn add_root(app: AppHandle, state: State<Shared>, path: String) -> Result<(), String> {
-    let conn = index::open(&state.db_path).map_err(err)?;
-    index::add_root(&conn, &path).map_err(err)?;
-    restart_watcher(&app, &state).map_err(err)?;
-    request_index(&app, &state, false);
-    Ok(())
-}
-
-#[tauri::command]
-fn remove_root(app: AppHandle, state: State<Shared>, path: String) -> Result<(), String> {
-    let mut conn = index::open(&state.db_path).map_err(err)?;
-    index::remove_root(&mut conn, &path).map_err(err)?;
-    restart_watcher(&app, &state).map_err(err)?;
-    let _ = app.emit("index-done", index::IndexStats::default());
-    Ok(())
-}
-
-#[tauri::command]
-fn reindex(app: AppHandle, state: State<Shared>, full: bool) {
-    request_index(&app, &state, full);
-}
-
-#[tauri::command]
-fn list_sessions(state: State<Shared>) -> Result<Vec<SessionRow>, String> {
-    let conn = index::open(&state.db_path).map_err(err)?;
-    index::list(&conn).map_err(err)
-}
-
-#[tauri::command]
-fn search(state: State<Shared>, query: String) -> Result<Vec<index::SearchHit>, String> {
-    let conn = index::open(&state.db_path).map_err(err)?;
-    index::search(&conn, &query).map_err(err)
-}
-
-#[tauri::command]
-async fn load_session(state: State<'_, Shared>, path: String, branch: Option<String>) -> Result<Vec<Event>, String> {
-    let state = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let mut events = session_events(&path, branch.as_deref())?;
-        let mut cache = state.images.lock().unwrap();
-        let generation = cache.0 + 1;
-        let mut images = Vec::with_capacity(events.len());
-        for (i, e) in events.iter_mut().enumerate() {
-            let mut kept = Vec::new();
-            for (j, img) in e.images.iter_mut().enumerate() {
-                if img.starts_with("data:") {
-                    kept.push(std::mem::replace(img, format!("spimg://localhost/{generation}/{i}/{j}")));
-                } else {
-                    kept.push(String::new());
-                }
-            }
-            images.push(kept);
-        }
-        *cache = (generation, images);
-        Ok(events)
-    })
-    .await
-    .map_err(err)?
-}
-
-#[derive(Serialize)]
-struct ExportPreview {
-    /// Pass back to `export_save` to write the bundle previewed here.
-    token: u64,
-    summary: bundle::Summary,
-    subagents: Vec<SubagentChoice>,
-}
-
-#[derive(Serialize)]
-struct SubagentChoice {
-    path: String,
-    title: String,
-    included: bool,
-}
-
-/// Builds the bundle for a session and describes it for the export sheet.
-/// `subagents` lists the subagent paths to include (None: all of them).
-/// `request` increases with every preview the sheet asks for.
-#[tauri::command]
-async fn export_preview(
+struct SaveDialog {
     app: AppHandle,
-    state: State<'_, Shared>,
-    path: String,
-    branch: Option<String>,
-    subagents: Option<Vec<String>>,
-    request: u64,
-) -> Result<ExportPreview, String> {
-    let state = state.inner().clone();
-    let exporter = format!("Session Player {}", app.package_info().version);
-    let token = request;
-    state.export.lock().unwrap().begin(token);
-    tauri::async_runtime::spawn_blocking(move || {
-        let conn = index::open(&state.db_path).map_err(err)?;
-        let choices = if branch.is_some() { Vec::new() } else { bundle::subagents_of(&conn, &path).map_err(err)? };
-        let request = bundle::ExportRequest { path: &path, branch: branch.as_deref(), subagents: subagents.clone() };
-        let built = bundle::build(&conn, request, &exporter).map_err(|e| format!("{e:#}"))?;
-        let summary = bundle::summarize(&built);
-        state.export.lock().unwrap().finish(token, built);
-        Ok(ExportPreview {
-            token,
-            summary,
-            subagents: choices
-                .into_iter()
-                .map(|(path, title)| SubagentChoice {
-                    included: subagents.as_ref().is_none_or(|wanted| wanted.contains(&path)),
-                    path,
-                    title,
-                })
-                .collect(),
-        })
+    title: &'static str,
+    /// The filter's label, e.g. "Markdown".
+    kind: &'static str,
+    /// Without the dot; the saved file always ends in it.
+    extension: &'static str,
+    /// The page's suggested file name; only its last part is used.
+    name: String,
+    contents: Vec<u8>,
+}
+
+/// Shows the save dialog and writes `contents` where the user chose. The page never names the
+/// path, so it can't write anywhere the user didn't pick. None when the user cancels.
+async fn save_with_dialog(save: SaveDialog) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    // The blocking dialog waits on the main thread, so it must not be shown from it.
+    blocking(move || {
+        let chosen = save
+            .app
+            .dialog()
+            .file()
+            .set_title(save.title)
+            .set_file_name(save::suggested_name(&save.name, save.extension))
+            .add_filter(save.kind, &[save.extension])
+            .blocking_save_file();
+        let Some(chosen) = chosen else { return Ok(None) };
+        let path = save::force_extension(chosen.into_path().map_err(err)?, save.extension);
+        std::fs::write(&path, &save.contents).map_err(err)?;
+        Ok(Some(path.to_string_lossy().into_owned()))
     })
     .await
-    .map_err(err)?
 }
 
-/// Writes the bundle from the preview identified by `token` to `dest`.
+/// Saves a report's Markdown through the save dialog, as `.md`. `name` is the suggested file name.
+/// Returns the path written, or None when the user cancels.
 #[tauri::command]
-async fn export_save(state: State<'_, Shared>, token: u64, dest: String, exported_by: String) -> Result<String, String> {
-    let exported_by = exported_by.trim().to_string();
-    if exported_by.is_empty() {
-        return Err("Set your name before exporting.".into());
-    }
-    let state = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let Some(mut built) = state.export.lock().unwrap().take(token) else {
-            return Err("This preview is out of date. Review the export again before saving.".to_string());
-        };
-        built.exported_by = Some(exported_by);
-        let mut dest = PathBuf::from(dest);
-        if !bundle::is_bundle_path(&dest) {
-            dest.as_mut_os_string().push(format!(".{}", bundle::EXTENSION));
-        }
-        match bundle::write(&built, &dest) {
-            Ok(()) => Ok(dest.to_string_lossy().into_owned()),
-            Err(e) => {
-                state.export.lock().unwrap().put_back(token, built);
-                Err(format!("{e:#}"))
-            }
-        }
-    })
-    .await
-    .map_err(err)?
+async fn save_markdown(app: AppHandle, name: String, text: String) -> Result<Option<String>, String> {
+    save_with_dialog(SaveDialog { app, title: "Save report", kind: "Markdown", extension: "md", name, contents: text.into_bytes() }).await
 }
 
-/// Drops the previewed bundle when the export sheet closes without saving.
+/// Saves a downloaded export through the save dialog, as a session bundle. The raw body is the
+/// file; the `name` header is the suggested file name, percent-encoded. Returns the path written,
+/// or None when the user cancels.
 #[tauri::command]
-fn export_cancel(state: State<Shared>) {
-    state.export.lock().unwrap().cancel();
+async fn save_file(app: AppHandle, request: Request<'_>) -> Result<Option<String>, String> {
+    let name = request.headers().get("name").and_then(|v| v.to_str().ok()).ok_or("The save needs a name header.")?;
+    let name = relay::percent_decode(name)?;
+    let InvokeBody::Raw(bytes) = request.body() else { return Err("The save needs a raw body.".to_string()) };
+    save_with_dialog(SaveDialog { app, title: "Export session", kind: "Session bundle", extension: bundle::EXTENSION, name, contents: bytes.clone() }).await
 }
 
-/// Imports a bundle file into the library and re-indexes. With conflicts
-/// and no `on_conflict`, nothing is written and the conflicts are returned.
+/// An image URL from a paired server's `load_session`, framed like `relay_request`.
 #[tauri::command]
-async fn import_bundle(
-    app: AppHandle,
-    state: State<'_, Shared>,
-    path: String,
-    on_conflict: Option<bundle::OnConflict>,
-) -> Result<bundle::ImportReport, String> {
-    let state = state.inner().clone();
-    let library = library_dir(&state);
-    let db_path = state.db_path.clone();
-    let report = tauri::async_runtime::spawn_blocking(move || {
-        let conn = index::open(&db_path)?;
-        bundle::import(&conn, &library, Path::new(&path), on_conflict)
-    })
-        .await
-        .map_err(err)?
-        .map_err(|e| format!("{e:#}"))?;
-    if !report.imported.is_empty() {
-        request_index(&app, &state, false);
-    }
-    Ok(report)
+async fn relay_image(state: State<'_, Shared>, server: String, path: String) -> Result<Response, String> {
+    let paired = store(&state).list().map_err(|e| format!("{e:#}"))?;
+    let shared = state.inner().clone();
+    let framed = blocking(move || relay::relay_image(relay::RelayImage { clients: &shared.clients, paired: &paired, server: &server, path: &path })).await?;
+    Ok(Response::new(framed))
 }
 
-/// Deletes an imported session (and the subagents imported with it) from
-/// the library, then re-indexes.
+/// Sends a paired server's events to `on_event`, starting after `last_id` (None: from now), and
+/// reconnects from the last event sent when the connection breaks. Returns the stream's id for
+/// `relay_close_stream`.
 #[tauri::command]
-fn remove_imported(app: AppHandle, state: State<Shared>, path: String) -> Result<(), String> {
-    let conn = index::open(&state.db_path).map_err(err)?;
-    bundle::remove(&conn, &library_dir(&state), Path::new(&path)).map_err(|e| format!("{e:#}"))?;
-    request_index(&app, &state, false);
-    Ok(())
-}
-
-/// Library files the indexer couldn't read.
-#[tauri::command]
-fn library_errors(state: State<Shared>) -> Result<Vec<index::LibraryError>, String> {
-    let conn = index::open(&state.db_path).map_err(err)?;
-    index::library_errors(&conn, &library_dir(&state)).map_err(err)
-}
-
-/// The transcript as the UI shows it: a library bundle, a session file, or
-/// one branch of a pi session.
-fn session_events(path: &str, branch: Option<&str>) -> Result<Vec<Event>, String> {
-    let p = Path::new(path);
-    if bundle::is_bundle_path(p) {
-        return bundle::load_events(p).map_err(err);
-    }
-    let source = parse::detect(p).ok_or_else(|| "Unrecognized session format".to_string())?;
-    let parsed = match (branch, source) {
-        (Some(leaf), model::Source::Pi) => parse::pi::parse_branch(p, Some(leaf)),
-        _ => parse::parse_file(p, source),
-    };
-    Ok(parsed.map_err(err)?.events)
-}
-
-#[derive(Serialize)]
-struct SessionNotes {
-    meta: Option<annotations::SessionMeta>,
-    annotations: Vec<annotations::Annotation>,
-    /// The transcript's current revision, set when anything was generated,
-    /// so the UI can mark suggestions made from an older one.
-    revision: Option<String>,
-}
-
-/// A session's metadata and annotations, with each annotation's anchors
-/// checked against the transcript at `path` (and `branch`).
-#[tauri::command]
-async fn session_notes(state: State<'_, Shared>, key: String, path: String, branch: Option<String>) -> Result<SessionNotes, String> {
-    let state = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let conn = index::open(&state.db_path).map_err(err)?;
-        let meta = annotations::meta(&conn, &key).map_err(err)?;
-        let mut list = annotations::annotations(&conn, &key).map_err(err)?;
-        let generated = meta.as_ref().is_some_and(|m| m.generated_by.is_some()) || list.iter().any(|a| a.revision.is_some());
-        let mut revision = None;
-        if generated || list.iter().any(|a| !a.anchors.is_empty()) {
-            let events = session_events(&path, branch.as_deref())?;
-            if generated {
-                revision = Some(generate::revision(&events));
-            }
-            // pi annotations made on another branch of the file are told apart from lost ones.
-            let p = Path::new(&path);
-            let entries = match parse::detect(p) {
-                Some(model::Source::Pi) if !bundle::is_bundle_path(p) => parse::pi::entry_ids(p).ok(),
-                _ => None,
-            };
-            annotations::resolve(&mut list, &events, entries.as_ref());
-        }
-        Ok(SessionNotes { meta, annotations: list, revision })
-    })
-    .await
-    .map_err(err)?
-}
-
-#[tauri::command]
-fn save_meta(state: State<Shared>, meta: annotations::SessionMeta) -> Result<Option<annotations::SessionMeta>, String> {
-    let conn = index::open(&state.db_path).map_err(err)?;
-    annotations::save_meta(&conn, &meta).map_err(err)?;
-    annotations::meta(&conn, &meta.key).map_err(err)
-}
-
-#[tauri::command]
-fn save_annotation(state: State<Shared>, annotation: annotations::Annotation) -> Result<annotations::Annotation, String> {
-    let conn = index::open(&state.db_path).map_err(err)?;
-    annotations::save_annotation(&conn, annotation).map_err(err)
-}
-
-#[tauri::command]
-fn delete_annotation(state: State<Shared>, id: String) -> Result<(), String> {
-    let conn = index::open(&state.db_path).map_err(err)?;
-    annotations::delete_annotation(&conn, &id).map_err(err)
-}
-
-/// Titles, outcomes, tags and annotation kinds for the session list.
-#[tauri::command]
-fn note_summaries(state: State<Shared>) -> Result<Vec<annotations::Summary>, String> {
-    let conn = index::open(&state.db_path).map_err(err)?;
-    annotations::summaries(&conn).map_err(err)
-}
-
-/// Where the `claude` CLI is. Apps opened from the Finder don't get the
-/// user's shell PATH, so the usual install folders are checked, then a
-/// login shell is asked.
-fn find_claude() -> Option<PathBuf> {
-    let home = dirs::home_dir().unwrap_or_default();
-    let known = [
-        home.join(".local/bin/claude"),
-        home.join(".claude/local/claude"),
-        PathBuf::from("/opt/homebrew/bin/claude"),
-        PathBuf::from("/usr/local/bin/claude"),
-    ];
-    if let Some(found) = known.into_iter().find(|p| p.is_file()) {
-        return Some(found);
-    }
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
-    // Interactive too, since PATH is often set in .zshrc; a profile that
-    // prints something leaves the answer on the last line.
-    let out = std::process::Command::new(shell).args(["-ilc", "command -v claude"]).stdin(std::process::Stdio::null()).output().ok()?;
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let path = PathBuf::from(stdout.lines().rev().find(|l| !l.trim().is_empty())?.trim());
-    path.is_file().then_some(path)
-}
-
-/// The login shell's environment (including what .zshrc exports), which an
-/// app opened from the Finder doesn't inherit. Empty if the shell fails.
-fn login_shell_env() -> Vec<(String, String)> {
-    const MARK: &str = "__SESSION_PLAYER_ENV__";
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
-    let Ok(out) = std::process::Command::new(shell)
-        .args(["-ilc", &format!("printf '\\n{MARK}\\n'; env -0")])
-        .stdin(std::process::Stdio::null())
-        .output()
-    else {
-        return Vec::new();
-    };
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    // Anything the profile prints comes before the marker.
-    let Some((_, env)) = stdout.rsplit_once(&format!("{MARK}\n")) else { return Vec::new() };
-    env.split('\0')
-        .filter_map(|pair| pair.split_once('='))
-        .filter(|(k, _)| !k.is_empty() && !k.contains(char::is_whitespace))
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .collect()
-}
-
-#[derive(Serialize, Clone)]
-struct GenerateProgress {
-    key: String,
-    done: usize,
-    total: usize,
-}
-
-#[derive(Serialize, Clone)]
-struct GenerateDone {
-    key: String,
-    error: Option<String>,
-    cancelled: bool,
-    /// Suggested annotations dropped because they pointed at events that don't exist.
-    rejected: usize,
-}
-
-/// The `claude` command, set up as it is in the user's terminal. Finding it
-/// and the login shell's environment happens once; the Claude settings are
-/// read every time, so changed settings or a fresh apiKeyHelper key apply.
-fn claude_command(state: &Shared) -> anyhow::Result<generate::Claude> {
-    // A login shell can take seconds to start, so this happens off the main thread, once.
-    let found = {
-        let mut cached = state.claude.lock().unwrap();
-        if cached.is_none() {
-            *cached = find_claude().map(|bin| (bin, login_shell_env()));
-        }
-        cached.clone()
-    };
-    let Some((bin, shell_env)) = found else {
-        anyhow::bail!("Couldn't find the claude command. Install Claude Code and sign in, then try again.");
-    };
-    let config_dir = shell_env
-        .iter()
-        .rev()
-        .find(|(k, v)| k == "CLAUDE_CONFIG_DIR" && !v.is_empty())
-        .map(|(_, v)| PathBuf::from(v))
-        .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".claude"));
-    let mut claude = generate::Claude::new(bin, shell_env, &config_dir)?;
-    claude.log = Some(state.log_path.clone());
-    Ok(claude)
-}
-
-/// What the app shows of an error: its first line. The rest (claude's own
-/// output) is in the log.
-fn first_line(e: &anyhow::Error) -> String {
-    format!("{e:#}").lines().next().unwrap_or_default().to_string()
-}
-
-fn focus_label(focus: Option<&str>) -> &'static str {
-    if focus.is_some_and(|f| !f.trim().is_empty()) { "your own focus" } else { "the built-in focus" }
-}
-
-/// Starts generating metadata and annotations for a session in the
-/// background. Progress arrives as "generate-progress" events and the end as
-/// one "generate-done" event.
-#[tauri::command]
-fn generate_notes(app: AppHandle, state: State<Shared>, key: String, path: String, branch: Option<String>, focus: Option<String>) -> Result<(), String> {
-    let cancel = Arc::new(AtomicBool::new(false));
-    {
-        let mut running = state.generating.lock().unwrap();
-        if running.contains_key(&key) {
-            return Err("Already generating notes for this session".into());
-        }
-        running.insert(key.clone(), cancel.clone());
-    }
-    let state = state.inner().clone();
-    runlog::append(&state.log_path, &format!("Analyze {key} started, with {}\n{path}{}", focus_label(focus.as_deref()), branch.as_deref().map(|b| format!(" (branch {b})")).unwrap_or_default()));
+fn relay_open_stream(state: State<'_, Shared>, server: String, last_id: Option<u64>, on_event: Channel<ServerEvent>) -> Result<u64, String> {
+    let paired = store(&state).list().map_err(|e| format!("{e:#}"))?;
+    let server = relay::resolve_server(&server, &paired)?;
+    let (id, stop) = state.streams.open();
+    let shared = state.inner().clone();
     std::thread::spawn(move || {
-        // Clears the session's entry even if this thread panics, so it can be generated again.
-        struct Running(Shared, String);
-        impl Drop for Running {
-            fn drop(&mut self) {
-                self.0.generating.lock().unwrap().remove(&self.1);
-            }
-        }
-        let running = Running(state.clone(), key.clone());
-        let progress_app = app.clone();
-        let progress_key = key.clone();
-        let result = (|| -> anyhow::Result<(usize, String)> {
-            let claude = claude_command(&state)?;
-            let events = session_events(&path, branch.as_deref()).map_err(anyhow::Error::msg)?;
-            let mut ask = |system: &str, input: &str, schema: &serde_json::Value| generate::run_claude(&claude, system, input, schema, &cancel);
-            let generated = generate::generate(&events, focus.as_deref(), &mut ask, &mut |done, total| {
-                let _ = progress_app.emit("generate-progress", GenerateProgress { key: progress_key.clone(), done, total });
-            })?;
-            let conn = index::open(&state.db_path)?;
-            generate::apply(&conn, &key, &generated, &events)?;
-            let mut summary = format!(
-                "outcome {} ({}), {} components, {} annotations saved",
-                format!("{:?}", generated.outcome).to_lowercase(),
-                if generated.outcome_note.is_some() { "with a reason" } else { "NO REASON GIVEN" },
-                generated.components.len(),
-                generated.annotations.len()
-            );
-            if generated.rejected > 0 {
-                summary.push_str(&format!(", {} dropped for citing events that don't exist or for missing fields", generated.rejected));
-            }
-            Ok((generated.rejected, summary))
-        })();
-        drop(running);
-        let done = match result {
-            Ok((rejected, summary)) => {
-                runlog::append(&state.log_path, &format!("Analyze {key} done: {summary}"));
-                GenerateDone { key, error: None, cancelled: false, rejected }
-            }
-            Err(e) if generate::is_cancelled(&e) => {
-                runlog::append(&state.log_path, &format!("Analyze {key} cancelled"));
-                GenerateDone { key, error: None, cancelled: true, rejected: 0 }
-            }
-            Err(e) => {
-                runlog::append(&state.log_path, &format!("Analyze {key} FAILED: {e:#}"));
-                GenerateDone { key, error: Some(first_line(&e)), cancelled: false, rejected: 0 }
-            }
-        };
-        let _ = app.emit("generate-done", done);
-    });
-    Ok(())
-}
-
-#[derive(Serialize)]
-struct DefaultPrompts {
-    analyze: &'static str,
-    report: &'static str,
-}
-
-/// The built-in focus text for Analyze and for reports, which the user can
-/// replace with their own.
-#[tauri::command]
-fn default_prompts() -> DefaultPrompts {
-    DefaultPrompts { analyze: generate::DEFAULT_FOCUS, report: reports::DEFAULT_FOCUS }
-}
-
-#[tauri::command]
-fn cancel_generate(state: State<Shared>, key: String) {
-    if let Some(flag) = state.generating.lock().unwrap().get(&key) {
-        flag.store(true, Ordering::SeqCst);
-    }
-}
-
-/// Keys of the sessions notes are being generated for.
-#[tauri::command]
-fn generating(state: State<Shared>) -> Vec<String> {
-    state.generating.lock().unwrap().keys().cloned().collect()
-}
-
-#[derive(Serialize, Clone)]
-struct ReportProgress {
-    job: String,
-    done: usize,
-    total: usize,
-}
-
-#[derive(Serialize, Clone)]
-struct ReportDone {
-    job: String,
-    /// The saved report, when it was written.
-    report: Option<String>,
-    error: Option<String>,
-    cancelled: bool,
-}
-
-/// Starts writing a report on `sessions` in the background with `model`
-/// (an alias such as "sonnet"; empty means the default) and returns its job
-/// id. Progress arrives as "report-progress" events and the end as one
-/// "report-done" event, which names the saved report.
-#[tauri::command]
-fn generate_report(app: AppHandle, state: State<Shared>, sessions: Vec<reports::SessionPick>, model: Option<String>, focus: Option<String>) -> Result<String, String> {
-    if sessions.is_empty() {
-        return Err("Pick at least one session to report on.".into());
-    }
-    let job = annotations::new_id();
-    let cancel = Arc::new(AtomicBool::new(false));
-    state.reporting.lock().unwrap().insert(job.clone(), cancel.clone());
-    let state = state.inner().clone();
-    let model = model.map(|m| m.trim().to_string()).filter(|m| !m.is_empty()).unwrap_or_else(|| reports::DEFAULT_MODEL.to_string());
-    let id = job.clone();
-    runlog::append(
-        &state.log_path,
-        &format!("Report {job} started on {} sessions with {model} and {}", sessions.len(), focus_label(focus.as_deref())),
-    );
-    std::thread::spawn(move || {
-        // Clears the job's entry even if this thread panics.
-        struct Running(Shared, String);
-        impl Drop for Running {
-            fn drop(&mut self) {
-                self.0.reporting.lock().unwrap().remove(&self.1);
-            }
-        }
-        let running = Running(state.clone(), job.clone());
-        let progress_app = app.clone();
-        let progress_job = job.clone();
-        let result = (|| -> anyhow::Result<String> {
-            let claude = claude_command(&state)?;
-            let conn = index::open(&state.db_path)?;
-            let mut ask = |system: &str, input: &str, schema: &serde_json::Value| generate::run_claude_model(&claude, &model, system, input, schema, &cancel);
-            let report = reports::generate(&conn, &sessions, focus.as_deref(), &mut ask, &mut |done, total| {
-                let _ = progress_app.emit("report-progress", ReportProgress { job: progress_job.clone(), done, total });
-            })?;
-            reports::save_report(&conn, &report)?;
-            Ok(report.id)
-        })();
-        drop(running);
-        let done = match result {
-            Ok(report) => {
-                runlog::append(&state.log_path, &format!("Report {job} done, saved as {report}"));
-                ReportDone { job, report: Some(report), error: None, cancelled: false }
-            }
-            Err(e) if generate::is_cancelled(&e) => {
-                runlog::append(&state.log_path, &format!("Report {job} cancelled"));
-                ReportDone { job, report: None, error: None, cancelled: true }
-            }
-            Err(e) => {
-                runlog::append(&state.log_path, &format!("Report {job} FAILED: {e:#}"));
-                ReportDone { job, report: None, error: Some(first_line(&e)), cancelled: false }
-            }
-        };
-        let _ = app.emit("report-done", done);
+        // A failed send means the page's channel is gone; returning false ends the stream.
+        let mut send = |event: ServerEvent| on_event.send(event).is_ok();
+        relay::run_stream(relay::StreamParams { server, last_id, stop: &stop, retry: Duration::from_secs(2), on_event: &mut send });
+        shared.streams.ended(id);
     });
     Ok(id)
 }
 
 #[tauri::command]
-fn cancel_report(state: State<Shared>, job: String) {
-    if let Some(flag) = state.reporting.lock().unwrap().get(&job) {
-        flag.store(true, Ordering::SeqCst);
-    }
+fn relay_close_stream(state: State<'_, Shared>, id: u64) {
+    state.streams.close(id);
 }
 
 #[tauri::command]
-fn list_reports(state: State<Shared>) -> Result<Vec<reports::ReportSummary>, String> {
-    let conn = index::open(&state.db_path).map_err(err)?;
-    reports::reports(&conn).map_err(err)
+async fn local_server_state(state: State<'_, Shared>) -> Result<local::LocalServerState, String> {
+    let shared = state.inner().clone();
+    blocking(move || Ok(local::server_state(local::StateParams { data: &shared.data_dir, sp: shared.sp.as_deref() }))).await
+}
+
+fn bundled_sp(state: &AppState) -> Result<PathBuf, String> {
+    state.sp.clone().ok_or_else(|| "This build of Session Player has no sp command inside it, so it can't install the server. Releases do; run `sp service install` instead.".to_string())
+}
+
+/// Installs the server as a per-user service (LaunchAgent or systemd user unit) and waits for it.
+#[tauri::command]
+async fn local_server_install(state: State<'_, Shared>) -> Result<local::LocalServerState, String> {
+    let shared = state.inner().clone();
+    let sp = bundled_sp(&shared)?;
+    blocking(move || local::install(local::StartParams { data: &shared.data_dir, sp: &sp, wait: START_WAIT })).await
+}
+
+/// Starts the installed, stopped service and waits for it.
+#[tauri::command]
+async fn local_server_start(state: State<'_, Shared>) -> Result<local::LocalServerState, String> {
+    let shared = state.inner().clone();
+    let sp = bundled_sp(&shared)?;
+    blocking(move || local::start(local::StartParams { data: &shared.data_dir, sp: &sp, wait: START_WAIT })).await
+}
+
+/// `{ url, token }` of the running local server.
+#[tauri::command]
+async fn local_server_connection(state: State<'_, Shared>) -> Result<local::Connection, String> {
+    let shared = state.inner().clone();
+    blocking(move || local::local_connection(&session_player_client::probe_local(&shared.data_dir))).await
 }
 
 #[tauri::command]
-fn get_report(state: State<Shared>, id: String) -> Result<Option<reports::Report>, String> {
-    let conn = index::open(&state.db_path).map_err(err)?;
-    reports::report(&conn, &id).map_err(err)
+fn paired_servers_list(state: State<'_, Shared>) -> Result<Vec<paired::ServerRef>, String> {
+    paired::list(&store(&state))
 }
 
-/// The annotations a report was given, as it saw them, with their versions now.
+/// Redeems a pairing string from `sp pair` and saves the server as `name` (its address when None).
 #[tauri::command]
-fn report_annotations(state: State<Shared>, id: String) -> Result<Vec<reports::CitedAnnotation>, String> {
-    let conn = index::open(&state.db_path).map_err(err)?;
-    let Some(report) = reports::report(&conn, &id).map_err(err)? else { return Ok(Vec::new()) };
-    reports::cited_annotations(&conn, &report).map_err(err)
-}
-
-/// Writes a report exported as Markdown to the path the user chose in the
-/// save dialog. Only `.md` files are written; any other name gets `.md` added.
-#[tauri::command]
-fn save_markdown(dest: String, text: String) -> Result<String, String> {
-    let mut dest = PathBuf::from(dest);
-    if dest.extension().is_none_or(|e| !e.eq_ignore_ascii_case("md")) {
-        dest.as_mut_os_string().push(".md");
-    }
-    std::fs::write(&dest, text).map_err(err)?;
-    Ok(dest.to_string_lossy().into_owned())
+async fn paired_server_connect(state: State<'_, Shared>, pairing: String, name: Option<String>) -> Result<paired::ServerRef, String> {
+    let shared = state.inner().clone();
+    blocking(move || {
+        let device_name = hostname();
+        paired::connect(paired::ConnectParams { store: &store(&shared), clients: &shared.clients, pairing: &pairing, name: name.as_deref(), device_name: &device_name })
+    })
+    .await
 }
 
 #[tauri::command]
-fn action_responses(state: State<Shared>, id: String) -> Result<Vec<reports::ActionResponse>, String> {
-    let conn = index::open(&state.db_path).map_err(err)?;
-    reports::action_responses(&conn, &id).map_err(err)
+fn paired_server_remove(state: State<'_, Shared>, name: String) -> Result<(), String> {
+    paired::remove(paired::RemoveParams { store: &store(&state), clients: &state.clients, name: &name })
 }
 
-/// Replaces the response to one action; `None` when nothing is left to keep.
-#[tauri::command]
-fn set_action_response(state: State<Shared>, input: reports::ActionResponseInput) -> Result<Option<reports::ActionResponse>, String> {
-    let conn = index::open(&state.db_path).map_err(err)?;
-    reports::set_action_response(&conn, &input).map_err(err)
-}
-
-/// The latest verdict later reports gave on each of this report's actions.
-#[tauri::command]
-fn action_verdicts(state: State<Shared>, id: String) -> Result<Vec<reports::LatestVerdict>, String> {
-    let conn = index::open(&state.db_path).map_err(err)?;
-    reports::action_verdicts(&conn, &id).map_err(err)
-}
-
-#[tauri::command]
-fn delete_report(state: State<Shared>, id: String) -> Result<(), String> {
-    let conn = index::open(&state.db_path).map_err(err)?;
-    reports::delete_report(&conn, &id).map_err(err)
-}
-
-fn serve_image(state: &Shared, uri: &str) -> tauri::http::Response<Vec<u8>> {
-    use base64::Engine;
-    let not_found = || tauri::http::Response::builder().status(404).body(Vec::new()).unwrap();
-    let parts: Vec<u64> = uri
-        .split(['/', '?'])
-        .filter_map(|s| s.parse().ok())
-        .collect();
-    let [generation, i, j] = parts[..] else { return not_found() };
-    let cache = state.images.lock().unwrap();
-    if cache.0 != generation {
-        return not_found();
-    }
-    let Some(data_url) = cache.1.get(i as usize).and_then(|v| v.get(j as usize)) else {
-        return not_found();
-    };
-    let Some((head, b64)) = data_url.split_once(";base64,") else { return not_found() };
-    let mime = head.trim_start_matches("data:").to_string();
-    match base64::engine::general_purpose::STANDARD.decode(b64.trim()) {
-        Ok(bytes) => tauri::http::Response::builder()
-            .header("Content-Type", mime)
-            .header("Cache-Control", "max-age=3600")
-            .body(bytes)
-            .unwrap_or_else(|_| not_found()),
-        Err(_) => not_found(),
-    }
+/// What the server lists this machine as.
+fn hostname() -> String {
+    std::process::Command::new("hostname")
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "Session Player app".to_string())
 }
 
 /// The desktop apps that can open this session, with the link for each.
@@ -895,39 +271,6 @@ fn reveal(path: String) -> Result<(), String> {
     Ok(())
 }
 
-/// Lets the webview report errors to the terminal running the app.
-#[tauri::command]
-fn log_frontend(level: String, message: String) {
-    eprintln!("[webview:{level}] {message}");
-}
-
-#[tauri::command]
-fn home_dir() -> String {
-    dirs::home_dir().map(|h| h.to_string_lossy().into_owned()).unwrap_or_default()
-}
-
-#[tauri::command]
-fn get_setting(state: State<Shared>, key: String) -> Result<Option<String>, String> {
-    let conn = index::open(&state.db_path).map_err(err)?;
-    conn.query_row("SELECT value FROM settings WHERE key=?1", [format!("ui.{key}")], |r| r.get(0))
-        .map(Some)
-        .or_else(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => Ok(None),
-            e => Err(err(e)),
-        })
-}
-
-#[tauri::command]
-fn set_setting(state: State<Shared>, key: String, value: String) -> Result<(), String> {
-    let conn = index::open(&state.db_path).map_err(err)?;
-    conn.execute(
-        "INSERT OR REPLACE INTO settings(key, value) VALUES(?1, ?2)",
-        [format!("ui.{key}"), value],
-    )
-    .map_err(err)?;
-    Ok(())
-}
-
 /// Sends any navigation away from the app's own pages (a link in a
 /// transcript, however it was clicked) to the default browser instead of
 /// replacing the app in its window.
@@ -944,9 +287,28 @@ fn external_links<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
         .build()
 }
 
+/// What File > Install Command Line Tool does: links ~/.local/bin/sp to the sp
+/// inside the app, then says what happened.
+fn install_cli(app: &AppHandle) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+    let result = match cli::bundled() {
+        None => Err("This build of Session Player has no sp command inside it. Releases do.".to_string()),
+        Some(sp) => cli::link(&sp, &dirs::home_dir().unwrap_or_default()),
+    };
+    let (kind, message) = match result {
+        Ok(dest) => (
+            MessageDialogKind::Info,
+            // The app can't see the PATH a terminal sets up, so it can't tell whether this folder is on it.
+            format!("The sp command is at {}.\n\nIf your terminal doesn't find sp, add ~/.local/bin to your PATH. Run \"sp --help\" to see what it does.", dest.display()),
+        ),
+        Err(e) => (MessageDialogKind::Error, e),
+    };
+    app.dialog().message(message).title("Install Command Line Tool").kind(kind).show(|_| {});
+}
+
 /// The standard menu with "Settings…" (⌘,) added to the app menu, after
-/// "About", where macOS apps put it, and "Import Session…" (⌘⇧I) at the top
-/// of the File menu.
+/// "About", where macOS apps put it, and "Import Session…" (⌘⇧I) and
+/// "Install Command Line Tool" at the top of the File menu.
 fn install_menu(app: &AppHandle) -> tauri::Result<()> {
     use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
     let menu = Menu::default(app)?;
@@ -958,10 +320,20 @@ fn install_menu(app: &AppHandle) -> tauri::Result<()> {
     }
     if let Some(file_menu) = items.iter().filter_map(|m| m.as_submenu()).find(|m| m.text().is_ok_and(|t| t == "File")) {
         let import = MenuItem::with_id(app, "import-session", "Import Session…", true, Some("CmdOrCtrl+Shift+I"))?;
-        file_menu.insert_items(&[&import, &PredefinedMenuItem::separator(app)?], 0)?;
+        let install_cli = MenuItem::with_id(app, "install-cli", "Install Command Line Tool", true, None::<&str>)?;
+        file_menu.insert_items(&[&import, &PredefinedMenuItem::separator(app)?, &install_cli, &PredefinedMenuItem::separator(app)?], 0)?;
     }
     app.set_menu(menu)?;
     Ok(())
+}
+
+/// The folders `sp` uses: Tauri's `app_data_dir` and `app_log_dir`, unless
+/// `SESSION_PLAYER_DATA_DIR` points both elsewhere.
+fn folders(app: &tauri::App) -> tauri::Result<(PathBuf, PathBuf)> {
+    match std::env::var_os("SESSION_PLAYER_DATA_DIR").filter(|d| !d.is_empty()) {
+        Some(dir) => Ok((PathBuf::from(&dir), PathBuf::from(&dir).join("logs"))),
+        None => Ok((app.path().app_data_dir()?, app.path().app_log_dir()?)),
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -972,170 +344,73 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(external_links())
-        .register_uri_scheme_protocol("spimg", |ctx, req| {
-            let state = ctx.app_handle().state::<Shared>();
-            serve_image(state.inner(), &req.uri().to_string())
-        })
         .setup(|app| {
-            let dir = app.path().app_data_dir()?;
-            std::fs::create_dir_all(&dir)?;
-            let db_path = dir.join("index.sqlite");
-            let log_path = app.path().app_log_dir()?.join("analyze.log");
-            let conn = index::open(&db_path)?;
-            index::seed_roots(&conn)?;
-            drop(conn);
-            let state: Shared = Arc::new(AppState {
-                db_path,
-                log_path,
-                images: Mutex::new((0, Vec::new())),
-                running: AtomicBool::new(false),
-                pending: AtomicBool::new(false),
-                pending_full: AtomicBool::new(false),
-                watcher: Mutex::new(None),
-                export: Mutex::new(PendingExport::default()),
-                generating: Mutex::new(Default::default()),
-                reporting: Mutex::new(Default::default()),
-                claude: Mutex::new(None),
-            });
-            app.manage(state.clone());
-            let handle = app.handle().clone();
-            if let Err(e) = restart_watcher(&handle, &state) {
-                eprintln!("watcher failed: {e}");
+            let (data_dir, logs) = folders(app)?;
+            std::fs::create_dir_all(&data_dir)?;
+            let sp = cli::bundled();
+            // After an update the service may still name the sp of an older app; reinstalling
+            // points it at this one.
+            if let Some(sp) = sp.clone() {
+                std::thread::spawn(move || {
+                    if let Err(e) = local::refresh_after_update(&sp) {
+                        eprintln!("Couldn't refresh the server's service: {e}");
+                    }
+                });
             }
-            request_index(&handle, &state, false);
+            app.manage::<Shared>(Arc::new(AppState {
+                data_dir,
+                log_path: logs.join("analyze.log"),
+                sp,
+                clients: relay::Clients::default(),
+                streams: relay::Streams::default(),
+            }));
             install_menu(app.handle())?;
             Ok(())
         })
-        .on_menu_event(|app, event| {
-            match event.id().as_ref() {
-                "settings" => {
-                    let _ = app.emit("open-settings", ());
-                }
-                "check-for-updates" => {
-                    let _ = app.emit("check-for-updates", ());
-                }
-                "import-session" => {
-                    let _ = app.emit("import-session", ());
-                }
-                _ => {}
+        // A reload (or any new page) can't close the streams the old page opened, and their
+        // channels may still accept sends, so close them all when the main webview starts loading.
+        .on_page_load(|webview, payload| {
+            if webview.label() == "main"
+                && payload.event() == PageLoadEvent::Started
+                && let Some(state) = webview.try_state::<Shared>()
+            {
+                state.streams.close_all();
             }
         })
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "settings" => {
+                let _ = app.emit("open-settings", ());
+            }
+            "check-for-updates" => {
+                let _ = app.emit("check-for-updates", ());
+            }
+            "import-session" => {
+                let _ = app.emit("import-session", ());
+            }
+            "install-cli" => install_cli(app),
+            _ => {}
+        })
         .invoke_handler(tauri::generate_handler![
-            get_roots,
-            suggested_roots,
-            add_root,
-            remove_root,
-            reindex,
-            list_sessions,
-            search,
-            load_session,
+            relay_request,
+            relay_image,
+            relay_open_stream,
+            relay_close_stream,
+            local_server_state,
+            local_server_install,
+            local_server_start,
+            local_server_connection,
+            paired_servers_list,
+            paired_server_connect,
+            paired_server_remove,
             reveal,
             open_targets,
             open_in_app,
             terminal_apps,
             open_in_terminal,
-            home_dir,
-            log_frontend,
-            get_setting,
-            set_setting,
-            export_preview,
-            export_save,
-            export_cancel,
-            import_bundle,
-            remove_imported,
-            library_errors,
-            session_notes,
-            save_meta,
-            save_annotation,
-            delete_annotation,
-            note_summaries,
-            generate_notes,
-            cancel_generate,
-            default_prompts,
             open_analyze_log,
-            generating,
-            generate_report,
-            cancel_report,
-            list_reports,
-            get_report,
-            report_annotations,
             save_markdown,
-            delete_report,
-            action_responses,
-            set_action_response,
-            action_verdicts
+            save_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn bundle_titled(title: &str) -> bundle::Bundle {
-        bundle::Bundle {
-            format: bundle::FORMAT.into(),
-            version: bundle::VERSION,
-            exported_at: 0,
-            exporter: title.into(),
-            exported_by: None,
-            sessions: Vec::new(),
-            attachments: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn a_preview_that_finishes_late_does_not_replace_a_newer_one() {
-        let mut pending = PendingExport::default();
-        let (first, second) = (1, 2);
-        // Requests can also start out of order.
-        pending.begin(second);
-        pending.begin(first);
-        pending.finish(second, bundle_titled("second"));
-        pending.finish(first, bundle_titled("first"));
-        assert!(pending.take(first).is_none());
-        assert_eq!(pending.take(second).unwrap().exporter, "second");
-    }
-
-    #[test]
-    fn a_failed_save_keeps_the_preview_and_a_cancelled_one_is_dropped() {
-        let mut pending = PendingExport::default();
-        let token = 1;
-        pending.begin(token);
-        pending.finish(token, bundle_titled("shown"));
-        let taken = pending.take(token).unwrap();
-        pending.put_back(token, taken);
-        assert!(pending.take(token).is_some());
-
-        let late = 2;
-        pending.begin(late);
-        pending.cancel();
-        pending.finish(late, bundle_titled("late"));
-        assert!(pending.take(late).is_none());
-    }
-
-    #[test]
-    fn serves_cached_image_for_current_generation_only() {
-        let state: Shared = Arc::new(AppState {
-            db_path: PathBuf::new(),
-            log_path: PathBuf::new(),
-            images: Mutex::new((7, vec![vec![], vec!["data:image/png;base64,aGVsbG8=".into()]])),
-            running: AtomicBool::new(false),
-            pending: AtomicBool::new(false),
-            pending_full: AtomicBool::new(false),
-            watcher: Mutex::new(None),
-            export: Mutex::new(PendingExport::default()),
-            generating: Mutex::new(Default::default()),
-            reporting: Mutex::new(Default::default()),
-            claude: Mutex::new(None),
-        });
-        let ok = serve_image(&state, "spimg://localhost/7/1/0");
-        assert_eq!(ok.status(), 200);
-        assert_eq!(ok.headers()["Content-Type"], "image/png");
-        assert_eq!(ok.body(), b"hello");
-        assert_eq!(serve_image(&state, "spimg://localhost/6/1/0").status(), 404);
-        assert_eq!(serve_image(&state, "spimg://localhost/7/0/0").status(), 404);
-        assert_eq!(serve_image(&state, "http://spimg.localhost/7/1/0").status(), 200);
-    }
 }

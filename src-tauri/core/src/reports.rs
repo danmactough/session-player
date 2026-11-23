@@ -191,7 +191,7 @@ pub struct Report {
 }
 
 /// What the report list shows.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReportSummary {
     pub id: String,
     pub created_at: i64,
@@ -203,7 +203,7 @@ pub struct ReportSummary {
 
 /// Saves a new report and records the annotation versions it was given.
 pub fn save_report(conn: &Connection, report: &Report) -> anyhow::Result<()> {
-    let tx = conn.unchecked_transaction()?;
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
     tx.execute(
         "INSERT INTO reports(id, created_at, json) VALUES(?1, ?2, ?3)",
         params![report.id, report.created_at, serde_json::to_string(report)?],
@@ -245,7 +245,7 @@ pub fn reports(conn: &Connection) -> anyhow::Result<Vec<ReportSummary>> {
 
 /// Deletes the report, then drops the annotation versions only it was keeping.
 pub fn delete_report(conn: &Connection, id: &str) -> anyhow::Result<()> {
-    let tx = conn.unchecked_transaction()?;
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
     let cited: Vec<String> = {
         let mut stmt = tx.prepare("SELECT DISTINCT annotation_id FROM report_citations WHERE report_id=?1")?;
         stmt.query_map([id], |r| r.get(0))?.collect::<Result<_, _>>()?
@@ -261,7 +261,7 @@ pub fn delete_report(conn: &Connection, id: &str) -> anyhow::Result<()> {
 }
 
 /// An annotation as a report was given it, and what has happened to it since.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CitedAnnotation {
     /// The version the report was given.
     pub annotation: annotations::Annotation,
@@ -301,7 +301,7 @@ pub enum UserImpact {
 
 /// The developer's response to one action. Reports never change, so responses
 /// live beside them, addressed by the action's position in `Report::actions`.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActionResponse {
     pub report_id: String,
     pub action_index: usize,
@@ -390,15 +390,50 @@ pub fn set_action_response(conn: &Connection, input: &ActionResponseInput) -> an
     Ok(Some(response))
 }
 
+/// Stores a report from another machine unless it is already here; reports
+/// never change. Returns whether it was added.
+pub(crate) fn put_report(conn: &Connection, report: &Report) -> anyhow::Result<bool> {
+    if self::report(conn, &report.id)?.is_some() {
+        return Ok(false);
+    }
+    save_report(conn, report)?;
+    Ok(true)
+}
+
+/// Stores another machine's response as given, unless the one here is newer.
+pub(crate) fn put_action_response(conn: &Connection, response: &ActionResponse) -> anyhow::Result<annotations::Change> {
+    use annotations::Change;
+    let existing = action_responses(conn, &response.report_id)?.into_iter().find(|r| r.action_index == response.action_index);
+    let change = match existing {
+        None => Change::Added,
+        Some(old) if old == *response => return Ok(Change::Unchanged),
+        Some(old) if response.updated_at > old.updated_at => Change::Replaced,
+        Some(_) => return Ok(Change::KeptLocal),
+    };
+    conn.execute(
+        &format!("INSERT OR REPLACE INTO action_responses({RESPONSE_COLUMNS}) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)"),
+        params![
+            response.report_id,
+            response.action_index as i64,
+            response.status.as_ref().map(enum_name),
+            response.note,
+            response.done_at,
+            response.user_impact.as_ref().map(enum_name),
+            response.updated_at
+        ],
+    )?;
+    Ok(change)
+}
+
 /// Every saved report, oldest first.
-fn saved_reports(conn: &Connection) -> anyhow::Result<Vec<Report>> {
+pub(crate) fn saved_reports(conn: &Connection) -> anyhow::Result<Vec<Report>> {
     let mut stmt = conn.prepare("SELECT json FROM reports ORDER BY created_at ASC, rowid ASC")?;
     let list = stmt.query_map([], |r| r.get::<_, String>(0))?.map(|j| Ok(serde_json::from_str(&j?)?)).collect::<anyhow::Result<Vec<_>>>()?;
     Ok(list)
 }
 
 /// The most recent verdict on an action, and the report that gave it.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LatestVerdict {
     pub action_index: usize,
     pub verdict: Verdict,

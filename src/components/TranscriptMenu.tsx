@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { api } from "../api";
+import { api, pullToLocal } from "../api";
 import type { OpenTarget, SessionRow, TerminalApp } from "../types";
 import { resumeCommand } from "../lib/format";
+import { chooseFolder, isApp, localServerConnection } from "../lib/native";
+import { FetchTransport } from "../lib/transport";
+import { useServer } from "../lib/useServer";
 import { Menu } from "./Menu";
 import { AppIcon, CopyIcon } from "./AppIcon";
 
@@ -13,7 +16,7 @@ const COPY = { id: "copy", label: "Copy resume command" };
 /** The agent's own app, which is the choice until the user picks another. */
 const HOME_APP: Partial<Record<string, string>> = { claude: "claude", codex: "chatgpt" };
 
-type Item = "run" | "export" | "reveal" | "path" | "remove" | string;
+type Item = "run" | "export" | "reveal" | "path" | "remove" | "pull" | string;
 
 /**
  * The transcript's ⋯ menu, at its top right. Its first item resumes or opens
@@ -22,7 +25,9 @@ type Item = "run" | "export" | "reveal" | "path" | "remove" | string;
  * "Resume or open with" picks which way that is (picking only changes the
  * choice). With no choice made, it uses the agent's own app; a choice the
  * session doesn't support falls back to that, then to copying. An imported
- * session can't be resumed, so it has none of these.
+ * session can't be resumed, so it has none of these. Opening, revealing and
+ * resuming in a terminal work only on this computer's own sessions; a paired
+ * server's session offers "Pull project here" instead.
  */
 export function TranscriptMenu({
   session,
@@ -45,10 +50,13 @@ export function TranscriptMenu({
   const [terminals, setTerminals] = useState<TerminalApp[]>([]);
   // A short confirmation beside the button, since the menu has closed by then.
   const [flash, setFlash] = useState<string | null>(null);
+  const { server } = useServer();
+  // Apps, terminals and Finder are on this computer, so they reach only its own server's files.
+  const onThisComputer = isApp && server.kind === "local";
   const resumable = !session.from_bundle;
 
   useEffect(() => {
-    if (!resumable) return;
+    if (!resumable || !onThisComputer) return;
     // The transcript is keyed by session, so this runs once per session.
     let live = true;
     api
@@ -58,16 +66,17 @@ export function TranscriptMenu({
     return () => {
       live = false;
     };
-  }, [resumable, session.source, session.native_id, session.path]);
+  }, [resumable, onThisComputer, session.source, session.native_id, session.path]);
 
   useEffect(() => {
+    if (!onThisComputer) return;
     terminalApps ??= api.terminalApps().catch(() => []);
     let live = true;
     void terminalApps.then((t) => live && setTerminals(t));
     return () => {
       live = false;
     };
-  }, []);
+  }, [onThisComputer]);
 
   // Terminal choices are "terminal:<app>", so one agent can use Ghostty and
   // another iTerm.
@@ -113,8 +122,27 @@ export function TranscriptMenu({
     return () => window.removeEventListener("keydown", onKey);
   }, [keyboard]);
 
+  // Copies the remote project's sessions into this computer's library, under a checkout the user
+  // picks here, through the local server's `pull`.
+  const pull = async () => {
+    const project = await chooseFolder({ title: `Choose this computer's checkout of ${session.project}` });
+    if (!project) return;
+    show("Pulling…");
+    try {
+      const c = await localServerConnection();
+      const local = new FetchTransport({ baseUrl: c.url, token: c.token });
+      const pulled = await pullToLocal({ server: server.name, project, local });
+      const n = pulled.sessions.added + pulled.sessions.replaced;
+      show(n ? `Pulled ${n} ${n === 1 ? "session" : "sessions"}` : "Nothing new to pull");
+    } catch (e) {
+      show(`Couldn't pull: ${e}`);
+      api.log("error", `pull from ${server.name} into ${project}: ${e}`);
+    }
+  };
+
   const choose = async (key: Item) => {
     if (key === "run") void run();
+    else if (key === "pull") void pull();
     else if (key === "export") onExport();
     else if (key === "reveal") void api.reveal(session.path);
     else if (key === "path") {
@@ -147,8 +175,9 @@ export function TranscriptMenu({
                 },
               ]
             : []),
+          ...(server.kind === "remote" ? [{ key: "pull", label: "Pull project here…", icon: <span /> }] : []),
           { key: "export", label: "Export…", icon: <span /> },
-          { key: "reveal", label: "Reveal file", icon: <span /> },
+          ...(onThisComputer ? [{ key: "reveal", label: "Reveal file", icon: <span /> }] : []),
           { key: "path", label: "Copy path", icon: <span /> },
           ...(onRemove ? [{ key: "remove", label: "Remove…", icon: <span /> }] : []),
         ]}

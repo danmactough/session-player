@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 
 use super::analyze::{AnalyzeMany, analyze_many, analyzed_keys};
 use super::{
-    CancelJobRequest, Ctx, DeviceId, JobId, JobKind, JobState, OpError, Progress, PushedEvent, ReportDone, ReportProgress, cancel_job, first_line,
-    focus_label, internal, saved_focus,
+    CancelJobRequest, Ctx, DeviceId, JobId, JobKind, JobState, OpError, Progress, PushedEvent, ReportDone, ReportProgress, Slot, SlotGuard, cancel_job,
+    first_line, focus_label, internal, saved_focus,
 };
 use crate::model::SessionRow;
 use crate::reports::{self, ActionResponse, ActionStatus, CitedAnnotation, LatestVerdict, Report, ReportSummary, UserImpact};
@@ -82,7 +82,9 @@ pub struct ActionVerdictsRequest {
 }
 
 /// Starts a Report job. Progress arrives as report-progress events and the end as one report-done
-/// naming the saved report. BadRequest with no sessions; Conflict while another Report job runs.
+/// naming the saved report, published after the slot is freed, so a caller can start the next
+/// report on seeing it. A thread that panics ends the job Failed. BadRequest with no sessions;
+/// Conflict while another Report job runs.
 pub(super) fn generate_report(ctx: &Arc<Ctx>, _device: &DeviceId, req: &GenerateReportRequest) -> Result<JobId, OpError> {
     if req.paths.is_empty() {
         return Err(OpError::BadRequest("Pick at least one session to report on.".to_string()));
@@ -105,6 +107,7 @@ pub(super) fn generate_report(ctx: &Arc<Ctx>, _device: &DeviceId, req: &Generate
     let req = req.clone();
     let job = id.clone();
     std::thread::spawn(move || {
+        let slot = SlotGuard { ctx: ctx.clone(), job: job.clone(), slot: Slot::Reporting };
         let result = (|| -> anyhow::Result<String> {
             let claude = ctx.claude()?;
             let conn = index::open(&ctx.paths.db)?;
@@ -152,8 +155,8 @@ pub(super) fn generate_report(ctx: &Arc<Ctx>, _device: &DeviceId, req: &Generate
             }
         };
         let error = done.error.clone();
+        slot.free();
         ctx.publish(PushedEvent::ReportDone(done));
-        *ctx.reporting.lock().unwrap() = None;
         ctx.end_job(&job, state, error);
     });
     Ok(id)

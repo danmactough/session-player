@@ -101,8 +101,14 @@ pub fn external_config() -> ServerConfig {
 }
 
 pub fn start(ctx: &Arc<Ctx>, config: ServerConfig) -> ServerHandle {
+    try_start(ctx, config, false).expect("start the server")
+}
+
+/// `serve` as `sp serve` runs it, with or without `--allow-insecure-http`. The error is its full
+/// message (the shell's tests share this file and don't use anyhow).
+pub fn try_start(ctx: &Arc<Ctx>, config: ServerConfig, allow_insecure_http: bool) -> Result<ServerHandle, String> {
     let data = ctx.paths().data.clone();
-    serve(ServeParams { ctx: ctx.clone(), data, config }).expect("start the server")
+    serve(ServeParams { ctx: ctx.clone(), data, config, allow_insecure_http }).map_err(|e| format!("{e:#}"))
 }
 
 pub fn read_token(data: &Path) -> String {

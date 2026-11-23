@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use serde::{Deserialize, Serialize};
 
 use super::generate_job::{AnalyzeSession, analyze_session};
-use super::{AnalyzeDone, AnalyzeProgress, Ctx, DeviceId, JobId, JobKind, JobState, OpError, Progress, PushedEvent, first_line, internal, saved_focus};
+use super::{AnalyzeDone, AnalyzeProgress, Ctx, DeviceId, JobId, JobKind, JobState, OpError, Progress, PushedEvent, Slot, SlotGuard, first_line, internal, saved_focus};
 use crate::generate::{self, Claude};
 use crate::model::SessionRow;
 use crate::{annotations, index, runlog};
@@ -29,7 +29,9 @@ pub struct AnalyzeSessionsRequest {
 
 /// Starts an Analyze job: `ANALYZE_AT_ONCE` sessions at a time, skipping analyzed ones unless
 /// `force`. It publishes analyze-progress and ends with one analyze-done holding the counts, before
-/// leaving Running. Ends Failed when any session failed. Conflict while another Analyze job runs.
+/// leaving Running and after freeing the slot, so a caller can start the next job on seeing it.
+/// Ends Failed when any session failed or the job's thread panicked. Conflict while another
+/// Analyze job runs.
 pub(super) fn analyze_sessions(ctx: &Arc<Ctx>, _device: &DeviceId, req: &AnalyzeSessionsRequest) -> Result<JobId, OpError> {
     let rows = ctx.rows_of(&req.paths)?;
     let conn = index::open(&ctx.paths.db).map_err(internal)?;
@@ -50,6 +52,7 @@ pub(super) fn analyze_sessions(ctx: &Arc<Ctx>, _device: &DeviceId, req: &Analyze
     let ctx = ctx.clone();
     let job = id.clone();
     std::thread::spawn(move || {
+        let slot = SlotGuard { ctx: ctx.clone(), job: job.clone(), slot: Slot::Analyzing };
         let total = todo.len();
         let progress = |done: usize, finished: Option<Finished>| {
             ctx.jobs.progress(&job, Progress { done, total });
@@ -73,8 +76,8 @@ pub(super) fn analyze_sessions(ctx: &Arc<Ctx>, _device: &DeviceId, req: &Analyze
             }
         };
         let cancelled = cancel.load(Ordering::SeqCst);
+        slot.free();
         ctx.publish(PushedEvent::AnalyzeDone(AnalyzeDone { job: job.clone(), analyzed: counts.analyzed, skipped, failed: counts.failed, cancelled }));
-        *ctx.analyzing.lock().unwrap() = None;
         let (state, error) = if cancelled {
             (JobState::Cancelled, None)
         } else if counts.failed > 0 {

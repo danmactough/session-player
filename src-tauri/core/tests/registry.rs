@@ -125,7 +125,7 @@ fn every_operation_name_is_unique_and_has_a_spec() {
 }
 
 #[test]
-fn in_core_no_operation_is_anonymous_or_kept_off_http_and_only_hello_job_and_cancel_job_run_inline() {
+fn in_core_no_operation_is_anonymous_local_only_or_kept_off_http_and_only_hello_job_and_cancel_job_run_inline() {
     let dir = TempDir::new("registry-access");
     let ctx = open(&dir);
 
@@ -134,6 +134,7 @@ fn in_core_no_operation_is_anonymous_or_kept_off_http_and_only_hello_job_and_can
 
     assert_eq!(named(&|s| s.access == Access::Anonymous), HashSet::new(), "connect is a server extension");
     assert_eq!(named(&|s| s.access == Access::NotOverHttp), HashSet::new(), "service is a server extension");
+    assert_eq!(named(&|s| s.access == Access::LocalOnly), HashSet::new(), "pull, pair, unpair and devices are extensions");
     assert_eq!(named(&|s| s.inline), HashSet::from(["hello", "job", "cancel_job"]));
 }
 

@@ -53,7 +53,7 @@ fn a_second_server_on_the_same_data_folder_is_refused_without_disturbing_the_fir
     let lock_before = std::fs::read_to_string(data.join("server.lock")).expect("server.lock");
     let listeners_before = listening_sockets_of_this_process();
 
-    let second = serve(ServeParams { ctx: ctx.clone(), data: data.clone(), config: loopback_config() });
+    let second = serve(ServeParams { ctx: ctx.clone(), data: data.clone(), config: loopback_config(), allow_insecure_http: false });
 
     assert!(second.is_err(), "a second server started on the same data folder");
     assert_eq!(read_token(&data), token, "the refused start rewrote server.token");
@@ -65,7 +65,7 @@ fn a_second_server_on_the_same_data_folder_is_refused_without_disturbing_the_fir
     client.call(&HELLO, &HelloRequest {}).expect("the first server still answers");
 
     first.shutdown();
-    let third = serve(ServeParams { ctx: ctx.clone(), data: data.clone(), config: loopback_config() }).expect("start after the first stopped");
+    let third = serve(ServeParams { ctx: ctx.clone(), data: data.clone(), config: loopback_config(), allow_insecure_http: false }).expect("start after the first stopped");
     let client = Client::local(third.addrs().loopback.port(), &read_token(&data)).unwrap();
     client.call(&HELLO, &HelloRequest {}).expect("the new server answers");
     third.shutdown();

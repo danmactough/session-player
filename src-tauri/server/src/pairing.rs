@@ -1,6 +1,8 @@
 //! Pairing offers and paired devices: the `pair`, `connect`, `devices` and `unpair` operations the
 //! server adds to the core set.
 //!
+//! `pair`, `devices` and `unpair` are local-only: a paired device can't mint, list or revoke devices.
+//!
 //! An offer is a 32-byte CSPRNG secret, good once, for 300 s by the Ctx clock. At most 5 are open;
 //! 5 wrong secrets wipe them all. Every failed connect is the same `Unauthenticated`.
 //! Devices live in `devices.json` (0600, temp file + rename, SHA-256 token hashes only).
@@ -21,10 +23,10 @@ pub const MAX_OPEN_OFFERS: usize = 5;
 pub const MAX_WRONG_SECRETS: usize = 5;
 
 pub const SERVER_EXTENSIONS: &[Extension] = &[
-    Extension { spec: OpSpec { name: "pair", body: Body::Json, inline: false, access: Access::Authenticated }, handler: pair },
+    Extension { spec: OpSpec { name: "pair", body: Body::Json, inline: false, access: Access::LocalOnly }, handler: pair },
     Extension { spec: OpSpec { name: "connect", body: Body::Json, inline: false, access: Access::Anonymous }, handler: connect },
-    Extension { spec: OpSpec { name: "devices", body: Body::Json, inline: false, access: Access::Authenticated }, handler: devices },
-    Extension { spec: OpSpec { name: "unpair", body: Body::Json, inline: false, access: Access::Authenticated }, handler: unpair },
+    Extension { spec: OpSpec { name: "devices", body: Body::Json, inline: false, access: Access::LocalOnly }, handler: devices },
+    Extension { spec: OpSpec { name: "unpair", body: Body::Json, inline: false, access: Access::LocalOnly }, handler: unpair },
     crate::service::SERVICE,
 ];
 
@@ -175,6 +177,7 @@ fn unpair(ctx: &Arc<Ctx>, _device: &DeviceId, input: Input) -> Result<Output, Op
     }
     if let Some(server) = crate::running(ctx) {
         server.nudge.notify_one();
+        server.revoked.send_modify(|n| *n += 1);
     }
     respond(())
 }

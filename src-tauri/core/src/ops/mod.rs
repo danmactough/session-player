@@ -19,7 +19,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use anyhow::{Context, bail};
 use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, TimeZone};
@@ -39,7 +39,7 @@ pub use wire::*;
 
 use crate::generate::Claude;
 use crate::model::{Event, SessionRow};
-use crate::{annotations, index, reports, sync};
+use crate::{annotations, index, reports, runlog, sync};
 use events::{Events, Since};
 use jobs::Jobs;
 
@@ -95,7 +95,12 @@ pub struct Ctx {
     devices: devices::DeviceStore,
     offers: Mutex<Offers>,
     external_open: AtomicBool,
+    /// Called with every event right after it is published, on the publishing thread. Tests only.
+    publish_hook: Mutex<Option<PublishHook>>,
 }
+
+/// See `Ctx::set_publish_hook`.
+pub type PublishHook = Arc<dyn Fn(&PushedEvent) + Send + Sync>;
 
 /// Coalesces index requests: a request during a pass joins it and leaves at most one follow-up.
 struct IndexGate {
@@ -138,6 +143,7 @@ impl Ctx {
             devices,
             offers: Mutex::new(Offers::default()),
             external_open: AtomicBool::new(false),
+            publish_hook: Mutex::new(None),
         }))
     }
 
@@ -157,7 +163,21 @@ impl Ctx {
     }
 
     fn publish(&self, event: PushedEvent) {
-        self.events.publish(event, (self.clock)());
+        let hook = self.publish_hook.lock().unwrap().clone();
+        match hook {
+            Some(hook) => {
+                self.events.publish(event.clone(), (self.clock)());
+                hook(&event);
+            }
+            None => self.events.publish(event, (self.clock)()),
+        }
+    }
+
+    /// Runs `hook` on the publishing thread right after each event is published, so a test can act
+    /// at the exact moment a job publishes (or make the job's thread panic there). Tests only.
+    #[doc(hidden)]
+    pub fn set_publish_hook(&self, hook: Option<PublishHook>) {
+        *self.publish_hook.lock().unwrap() = hook;
     }
 
     /// Ms since the Unix epoch by this Ctx's clock.
@@ -178,8 +198,9 @@ impl Ctx {
         (id, cancel)
     }
 
+    /// Poison-tolerant, because a job's `SlotGuard` calls it while its thread unwinds from a panic.
     fn end_job(&self, id: &JobId, state: JobState, error: Option<String>) {
-        self.cancels.lock().unwrap().remove(id);
+        self.cancels.lock().unwrap_or_else(PoisonError::into_inner).remove(id);
         self.jobs.finish(id, state, error, self.now());
     }
 
@@ -218,6 +239,46 @@ impl Ctx {
     }
 }
 
+/// The one-job-at-a-time slots a job's thread holds.
+#[derive(Debug, Clone, Copy)]
+enum Slot {
+    Analyzing,
+    Reporting,
+}
+
+/// Held by an Analyze or Report job's thread. `free` empties the job's slot; dropping the guard
+/// frees it too and ends the job as Failed unless it already ended, so a thread that panics
+/// leaves neither the slot taken nor the job Running.
+struct SlotGuard {
+    ctx: Arc<Ctx>,
+    job: JobId,
+    slot: Slot,
+}
+
+impl SlotGuard {
+    fn free(&self) {
+        let slot = match self.slot {
+            Slot::Analyzing => &self.ctx.analyzing,
+            Slot::Reporting => &self.ctx.reporting,
+        };
+        let mut held = slot.lock().unwrap_or_else(PoisonError::into_inner);
+        if held.as_ref() == Some(&self.job) {
+            *held = None;
+        }
+    }
+}
+
+impl Drop for SlotGuard {
+    fn drop(&mut self) {
+        self.free();
+        if std::thread::panicking() {
+            runlog::append(&self.ctx.analyze_log(), &format!("Job {} stopped unexpectedly", self.job.0));
+        }
+        let error = format!("The job stopped unexpectedly. Details are in {}.", self.ctx.analyze_log().display());
+        self.ctx.end_job(&self.job, JobState::Failed, Some(error));
+    }
+}
+
 /// What a caller is shown of an error: its first line. The rest (claude's own output) is in the log.
 fn first_line(e: &anyhow::Error) -> String {
     format!("{e:#}").lines().next().unwrap_or_default().to_string()
@@ -249,6 +310,10 @@ pub enum Access {
     Anonymous,
     /// Never reachable over HTTP: `service` only.
     NotOverHttp,
+    /// Only for the local token on the loopback listener (DeviceId "local"): `pull`, `pair`,
+    /// `unpair` and `devices`. A paired device must not act with this machine's own credentials or
+    /// mint, list or revoke devices. Over HTTP any other caller gets 403.
+    LocalOnly,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

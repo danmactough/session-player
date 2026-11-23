@@ -82,3 +82,108 @@ fn sp_analyze_with_a_paired_server_prints_each_sessions_title_with_its_summary_o
     let dir = TempDir::new("cli-remote-analyze-lines");
     assert_session_lines(&analyze_two(&dir, Some("lab")));
 }
+
+/// Forwards bytes between `sp` and a real server on `127.0.0.1:{target}`, rewriting the Host header
+/// for the target's port and counting `job` requests. It only relays; the server answers.
+struct CountingRelay {
+    port: u16,
+    sent: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    accept: Option<std::thread::JoinHandle<()>>,
+}
+
+impl CountingRelay {
+    fn start(target: u16) -> CountingRelay {
+        use std::io::{Read, Write};
+        use std::net::{TcpListener, TcpStream};
+        use std::sync::atomic::Ordering;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // hyper writes header names in lowercase.
+        let (from, to) = (format!("host: 127.0.0.1:{port}"), format!("host: 127.0.0.1:{target}"));
+        let accept = {
+            let (sent, stop) = (sent.clone(), stop.clone());
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::SeqCst) {
+                    let Ok((client, _)) = listener.accept() else {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                        continue;
+                    };
+                    client.set_nonblocking(false).unwrap();
+                    let server = TcpStream::connect(("127.0.0.1", target)).unwrap();
+                    let (mut client_read, mut server_write) = (client.try_clone().unwrap(), server.try_clone().unwrap());
+                    let (mut server_read, mut client_write) = (server, client);
+                    let (sent, from, to) = (sent.clone(), from.clone(), to.clone());
+                    std::thread::spawn(move || {
+                        let mut buf = [0u8; 16 * 1024];
+                        while let Ok(n) = client_read.read(&mut buf) {
+                            if n == 0 {
+                                break;
+                            }
+                            let chunk = String::from_utf8_lossy(&buf[..n]).replace(&from, &to);
+                            sent.lock().unwrap().extend_from_slice(chunk.as_bytes());
+                            if server_write.write_all(chunk.as_bytes()).is_err() {
+                                break;
+                            }
+                        }
+                        let _ = server_write.shutdown(std::net::Shutdown::Both);
+                    });
+                    std::thread::spawn(move || {
+                        let _ = std::io::copy(&mut server_read, &mut client_write);
+                        let _ = client_write.shutdown(std::net::Shutdown::Both);
+                    });
+                }
+            })
+        };
+        CountingRelay { port, sent, stop, accept: Some(accept) }
+    }
+
+    fn job_polls(&self) -> usize {
+        String::from_utf8_lossy(&self.sent.lock().unwrap()).matches("POST /api/v1/job ").count()
+    }
+}
+
+impl Drop for CountingRelay {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Some(accept) = self.accept.take() {
+            let _ = accept.join();
+        }
+    }
+}
+
+#[test]
+fn sp_analyze_on_a_paired_server_polls_the_job_about_twice_a_second_not_ten_times() {
+    let dir = TempDir::new("cli-remote-analyze-polls");
+    let alpha = Machine::new(&dir, "alpha");
+    let beta = Machine::new(&dir, "beta");
+    let claude = alpha.fake_claude();
+    let widgets = alpha.checkout("widgets");
+    alpha.session(&widgets, "aaaa1111-slow", "2026-03-10");
+    ok(&alpha.sp(&["index"]), "sp index on alpha");
+    let _server = alpha.serve_local();
+    common::pair(&alpha, &beta, "lab");
+    let session_player_client::LocalProbe::Live { port, .. } = session_player_client::probe_local(&alpha.data) else { panic!("alpha's server isn't live") };
+    let relay = CountingRelay::start(port);
+    let mut servers: serde_json::Value = serde_json::from_slice(&std::fs::read(beta.data.join("servers.json")).unwrap()).unwrap();
+    servers[0]["port"] = relay.port.into();
+    std::fs::write(beta.data.join("servers.json"), serde_json::to_vec(&servers).unwrap()).unwrap();
+    claude.hold();
+    let release = {
+        let dir = claude.dir.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            let _ = std::fs::remove_file(dir.join("hold"));
+        })
+    };
+
+    let output = beta.sp(&["--server", "lab", "analyze", "--project", beta.checkout("widgets").to_str().unwrap(), "--since", "2026-03-01"]);
+    release.join().unwrap();
+
+    assert_eq!(output.status.code(), Some(0), "stdout: {}\nstderr: {}\n{}", stdout(&output), stderr(&output), server_logs(&alpha.root));
+    let polls = relay.job_polls();
+    assert!((2..=10).contains(&polls), "{polls} job polls in about 3 s");
+}

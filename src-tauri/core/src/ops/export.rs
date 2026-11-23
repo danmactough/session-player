@@ -1,6 +1,7 @@
 //! Exporting one session as a bundle: a preview per device, then one download of exactly the
 //! bundle previewed. Ported from the app's `PendingExport` (src-tauri/src/lib.rs at 37c3c34).
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -52,6 +53,17 @@ pub struct ExportCancelRequest {}
 pub(super) struct PendingExport {
     latest: u64,
     bundle: Option<(u64, bundle::Bundle)>,
+    /// When the newest preview started or finished, by the Ctx clock.
+    touched: u64,
+}
+
+/// How long a device's preview is kept after it was made: an export sheet left open longer must
+/// preview again. Bundles can be large, so ones nobody downloads aren't kept forever.
+pub const PREVIEW_LIFETIME_MS: u64 = 30 * 60 * 1000;
+
+/// Drops the previews older than `PREVIEW_LIFETIME_MS`.
+fn expire(exports: &mut HashMap<DeviceId, PendingExport>, now: u64) {
+    exports.retain(|_, slot| now.saturating_sub(slot.touched) < PREVIEW_LIFETIME_MS);
 }
 
 impl PendingExport {
@@ -94,13 +106,25 @@ impl PendingExport {
 /// Builds the bundle for a session into the caller's slot and describes it for the export sheet.
 pub(super) fn export_preview(ctx: &Arc<Ctx>, device: &DeviceId, req: &ExportPreviewRequest) -> Result<ExportPreview, OpError> {
     let token = req.request;
-    ctx.exports.lock().unwrap().entry(device.clone()).or_default().begin(token);
+    {
+        let now = ctx.now();
+        let mut exports = ctx.exports.lock().unwrap();
+        expire(&mut exports, now);
+        let slot = exports.entry(device.clone()).or_default();
+        slot.begin(token);
+        slot.touched = now;
+    }
     let conn = index::open(&ctx.paths.db).map_err(internal)?;
     let choices = if req.branch.is_some() { Vec::new() } else { bundle::subagents_of(&conn, &req.path).map_err(internal)? };
     let request = bundle::ExportRequest { path: &req.path, branch: req.branch.as_deref(), subagents: req.subagents.clone() };
     let built = bundle::build(&conn, request, &format!("Session Player {}", ctx.version)).map_err(internal)?;
     let summary = bundle::summarize(&built);
-    ctx.exports.lock().unwrap().entry(device.clone()).or_default().finish(token, built);
+    {
+        let mut exports = ctx.exports.lock().unwrap();
+        let slot = exports.entry(device.clone()).or_default();
+        slot.finish(token, built);
+        slot.touched = ctx.now();
+    }
     Ok(ExportPreview {
         token,
         summary,
@@ -120,7 +144,11 @@ pub(super) fn export_session(ctx: &Arc<Ctx>, device: &DeviceId, input: Input) ->
     if exported_by.is_empty() {
         return Err(OpError::BadRequest("Set your name before exporting.".to_string()));
     }
-    let taken = ctx.exports.lock().unwrap().get_mut(device).and_then(|slot| slot.take(req.token));
+    let taken = {
+        let mut exports = ctx.exports.lock().unwrap();
+        expire(&mut exports, ctx.now());
+        exports.get_mut(device).and_then(|slot| slot.take(req.token))
+    };
     let Some(mut built) = taken else {
         return Err(OpError::NotFound("This preview is out of date. Review the export again before saving.".to_string()));
     };
@@ -139,7 +167,9 @@ pub(super) fn export_session(ctx: &Arc<Ctx>, device: &DeviceId, input: Input) ->
 
 /// Drops the caller's previewed bundle when the export sheet closes without saving.
 pub(super) fn export_cancel(ctx: &Arc<Ctx>, device: &DeviceId, _req: &ExportCancelRequest) -> Result<(), OpError> {
-    if let Some(slot) = ctx.exports.lock().unwrap().get_mut(device) {
+    let mut exports = ctx.exports.lock().unwrap();
+    expire(&mut exports, ctx.now());
+    if let Some(slot) = exports.get_mut(device) {
         slot.cancel();
     }
     Ok(())

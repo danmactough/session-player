@@ -120,10 +120,17 @@ impl Machine {
 
     /// Starts `sp serve` with `config` written to server.json and waits until it answers hello.
     pub fn serve(&self, config: &ServerConfig) -> Server {
+        self.serve_with(config, &[])
+    }
+
+    /// `sp serve {args}` with `config` written to server.json, once it answers hello.
+    pub fn serve_with(&self, config: &ServerConfig, args: &[&str]) -> Server {
         std::fs::write(self.data.join("server.json"), serde_json::to_vec_pretty(config).unwrap()).unwrap();
         let stdout = std::fs::File::create(self.root.join("serve-stdout.log")).unwrap();
         let stderr = std::fs::File::create(self.root.join("serve-stderr.log")).unwrap();
-        let child = self.command(&["serve"]).stdout(stdout).stderr(stderr).spawn().expect("start sp serve");
+        let mut command_args = vec!["serve"];
+        command_args.extend_from_slice(args);
+        let child = self.command(&command_args).stdout(stdout).stderr(stderr).spawn().expect("start sp serve");
         let mut server = Server { child: Some(child), root: self.root.clone(), data: self.data.clone() };
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
@@ -166,6 +173,11 @@ pub struct Server {
 }
 
 impl Server {
+    /// What `sp serve` has written to stderr so far.
+    pub fn stderr(&self) -> String {
+        std::fs::read_to_string(self.root.join("serve-stderr.log")).unwrap_or_default()
+    }
+
     pub fn pid(&self) -> u32 {
         self.child.as_ref().expect("the server runs").id()
     }

@@ -7,7 +7,8 @@ mod pull;
 mod store;
 
 use std::io::Read;
-use std::sync::Arc;
+use std::net::Ipv6Addr;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
@@ -15,6 +16,7 @@ use http_body_util::channel::Channel;
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
 use hyper::body::{Bytes, Incoming};
+use hyper::client::conn::http1::SendRequest;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
@@ -23,7 +25,7 @@ use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use session_player_core::ops::{API_MINOR, API_VERSION, ApiError, ErrorCode, HelloResponse, Op, RawBody, RawData, ServerEvent};
+use session_player_core::ops::{API_MINOR, API_VERSION, ApiError, ErrorCode, HelloResponse, Op, PushedEvent, RawBody, RawData, ServerEvent};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::runtime::Runtime;
 
@@ -41,8 +43,9 @@ pub struct ClientParams {
     pub fingerprint: Option<String>,
 }
 
-/// A synchronous client. Its tokio runtime is shared (`Arc`) with every body and event stream it
-/// returns, so those keep working after the Client is dropped.
+/// A synchronous client. Every Client in the process shares one tokio runtime, which the bodies
+/// and event streams it returns also hold, so those keep working after the Client is dropped.
+/// Calls whose answer is read whole reuse the Client's kept-alive connections.
 pub struct Client {
     runtime: Arc<Runtime>,
     /// As the Host header carries it.
@@ -50,6 +53,22 @@ pub struct Client {
     port: u16,
     token: Option<String>,
     tls: Option<Arc<rustls::ClientConfig>>,
+    /// Open connections to this server with no request in flight, newest last.
+    idle: Mutex<Vec<SendRequest<RequestBody>>>,
+}
+
+/// The most idle connections a Client keeps.
+const MAX_IDLE: usize = 4;
+
+/// The process's one client runtime. Each Client used to build its own, which cost threads per
+/// Client (and the shell makes one per relayed request).
+fn shared_runtime() -> anyhow::Result<Arc<Runtime>> {
+    static RUNTIME: OnceLock<Arc<Runtime>> = OnceLock::new();
+    if let Some(runtime) = RUNTIME.get() {
+        return Ok(runtime.clone());
+    }
+    let built = Arc::new(tokio::runtime::Builder::new_multi_thread().worker_threads(2).thread_name("sp-client").enable_all().build()?);
+    Ok(RUNTIME.get_or_init(|| built).clone())
 }
 
 /// An operation with a raw body, by name.
@@ -88,13 +107,14 @@ impl Client {
         };
         let (host, port) = rest.trim_end_matches('/').rsplit_once(':').with_context(|| format!("{} has no port", params.url))?;
         let port: u16 = port.parse().with_context(|| format!("{} has no port", params.url))?;
+        // A Host header brackets an IPv6 address.
+        let host = if host.parse::<Ipv6Addr>().is_ok() { format!("[{host}]") } else { host.to_string() };
         let tls = match (tls, params.fingerprint) {
             (true, Some(fingerprint)) => Some(Arc::new(pinned_config(fingerprint.to_ascii_lowercase())?)),
             (true, None) => bail!("A TLS server needs a pinned certificate fingerprint; pair with it again"),
             (false, _) => None,
         };
-        let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(1).thread_name("sp-client").enable_all().build()?;
-        Ok(Client { runtime: Arc::new(runtime), host: host.to_string(), port, token: params.token, tls })
+        Ok(Client { runtime: shared_runtime()?, host, port, token: params.token, tls, idle: Mutex::new(Vec::new()) })
     }
 
     /// The local server's loopback listener.
@@ -113,7 +133,7 @@ impl Client {
 
     /// A JSON operation by name: the server crate's extensions, which have no typed `Op`.
     pub fn call_named<Req: Serialize, Res: DeserializeOwned>(&self, name: &str, req: &Req) -> Result<Res, ApiError> {
-        let body = full(serde_json::to_vec(req).map_err(|e| failure(ErrorCode::BadRequest, e))?);
+        let body = Payload::Bytes(Bytes::from(serde_json::to_vec(req).map_err(|e| failure(ErrorCode::BadRequest, e))?));
         let path = format!("/api/v1/{name}");
         let answer = self.exchange(Exchange { method: Method::POST, path: &path, content_type: Some("application/json"), last_event_id: None, body })?;
         if !(200..300).contains(&answer.status) {
@@ -125,7 +145,7 @@ impl Client {
     /// A non-2xx answer is the server's ApiError.
     pub fn call_raw(&self, call: RawCall) -> Result<RawBody, ApiError> {
         let (path, body) = self.raw_request(call);
-        let response = self.runtime.block_on(self.send(Exchange { method: Method::POST, path: &path.0, content_type: Some(&path.1), last_event_id: None, body }))?;
+        let (response, _) = self.runtime.block_on(self.send(Exchange { method: Method::POST, path: &path.0, content_type: Some(&path.1), last_event_id: None, body }))?;
         let status = response.status().as_u16();
         if !(200..300).contains(&status) {
             let body = self.runtime.block_on(collect(response.into_body()))?;
@@ -149,28 +169,28 @@ impl Client {
 
     /// `GET {path}` with the token, such as an image URL from `load_session`.
     pub fn get(&self, path: &str) -> Result<RawAnswer, ApiError> {
-        self.exchange(Exchange { method: Method::GET, path, content_type: None, last_event_id: None, body: full(Vec::new()) })
+        self.exchange(Exchange { method: Method::GET, path, content_type: None, last_event_id: None, body: Payload::Bytes(Bytes::new()) })
     }
 
     /// `GET /api/v1/events`, resuming after `last_id` (sent as `Last-Event-ID`).
     pub fn events(&self, last_id: Option<u64>) -> Result<EventStream, ApiError> {
-        let exchange = Exchange { method: Method::GET, path: "/api/v1/events", content_type: None, last_event_id: last_id, body: full(Vec::new()) };
-        let response = self.runtime.block_on(self.send(exchange))?;
+        let exchange = Exchange { method: Method::GET, path: "/api/v1/events", content_type: None, last_event_id: last_id, body: Payload::Bytes(Bytes::new()) };
+        let (response, _) = self.runtime.block_on(self.send(exchange))?;
         let status = response.status().as_u16();
         if !(200..300).contains(&status) {
             let body = self.runtime.block_on(collect(response.into_body()))?;
             return Err(api_error(status, &body));
         }
-        Ok(EventStream { runtime: self.runtime.clone(), body: response.into_body(), buf: Vec::new(), ended: false })
+        Ok(EventStream { runtime: self.runtime.clone(), body: response.into_body(), buf: Vec::new(), ended: false, last_id })
     }
 
     /// `((path with query, content type), body)` for a raw call. A reader is sent as it is read
     /// (chunked), so an upload never sits in memory whole, and a server that refuses it early stops
     /// the reading.
-    fn raw_request(&self, call: RawCall) -> ((String, String), RequestBody) {
+    fn raw_request(&self, call: RawCall) -> ((String, String), Payload) {
         let body = match call.body {
-            RawData::Bytes(bytes) => full(bytes),
-            RawData::Stream(reader) => self.streamed(reader),
+            RawData::Bytes(bytes) => Payload::Bytes(Bytes::from(bytes)),
+            RawData::Stream(reader) => Payload::Stream(self.streamed(reader)),
         };
         let mut path = format!("/api/v1/{}", call.name);
         for (i, (name, value)) in call.query.iter().enumerate() {
@@ -209,40 +229,97 @@ impl Client {
         body.boxed()
     }
 
+    /// Reads the whole answer, then keeps the connection for the next call.
     fn exchange(&self, exchange: Exchange) -> Result<RawAnswer, ApiError> {
         self.runtime.block_on(async {
-            let response = self.send(exchange).await?;
+            let (response, mut sender) = self.send(exchange).await?;
             let status = response.status().as_u16();
             let headers = response.headers().iter().map(|(n, v)| (n.as_str().to_string(), String::from_utf8_lossy(v.as_bytes()).into_owned())).collect();
             let body = collect(response.into_body()).await?;
+            // Ready again once the connection has finished with this answer; an error means the
+            // server closed it.
+            if let Ok(Ok(())) = tokio::time::timeout(Duration::from_secs(1), sender.ready()).await {
+                let mut idle = self.idle.lock().unwrap();
+                if idle.len() < MAX_IDLE {
+                    idle.push(sender);
+                }
+            }
             Ok(RawAnswer { status, headers, body })
         })
     }
 
-    /// One request on its own connection.
-    async fn send(&self, exchange: Exchange<'_>) -> Result<Response<Incoming>, ApiError> {
-        let unreachable = |e: &dyn std::fmt::Display| failure(ErrorCode::Internal, format!("Couldn't reach {}:{}: {e}", self.host, self.port));
-        let mut request = Request::builder().method(exchange.method).uri(exchange.path).header(hyper::header::HOST, format!("{}:{}", self.host, self.port));
+    fn unreachable(&self, e: &dyn std::fmt::Display) -> ApiError {
+        failure(ErrorCode::Internal, format!("Couldn't reach {}:{}: {e}", self.host, self.port))
+    }
+
+    fn request(&self, head: &Head, body: RequestBody) -> Result<Request<RequestBody>, ApiError> {
+        let mut request = Request::builder().method(head.method.clone()).uri(head.path).header(hyper::header::HOST, format!("{}:{}", self.host, self.port));
         if let Some(token) = &self.token {
             request = request.header(hyper::header::AUTHORIZATION, format!("Bearer {token}"));
         }
-        if let Some(content_type) = exchange.content_type {
+        if let Some(content_type) = head.content_type {
             request = request.header(hyper::header::CONTENT_TYPE, content_type);
         }
-        if let Some(id) = exchange.last_event_id {
+        if let Some(id) = head.last_event_id {
             request = request.header("last-event-id", id.to_string());
         }
-        let request = request.body(exchange.body).map_err(|e| failure(ErrorCode::BadRequest, e))?;
+        request.body(body).map_err(|e| failure(ErrorCode::BadRequest, e))
+    }
+
+    /// A new connection, over pinned TLS for a remote server.
+    async fn open(&self) -> Result<SendRequest<RequestBody>, ApiError> {
         let connect_host = self.host.trim_start_matches('[').trim_end_matches(']').to_string();
-        let tcp = tokio::net::TcpStream::connect((connect_host.as_str(), self.port)).await.map_err(|e| unreachable(&e))?;
+        let tcp = tokio::net::TcpStream::connect((connect_host.as_str(), self.port)).await.map_err(|e| self.unreachable(&e))?;
         match &self.tls {
-            None => over(tcp, request).await.map_err(|e| unreachable(&e)),
+            None => handshake(tcp).await.map_err(|e| self.unreachable(&e)),
             Some(config) => {
-                let name = ServerName::try_from(connect_host).map_err(|e| unreachable(&e))?;
-                let tls = tokio_rustls::TlsConnector::from(config.clone()).connect(name, tcp).await.map_err(|e| unreachable(&e))?;
-                over(tls, request).await.map_err(|e| unreachable(&e))
+                let name = ServerName::try_from(connect_host).map_err(|e| self.unreachable(&e))?;
+                let tls = tokio_rustls::TlsConnector::from(config.clone()).connect(name, tcp).await.map_err(|e| self.unreachable(&e))?;
+                handshake(tls).await.map_err(|e| self.unreachable(&e))
             }
         }
+    }
+
+    /// The newest kept connection that can take a request; closed ones are dropped.
+    fn take_idle(&self) -> Option<SendRequest<RequestBody>> {
+        let mut idle = self.idle.lock().unwrap();
+        while let Some(sender) = idle.pop() {
+            if sender.is_ready() {
+                return Some(sender);
+            }
+        }
+        None
+    }
+
+    /// Sends on a kept connection when there is one, else on a new one. The connection comes back
+    /// with the response, for `exchange` to keep; dropping it closes it once the body is read.
+    async fn send(&self, exchange: Exchange<'_>) -> Result<(Response<Incoming>, SendRequest<RequestBody>), ApiError> {
+        let Exchange { method, path, content_type, last_event_id, body } = exchange;
+        let head = Head { method, path, content_type, last_event_id };
+        let bytes = match body {
+            Payload::Bytes(bytes) => bytes,
+            Payload::Stream(stream) => return self.send_new(&head, stream).await,
+        };
+        if let Some(mut sender) = self.take_idle() {
+            match sender.try_send_request(self.request(&head, full(bytes.clone()))?).await {
+                Ok(response) => return Ok((response, sender)),
+                // Never sent: the server closed the kept connection first. A request that may
+                // have reached the server isn't sent twice.
+                Err(mut e) => {
+                    if e.take_message().is_none() {
+                        return Err(self.unreachable(e.error()));
+                    }
+                }
+            }
+        }
+        self.send_new(&head, full(bytes)).await
+    }
+
+    async fn send_new(&self, head: &Head<'_>, body: RequestBody) -> Result<(Response<Incoming>, SendRequest<RequestBody>), ApiError> {
+        let request = self.request(head, body)?;
+        let mut sender = self.open().await?;
+        let response = sender.send_request(request).await.map_err(|e| self.unreachable(&e))?;
+        Ok((response, sender))
     }
 }
 
@@ -251,19 +328,33 @@ struct Exchange<'a> {
     path: &'a str,
     content_type: Option<&'a str>,
     last_event_id: Option<u64>,
-    body: RequestBody,
+    body: Payload,
+}
+
+/// An Exchange without its body, which a request can be built from more than once.
+struct Head<'a> {
+    method: Method,
+    path: &'a str,
+    content_type: Option<&'a str>,
+    last_event_id: Option<u64>,
+}
+
+/// A request body: bytes can be sent again on another connection, a stream can't.
+enum Payload {
+    Bytes(Bytes),
+    Stream(RequestBody),
 }
 
 type RequestBody = BoxBody<Bytes, std::io::Error>;
 
-fn full(bytes: Vec<u8>) -> RequestBody {
-    Full::new(Bytes::from(bytes)).map_err(|never| match never {}).boxed()
+fn full(bytes: Bytes) -> RequestBody {
+    Full::new(bytes).map_err(|never| match never {}).boxed()
 }
 
-async fn over<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(io: S, request: Request<RequestBody>) -> Result<Response<Incoming>, hyper::Error> {
-    let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(io)).await?;
+async fn handshake<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(io: S) -> Result<SendRequest<RequestBody>, hyper::Error> {
+    let (sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(io)).await?;
     tokio::spawn(connection);
-    sender.send_request(request).await
+    Ok(sender)
 }
 
 async fn collect(body: Incoming) -> Result<Vec<u8>, ApiError> {
@@ -363,14 +454,25 @@ impl ServerCertVerifier for PinVerifier {
 }
 
 /// The server's events in order. Iterating blocks until the next event.
+///
+/// An event whose id is at or below the last id is dropped as a repeat, except a Snapshot: a
+/// Snapshot is always handed out and its id becomes the last id. A server that restarted with a
+/// clock behind the old one answers an old id with a Snapshot whose id is lower, and the events
+/// after it follow on from there.
 pub struct EventStream {
     runtime: Arc<Runtime>,
     body: Incoming,
     buf: Vec<u8>,
     ended: bool,
+    last_id: Option<u64>,
 }
 
 impl EventStream {
+    /// The id of the last event this stream handed out, else the id it resumed after.
+    pub fn last_id(&self) -> Option<u64> {
+        self.last_id
+    }
+
     /// The next event, or None when none arrives within `wait`.
     pub fn next_within(&mut self, wait: Duration) -> Option<Result<ServerEvent, ApiError>> {
         let deadline = Instant::now() + wait;
@@ -380,9 +482,19 @@ impl EventStream {
                 let text = String::from_utf8_lossy(&block);
                 let data: Vec<&str> = text.lines().filter_map(|l| l.strip_prefix("data:")).map(|d| d.strip_prefix(' ').unwrap_or(d)).collect();
                 // A block without data is a comment, such as a keepalive.
-                if !data.is_empty() {
-                    return Some(serde_json::from_str(&data.join("\n")).map_err(|e| failure(ErrorCode::Internal, format!("An event didn't parse: {e}"))));
+                if data.is_empty() {
+                    continue;
                 }
+                let event: ServerEvent = match serde_json::from_str(&data.join("\n")) {
+                    Ok(event) => event,
+                    Err(e) => return Some(Err(failure(ErrorCode::Internal, format!("An event didn't parse: {e}")))),
+                };
+                let snapshot = matches!(event.event, PushedEvent::Snapshot { .. });
+                if !snapshot && self.last_id.is_some_and(|last| event.id <= last) {
+                    continue;
+                }
+                self.last_id = Some(event.id);
+                return Some(Ok(event));
             }
             if self.ended {
                 return None;

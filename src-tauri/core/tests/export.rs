@@ -7,9 +7,10 @@ mod common;
 
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::{Value, json};
-use session_player_core::ops::{self, Ctx, DeviceId, DispatchParams, Input, OpError, Output, RawData};
+use session_player_core::ops::{self, Ctx, Device, DeviceId, DispatchParams, Input, OpError, OpenParams, Output, RawData};
 use session_player_core::test_support::bundle;
 use tempdir::TempDir;
 
@@ -115,4 +116,54 @@ fn export_cancel_drops_only_the_callers_preview() {
     let dropped = download(&ctx, &dir, "aaaa", 1, "Al");
     assert!(matches!(dropped, Err(OpError::NotFound(_))), "{dropped:?}");
     assert_eq!(download(&ctx, &dir, "bbbb", 1, "Bo").expect("b's bundle").0.sessions[0].id, "claude:s2");
+}
+
+#[test]
+fn unpairing_a_device_drops_its_preview() {
+    let dir = TempDir::new("export-unpair");
+    let ctx = setup(&dir);
+    let device = Device { id: DeviceId("aaaa".to_string()), name: "laptop".to_string(), token_sha256: "0".repeat(64), paired_at: 1 };
+    ctx.add_device(device.clone()).unwrap();
+    preview(&ctx, "aaaa", "s1", 1);
+
+    assert!(ctx.remove_device(&device.id).unwrap());
+
+    let dropped = download(&ctx, &dir, "aaaa", 1, "Al");
+    assert!(matches!(dropped, Err(OpError::NotFound(_))), "{dropped:?}");
+}
+
+#[test]
+fn a_preview_older_than_30_minutes_by_the_ctx_clock_is_dropped() {
+    let dir = TempDir::new("export-expiry");
+    let now = Arc::new(AtomicU64::new(common::CLOCK));
+    let clock = now.clone();
+    let home = common::home(&dir);
+    std::fs::create_dir_all(home.join(".claude/projects")).unwrap();
+    let paths = common::paths(&dir);
+    let conn = session_player_core::test_support::index::open(&paths.db).unwrap();
+    session_player_core::test_support::index::add_root(&conn, &home.join(".claude/projects").to_string_lossy()).unwrap();
+    drop(conn);
+    let ctx = Ctx::open(OpenParams {
+        paths,
+        home,
+        version: "9.9.9".to_string(),
+        claude: None,
+        clock: Some(Arc::new(move || clock.load(Ordering::SeqCst))),
+        event_capacity: None,
+        upload_cap: None,
+        extensions: vec![],
+    })
+    .unwrap();
+    common::session(&dir, "s1", "Add a health check endpoint");
+    common::reindex(&ctx);
+    let minute = 60_000;
+
+    preview(&ctx, "aaaa", "s1", 1);
+    preview(&ctx, "bbbb", "s1", 1);
+    now.fetch_add(29 * minute, Ordering::SeqCst);
+    assert_eq!(download(&ctx, &dir, "aaaa", 1, "Al").expect("a 29-minute-old preview").0.sessions[0].id, "claude:s1");
+    now.fetch_add(2 * minute, Ordering::SeqCst);
+
+    let expired = download(&ctx, &dir, "bbbb", 1, "Bo");
+    assert!(matches!(expired, Err(OpError::NotFound(_))), "{expired:?}");
 }

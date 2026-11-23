@@ -180,6 +180,8 @@ sp unpair <device>                       # on the server: revoke one
 
 - `sp pull <name>` uses the paired server when `<name>` is one saved by `sp connect`, and SSH otherwise.
 - The server opens its network listener (port 47801) only while a device is paired or a pairing string is waiting to be used.
+- `sp pull`, `sp pair`, `sp devices` and `sp unpair` act on this machine's own server, so a paired device can't run them on it; `sp pull` refuses `--server`.
+- Plain HTTP on the network listener (`"tls": { "mode": "plain" }` in `server.json`) sends tokens and sessions unencrypted, so `sp serve` refuses it unless started with `sp serve --allow-insecure-http`.
 
 ### Use it in a browser
 

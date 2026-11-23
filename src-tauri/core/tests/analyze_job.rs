@@ -109,3 +109,58 @@ fn analyze_sessions_works_on_three_sessions_at_a_time() {
     assert_eq!(fake.pids().len(), 5);
     assert_eq!(analyze_done(&events).len(), 1);
 }
+
+#[test]
+fn a_panic_in_an_analyze_job_ends_it_failed_and_lets_the_next_analyze_job_start() {
+    let dir = TempDir::new("analyze-job-panic");
+    let fake = FakeClaude::new(&dir);
+    let ctx = common::open_simple(&dir, Some(fake.claude()));
+    common::session(&dir, "s1", "Work on s1");
+    common::reindex(&ctx);
+    ctx.set_publish_hook(Some(Arc::new(|event: &PushedEvent| {
+        if matches!(event, PushedEvent::AnalyzeProgress(_)) {
+            panic!("a bug in the analyze job");
+        }
+    })));
+
+    let id = analyze(&ctx, &["s1"], false);
+    let (done, _) = common::wait_done(&ctx, &id);
+    ctx.set_publish_hook(None);
+
+    assert_eq!(done.state, JobState::Failed, "{done:?}");
+    assert!(done.error.is_some(), "{done:?}");
+    let next = analyze(&ctx, &["s1"], false);
+    let (next, _) = common::wait_done(&ctx, &next);
+    assert_eq!(next.state, JobState::Finished, "{next:?}");
+}
+
+#[test]
+fn the_next_analyze_job_can_start_the_moment_the_analyze_done_event_is_published() {
+    let dir = TempDir::new("analyze-job-done-then-next");
+    let fake = FakeClaude::new(&dir);
+    let ctx = common::open_simple(&dir, Some(fake.claude()));
+    common::session(&dir, "s1", "Work on s1");
+    common::reindex(&ctx);
+    let path = common::row(&ctx, "s1").path;
+    let started = Arc::new(std::sync::Mutex::new(None));
+    let weak = Arc::downgrade(&ctx);
+    let seen = started.clone();
+    ctx.set_publish_hook(Some(Arc::new(move |event: &PushedEvent| {
+        if matches!(event, PushedEvent::AnalyzeDone(_))
+            && let Some(ctx) = weak.upgrade()
+            && seen.lock().unwrap().is_none()
+        {
+            let next = ops::call(&ctx, &ANALYZE_SESSIONS, &AnalyzeSessionsRequest { paths: vec![path.clone()], force: true, focus: None });
+            *seen.lock().unwrap() = Some(next);
+        }
+    })));
+
+    let id = analyze(&ctx, &["s1"], false);
+    common::wait_done(&ctx, &id);
+    common::wait_until("the hook ran", || started.lock().unwrap().is_some());
+    ctx.set_publish_hook(None);
+
+    let next = started.lock().unwrap().take().unwrap().expect("the next Analyze job started, not a Conflict");
+    let (next, _) = common::wait_done(&ctx, &next);
+    assert_eq!(next.state, JobState::Finished, "{next:?}");
+}

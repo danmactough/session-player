@@ -8,8 +8,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
-use super::{Ctx, DeviceId, Input, OpError, Output, RawBody, RawData, index_now, internal, parse_since, roots};
-use crate::{bundle, index, sync};
+use super::{Ctx, DeviceId, Input, OpError, Output, RawBody, RawData, SERVER_LOG, index_now, internal, parse_since, roots};
+use crate::{bundle, index, runlog, sync};
 
 /// The most bytes an uploaded bundle may hold unless `OpenParams.upload_cap` says otherwise.
 pub const DEFAULT_UPLOAD_CAP: u64 = 512 * 1024 * 1024;
@@ -54,7 +54,17 @@ pub(super) fn import_bundle(ctx: &Arc<Ctx>, device: &DeviceId, input: Input) -> 
         }
     }
     let _remove = Remove(file.clone());
-    let mut out = std::fs::File::create(&file).map_err(|e| internal(e.into()))?;
+    // Owner-only: the upload holds someone's sessions. A file left by a run that crashed is
+    // replaced rather than reused, so its permissions can't carry over.
+    let _ = std::fs::remove_file(&file);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut out = options.open(&file).map_err(|e| internal(e.into()))?;
     let copied = std::io::copy(&mut body.take(ctx.upload_cap + 1), &mut out).map_err(|e| internal(e.into()))?;
     if copied > ctx.upload_cap {
         return Err(OpError::TooLarge);
@@ -70,21 +80,33 @@ pub(super) fn import_bundle(ctx: &Arc<Ctx>, device: &DeviceId, input: Input) -> 
 }
 
 /// Streams the repository's sessions (`RawData::Stream`) from a producer thread with its own
-/// database connection. Dropping the reader stops the producer.
+/// database connection. Dropping the reader stops the producer. NotFound, before anything streams,
+/// when no session of the repository is indexed here. A producer that fails logs why to server.log;
+/// the cut stream has no End record, so the importer stores nothing.
 pub(super) fn export_project(ctx: &Arc<Ctx>, _device: &DeviceId, input: Input) -> Result<Output, OpError> {
     let Input::Json(value) = input else { return Err(OpError::BadRequest("export_project takes a JSON body".to_string())) };
     let req: ExportProjectRequest = serde_json::from_value(value).map_err(|e| OpError::BadRequest(e.to_string()))?;
     let since = req.since.as_deref().map(|s| parse_since(s, ctx.now())).transpose().map_err(|e| OpError::BadRequest(e.to_string()))?;
     let conn = index::open(&ctx.paths.db).map_err(internal)?;
+    let repo = sync::RepoName(req.repo.clone());
+    let rows = index::list(&conn).map_err(internal)?;
+    let mut names: std::collections::HashMap<&str, Option<sync::RepoName>> = std::collections::HashMap::new();
+    // As `sync::export` picks sessions: this machine's own, not ones imported from a bundle.
+    let known = rows.iter().filter(|r| !r.from_bundle).any(|r| names.entry(&r.project).or_insert_with(|| sync::repo_name(std::path::Path::new(&r.project))).as_ref() == Some(&repo));
+    if !known {
+        return Err(OpError::NotFound(format!("No sessions of the repository {} are indexed here", req.repo)));
+    }
     let (reader, writer) = std::io::pipe().map_err(|e| internal(e.into()))?;
     let home = ctx.home.clone();
-    let export = sync::ExportRequest { repo: sync::RepoName(req.repo.clone()), since };
+    let log = ctx.paths.logs.join(SERVER_LOG);
+    let export = sync::ExportRequest { repo, since };
     std::thread::spawn(move || {
         // A reader that goes away makes the next write fail, which ends the export and closes
-        // the connection. A cut stream has no End record, so the importer stores nothing.
+        // the connection.
         let mut out = std::io::BufWriter::new(writer);
-        if sync::export(&conn, &home, &export, &mut out).is_ok() {
-            let _ = out.flush();
+        let result = sync::export(&conn, &home, &export, &mut out).and_then(|()| Ok(out.flush()?));
+        if let Err(e) = result {
+            runlog::append(&log, &format!("Export of {} stopped: {e:#}", export.repo.0));
         }
     });
     Ok(Output::Raw(RawBody { data: RawData::Stream(Box::new(reader)), content_type: "application/octet-stream".to_string(), filename: None }))

@@ -18,8 +18,11 @@ use session_player_server::SERVER_EXTENSIONS;
 
 use crate::route::Route;
 
-/// How long a job is followed between checks of its state.
+/// How long a job in this process is followed between checks of its state.
 const POLL: Duration = Duration::from_millis(100);
+
+/// How long a job on a server is followed between `job` requests. Its end event cuts the wait short.
+const HTTP_POLL: Duration = Duration::from_millis(500);
 
 /// The most `run` waits, after a job on a server ended, for the job's end event. That event was
 /// published before the job ended, so it is already on its way; this only bounds a broken stream.
@@ -174,10 +177,24 @@ impl Backend {
             if params.cancel.load(Ordering::SeqCst) {
                 return Err(Detached(id).into());
             }
-            let mut wait = POLL;
-            while let Some(event) = events.next_within(wait) {
-                follow(&event.map_err(api_error)?, &job, &mut end_seen, params.on_event);
-                wait = Duration::ZERO;
+            let next_poll = Instant::now() + HTTP_POLL;
+            loop {
+                let left = next_poll.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    break;
+                }
+                match events.next_within(left) {
+                    Some(event) => {
+                        let ended_before = end_seen;
+                        follow(&event.map_err(api_error)?, &job, &mut end_seen, params.on_event);
+                        // The job's end event: ask for its state now rather than at the next poll.
+                        if end_seen && !ended_before {
+                            break;
+                        }
+                    }
+                    // A stream that ended answers at once; the job is still polled at the usual pace.
+                    None => std::thread::sleep(next_poll.saturating_duration_since(Instant::now())),
+                }
             }
         }
     }

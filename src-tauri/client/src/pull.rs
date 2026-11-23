@@ -1,6 +1,7 @@
 //! The `pull` operation the client crate adds to an in-process Ctx: reads a project's sessions
 //! from a paired server (`export_project` over pinned HTTPS) into this library with
-//! `ops::import_stream`.
+//! `ops::import_stream`. Local-only: it uses this machine's stored credentials, so a paired device
+//! must not be able to make the server pull from other servers.
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -12,7 +13,7 @@ use session_player_core::sync;
 
 use crate::{Client, RawCall, ServersStore};
 
-pub const PULL: Extension = Extension { spec: OpSpec { name: "pull", body: Body::Json, inline: false, access: Access::Authenticated }, handler: pull };
+pub const PULL: Extension = Extension { spec: OpSpec { name: "pull", body: Body::Json, inline: false, access: Access::LocalOnly }, handler: pull };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PullRequest {

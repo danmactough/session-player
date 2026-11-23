@@ -1,7 +1,9 @@
 // The operation registry's invariants (N19, N24, N48, N66) with the server's extensions and the
 // client's `pull` registered: names are unique; only `connect` is anonymous; only `service` is
-// never reachable over HTTP; only `hello`, `job` and `cancel_job` run inline; without a token
-// every name but `connect` gets the same 401; no operation shares a native shell command's name.
+// never reachable over HTTP; only `pull`, `pair`, `unpair` and `devices` are local-only, and a
+// paired device or browser calling one gets the same 403 as any other refusal; only `hello`, `job`
+// and `cancel_job` run inline; without a token every name but `connect` gets the same 401; no
+// operation shares a native shell command's name.
 #[path = "../../testutil/tempdir.rs"]
 mod tempdir;
 mod common;
@@ -9,8 +11,9 @@ mod common;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use common::{CtxParams, OpenWith, loopback_config, open_ctx_with, post_json, start};
-use session_player_client::PULL;
+use common::{CtxParams, OpenWith, RawRequest, local_client, loopback_config, open_ctx_with, post_json, raw, start};
+use session_player_client::{ConnectParams, PULL, PairingString, connect};
+use session_player_server::pairing::{PairRequest, PairResponse};
 use session_player_core::ops::{Access, Ctx, specs};
 use session_player_server::SERVER_EXTENSIONS;
 use tempdir::TempDir;
@@ -73,6 +76,71 @@ fn only_connect_is_anonymous_and_only_service_is_kept_off_http() {
 
     assert_eq!(names_where(&ctx, |s| s.access == Access::Anonymous), BTreeSet::from(["connect"]));
     assert_eq!(names_where(&ctx, |s| s.access == Access::NotOverHttp), BTreeSet::from(["service"]));
+}
+
+#[test]
+fn only_pull_pair_unpair_and_devices_are_local_only() {
+    let dir = TempDir::new("server-registry-local-only");
+    let ctx = open(&dir);
+
+    assert_eq!(names_where(&ctx, |s| s.access == Access::LocalOnly), BTreeSet::from(["devices", "pair", "pull", "unpair"]));
+}
+
+/// The body every 403 has, taken from a request with a Host this server doesn't answer.
+fn forbidden_body(addr: std::net::SocketAddr) -> Vec<u8> {
+    let refused = raw(addr, RawRequest { method: "POST", path: "/api/v1/hello", host: Some("elsewhere.example:1"), headers: &[], body: b"{}" });
+    assert_eq!(refused.status, 403);
+    refused.body
+}
+
+#[test]
+fn a_paired_device_calling_a_local_only_operation_gets_the_same_403_as_other_refusals() {
+    let dir = TempDir::new("server-registry-local-only-device");
+    let ctx = open(&dir);
+    let server = start(&ctx, loopback_config());
+    let addr = server.addrs().loopback;
+    let local = local_client(&server, &ctx.paths().data);
+    let offer: PairResponse = local.call_named("pair", &PairRequest {}).expect("pair");
+    let device = connect(ConnectParams { pairing: &offer.pairing, name: "laptop" }).expect("connect");
+    let bearer = format!("Bearer {}", device.token);
+    let body_of = |name: &str| match name {
+        "pull" => r#"{"server":"lab","project":"/tmp/nowhere"}"#.to_string(),
+        "unpair" => format!(r#"{{"id":"{}"}}"#, device.device.0),
+        _ => "{}".to_string(),
+    };
+    assert_eq!(post_json(addr, "/api/v1/hello", &[("Authorization", &bearer)], "{}").status, 200, "the device's token works");
+
+    for name in ["pull", "pair", "unpair", "devices"] {
+        let answer = post_json(addr, &format!("/api/v1/{name}"), &[("Authorization", &bearer)], &body_of(name));
+        assert_eq!(answer.status, 403, "{name}: {}", String::from_utf8_lossy(&answer.body));
+        assert_eq!(answer.body, forbidden_body(addr), "{name}");
+    }
+    let still: Vec<serde_json::Value> = local.call_named("devices", &serde_json::json!({})).expect("devices with the local token");
+    assert_eq!(still.len(), 1, "the device couldn't unpair itself");
+    server.shutdown();
+}
+
+#[test]
+fn a_browser_cookie_calling_a_local_only_operation_gets_403() {
+    let dir = TempDir::new("server-registry-local-only-cookie");
+    let ctx = open(&dir);
+    let server = start(&ctx, loopback_config());
+    let addr = server.addrs().loopback;
+    let own = format!("http://{addr}");
+    let offer: PairResponse = local_client(&server, &ctx.paths().data).call_named("pair", &PairRequest {}).expect("pair");
+    let secret = PairingString::parse(&offer.pairing).unwrap().secret;
+    let body = format!(r#"{{"secret":"{secret}","name":"browser","browser":true}}"#);
+    let connected = post_json(addr, "/api/v1/connect", &[("Origin", &own)], &body);
+    let cookie = connected.header("set-cookie").expect("a Set-Cookie header").split(';').next().unwrap().to_string();
+    let headers = [("Cookie", cookie.as_str()), ("x-sp-csrf", "1"), ("Origin", own.as_str())];
+    assert_eq!(post_json(addr, "/api/v1/hello", &headers, "{}").status, 200, "the cookie works");
+
+    for name in ["pair", "devices"] {
+        let answer = post_json(addr, &format!("/api/v1/{name}"), &headers, "{}");
+        assert_eq!(answer.status, 403, "{name}");
+        assert_eq!(answer.body, forbidden_body(addr), "{name}");
+    }
+    server.shutdown();
 }
 
 #[test]

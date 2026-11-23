@@ -7,10 +7,14 @@ mod common;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use common::{CtxParams, TestClock, accepts_connections, external_config, free_port, local_client, loopback_config, open_ctx, start, wait_until};
+use common::{
+    CtxParams, RawRequest, TestClock, accepts_connections, client_for, external_config, free_port, local_client, loopback_config, open_ctx, raw, start,
+    try_start, wait_until,
+};
 use session_player_client::{ConnectParams, PairingString, connect};
+use session_player_core::ops::{HELLO, HelloRequest};
 use session_player_server::pairing::{PairRequest, PairResponse, UnpairRequest};
-use session_player_server::{ServerConfig, ServerHandle};
+use session_player_server::{ServerConfig, ServerHandle, TlsMode};
 use tempdir::TempDir;
 
 const CLOSES_WITHIN: Duration = Duration::from_secs(3);
@@ -102,5 +106,74 @@ fn the_external_listener_opens_and_closes_twenty_times_on_one_port() {
         clock.advance(300_001);
         wait_closed(&server, external);
     }
+    server.shutdown();
+}
+
+#[test]
+fn serving_on_an_unspecified_address_without_advertise_fails_and_says_to_set_advertise() {
+    let dir = TempDir::new("server-listener-unspecified");
+    let ctx = open_ctx(CtxParams { dir: &dir, clock: None, event_capacity: None, fixtures: false });
+
+    for bind in ["0.0.0.0", "::"] {
+        let config = ServerConfig { external_bind: Some(bind.parse().unwrap()), advertise: None, ..external_config() };
+        match try_start(&ctx, config, false) {
+            Ok(server) => {
+                server.shutdown();
+                panic!("serve started on {bind} with nothing to advertise");
+            }
+            Err(e) => assert!(e.contains("advertise"), "{bind}: {e}"),
+        }
+    }
+    let config = ServerConfig { external_bind: Some("0.0.0.0".parse().unwrap()), advertise: Some("127.0.0.1".to_string()), ..external_config() };
+    try_start(&ctx, config, false).expect("with advertise set it serves").shutdown();
+}
+
+#[test]
+fn plain_http_off_loopback_is_refused_unless_insecure_http_is_allowed() {
+    let dir = TempDir::new("server-listener-plain");
+    let ctx = open_ctx(CtxParams { dir: &dir, clock: None, event_capacity: None, fixtures: false });
+    let plain = ServerConfig { tls: TlsMode::Plain, ..external_config() };
+
+    match try_start(&ctx, plain.clone(), false) {
+        Ok(server) => {
+            server.shutdown();
+            panic!("serve started plain HTTP off loopback without --allow-insecure-http");
+        }
+        Err(e) => assert!(e.contains("--allow-insecure-http"), "{e}"),
+    }
+    let server = try_start(&ctx, plain, true).expect("allowed");
+    let offer: PairResponse = local_client(&server, &ctx.paths().data).call_named("pair", &PairRequest {}).expect("pair");
+    assert_eq!(PairingString::parse(&offer.pairing).unwrap().fingerprint, None);
+    server.shutdown();
+}
+
+#[test]
+fn an_ipv6_external_listener_brackets_its_address_in_the_pairing_string_and_answers_a_bracketed_host_and_origin() {
+    let dir = TempDir::new("server-listener-ipv6");
+    let ctx = open_ctx(CtxParams { dir: &dir, clock: None, event_capacity: None, fixtures: false });
+    let config = ServerConfig { external_bind: Some("::1".parse().unwrap()), advertise: None, tls: TlsMode::Plain, ..external_config() };
+    let server = try_start(&ctx, config, true).expect("serve on ::1");
+    let offer: PairResponse = local_client(&server, &ctx.paths().data).call_named("pair", &PairRequest {}).expect("pair");
+    let pairing = PairingString::parse(&offer.pairing).unwrap();
+    assert_eq!(pairing.address, "[::1]");
+    let device = connect(ConnectParams { pairing: &offer.pairing, name: "laptop" }).expect("connect over IPv6");
+    client_for(&pairing, Some(device.token.clone())).call(&HELLO, &HelloRequest {}).expect("hello over IPv6");
+
+    let external = server.addrs().external.expect("the external listener is open");
+    let host = format!("[::1]:{}", external.port());
+    let origin = format!("http://{host}");
+    let bearer = format!("Bearer {}", device.token);
+    let answer = raw(
+        external,
+        RawRequest {
+            method: "POST",
+            path: "/api/v1/hello",
+            host: Some(&host),
+            headers: &[("Content-Type", "application/json"), ("Authorization", &bearer), ("Origin", &origin)],
+            body: b"{}",
+        },
+    );
+    assert_eq!(answer.status, 200, "{}", String::from_utf8_lossy(&answer.body));
+    assert_eq!(answer.header("access-control-allow-origin"), Some(origin.as_str()));
     server.shutdown();
 }

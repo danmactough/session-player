@@ -12,7 +12,7 @@ pub mod tls;
 mod watcher;
 
 use std::convert::Infallible;
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -33,7 +33,7 @@ use session_player_core::ops::{
     Access, ApiError, Body, Ctx, DeviceId, DispatchParams, ErrorCode, EventsSince, Input, OpError, ImageRef, OpSpec, Output, PushedEvent, RawBody, RawData, ServerEvent, dispatch,
     spec_of,
 };
-use tokio::sync::{Notify, broadcast};
+use tokio::sync::{Notify, broadcast, watch};
 
 use auth::{CheckParams, HostParams, Listener, Refusal, error_response, forbidden, unauthenticated};
 pub use pairing::SERVER_EXTENSIONS;
@@ -81,6 +81,9 @@ pub struct ServeParams {
     /// The folder holding server.lock, server.token, devices.json and tls/.
     pub data: PathBuf,
     pub config: ServerConfig,
+    /// `sp serve --allow-insecure-http`: lets `TlsMode::Plain` serve off loopback. Never stored in
+    /// server.json, so plain HTTP is a choice made each time the server starts.
+    pub allow_insecure_http: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,7 +143,8 @@ impl Drop for ServerHandle {
 pub(crate) struct Shared {
     pub(crate) ctx: Arc<Ctx>,
     pub(crate) config: ServerConfig,
-    /// The configured advertise host, else the external bind address.
+    /// The configured advertise host, else the external bind address, as it appears in a Host
+    /// header: an IPv6 address in brackets.
     pub(crate) advertise: Option<String>,
     pub(crate) loopback: SocketAddr,
     external: Mutex<Option<SocketAddr>>,
@@ -151,6 +155,9 @@ pub(crate) struct Shared {
     pub(crate) nudge: Notify,
     local_token: [u8; 32],
     events: broadcast::Sender<ServerEvent>,
+    /// Bumped by `unpair`, so each open event stream checks at once whether its device is still
+    /// paired.
+    pub(crate) revoked: watch::Sender<u64>,
 }
 
 impl Shared {
@@ -200,11 +207,38 @@ fn write_private(file: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     result.with_context(|| format!("Couldn't write {}", file.display()))
 }
 
+/// `host` as a URL or Host header carries it: an IPv6 address in brackets.
+pub(crate) fn url_host(host: &str) -> String {
+    if host.parse::<Ipv6Addr>().is_ok() { format!("[{host}]") } else { host.to_string() }
+}
+
+/// Refuses an external listener devices couldn't use, or plain HTTP off loopback that wasn't
+/// asked for, and warns when it was.
+fn check_external(config: &ServerConfig, data: &Path, allow_insecure_http: bool) -> anyhow::Result<()> {
+    let Some(bind) = config.external_bind else { return Ok(()) };
+    if bind.is_unspecified() && config.advertise.is_none() {
+        anyhow::bail!(
+            "external_bind is {bind}, which isn't an address devices can connect to. Set advertise in {} to the host name or address they reach this machine at.",
+            data.join("server.json").display()
+        );
+    }
+    if config.tls == TlsMode::Plain {
+        if !allow_insecure_http {
+            anyhow::bail!(
+                "server.json asks for plain HTTP off loopback (tls mode \"plain\"), which sends tokens and sessions unencrypted. Use a certificate, or start the server with sp serve --allow-insecure-http."
+            );
+        }
+        eprintln!("Warning: serving plain HTTP on {bind} (--allow-insecure-http): tokens and sessions cross the network unencrypted.");
+    }
+    Ok(())
+}
+
 /// Takes server.lock, writes a new server.token, binds the loopback listener and starts the
 /// external listener controller on the server's own tokio runtime.
 pub fn serve(params: ServeParams) -> anyhow::Result<ServerHandle> {
     tls::install_provider();
-    let ServeParams { ctx, data, config } = params;
+    let ServeParams { ctx, data, config, allow_insecure_http } = params;
+    check_external(&config, &data, allow_insecure_http)?;
     let mut lock = lockfile::acquire(&data)?;
     let token = random_token(32)?;
     write_private(&data.join("server.token"), token.as_bytes())?;
@@ -212,7 +246,8 @@ pub fn serve(params: ServeParams) -> anyhow::Result<ServerHandle> {
     let loopback = loopback_listener.local_addr()?;
     lock.record_port(loopback.port())?;
 
-    let advertise = config.advertise.clone().or_else(|| config.external_bind.map(|ip| ip.to_string()));
+    // The certificate names the bare host; Host headers, origins and pairing strings bracket IPv6.
+    let advertise = config.advertise.clone().or_else(|| config.external_bind.map(|ip| ip.to_string())).map(|a| a.trim_start_matches('[').trim_end_matches(']').to_string());
     let (tls, fingerprint) = match (config.external_bind, &config.tls) {
         (None, _) | (Some(_), TlsMode::Plain) => (None, None),
         (Some(bind), TlsMode::SelfSigned) => {
@@ -230,7 +265,7 @@ pub fn serve(params: ServeParams) -> anyhow::Result<ServerHandle> {
     let shared = Arc::new(Shared {
         ctx: ctx.clone(),
         config,
-        advertise,
+        advertise: advertise.as_deref().map(url_host),
         loopback,
         external: Mutex::new(None),
         fingerprint,
@@ -238,6 +273,7 @@ pub fn serve(params: ServeParams) -> anyhow::Result<ServerHandle> {
         nudge: Notify::new(),
         local_token: auth::hash_token(&token),
         events: events.clone(),
+        revoked: watch::Sender::new(0),
     });
 
     let stop = Arc::new(AtomicBool::new(false));
@@ -382,6 +418,8 @@ fn router(shared: Arc<Shared>, info: ListenerInfo) -> Router {
 }
 
 const JSON_LIMIT: usize = 16 * 1024 * 1024;
+/// The most a request without a token (`connect`) may send.
+const ANONYMOUS_LIMIT: usize = 64 * 1024;
 const KEEPALIVE: Duration = Duration::from_secs(3);
 
 fn header<'a>(headers: &'a HeaderMap, name: header::HeaderName) -> Option<&'a str> {
@@ -421,7 +459,7 @@ async fn answer(state: &AppState, req: Request, origin: Option<&str>) -> Respons
     }
     let anonymous = path == "/api/v1/connect" && req.method() == Method::POST;
     let device = if anonymous {
-        DeviceId("anonymous".to_string())
+        anonymous_device()
     } else {
         let devices: Vec<(DeviceId, [u8; 32])> = shared.ctx.devices().into_iter().filter_map(|d| auth::from_hex(&d.token_sha256).map(|h| (d.id, h))).collect();
         let headers = req.headers();
@@ -453,7 +491,7 @@ async fn answer(state: &AppState, req: Request, origin: Option<&str>) -> Respons
             return error_response(ErrorCode::MethodNotAllowed, "The event stream takes GET.");
         }
         let last_id = header(req.headers(), header::HeaderName::from_static("last-event-id")).and_then(|v| v.trim().parse().ok());
-        return event_stream(shared.clone(), last_id);
+        return event_stream(shared.clone(), last_id, device);
     }
     let Some(name) = path.strip_prefix("/api/v1/").filter(|n| !n.is_empty() && !n.contains('/')) else {
         return error_response(ErrorCode::NotFound, "Nothing is here.");
@@ -461,10 +499,21 @@ async fn answer(state: &AppState, req: Request, origin: Option<&str>) -> Respons
     let Some(spec) = spec_of(&shared.ctx, name).filter(|s| s.access != Access::NotOverHttp) else {
         return error_response(ErrorCode::UnknownOperation, &format!("No operation is named {name}."));
     };
+    if spec.access == Access::LocalOnly && device != local_device() {
+        return forbidden();
+    }
     if req.method() != Method::POST {
         return error_response(ErrorCode::MethodNotAllowed, "Operations take POST.");
     }
     run_operation(state, spec, device, req).await
+}
+
+fn local_device() -> DeviceId {
+    DeviceId("local".to_string())
+}
+
+fn anonymous_device() -> DeviceId {
+    DeviceId("anonymous".to_string())
 }
 
 /// `{generation}/{event}/{image}` from a `load_session` image URL.
@@ -502,7 +551,8 @@ async fn run_operation(state: &AppState, spec: OpSpec, device: DeviceId, req: Re
     let mut browser = false;
     let input = match spec.body {
         Body::Json => {
-            let Ok(bytes) = axum::body::to_bytes(body, JSON_LIMIT).await else {
+            let limit = if device == anonymous_device() { ANONYMOUS_LIMIT } else { JSON_LIMIT };
+            let Ok(bytes) = axum::body::to_bytes(body, limit).await else {
                 return error_response(ErrorCode::TooLarge, "The request body is too large.");
             };
             let value: serde_json::Value = match serde_json::from_slice(&bytes) {
@@ -581,10 +631,17 @@ fn sse_frame(event: &ServerEvent) -> Bytes {
     Bytes::from(format!("id: {}\ndata: {data}\n\n", event.id))
 }
 
+/// Whether `device` may still read: the local token always, a paired device until it is unpaired.
+fn still_paired(ctx: &Ctx, device: &DeviceId) -> bool {
+    *device == local_device() || ctx.devices().iter().any(|d| d.id == *device)
+}
+
 /// Subscribes to the pump before reading the ring, so every event is either replayed or forwarded;
-/// ids at or below the last one sent are dropped, so none arrives twice.
-fn event_stream(shared: Arc<Shared>, last_id: Option<u64>) -> Response {
+/// ids at or below the last one sent are dropped, so none arrives twice. The stream ends when
+/// `device` is unpaired: at once on the unpair, and at the latest on the next keepalive.
+fn event_stream(shared: Arc<Shared>, last_id: Option<u64>, device: DeviceId) -> Response {
     let mut rx = shared.events.subscribe();
+    let mut revoked = shared.revoked.subscribe();
     let ctx = shared.ctx.clone();
     let (replay, mut last) = match last_id {
         Some(id) => {
@@ -605,7 +662,19 @@ fn event_stream(shared: Arc<Shared>, last_id: Option<u64>) -> Response {
             }
         }
         loop {
-            let event = match tokio::time::timeout(KEEPALIVE, rx.recv()).await {
+            let received = tokio::select! {
+                received = tokio::time::timeout(KEEPALIVE, rx.recv()) => Some(received),
+                changed = revoked.changed() => match changed {
+                    Ok(()) => None,
+                    // The server is stopping.
+                    Err(_) => return,
+                },
+            };
+            if !still_paired(&ctx, &device) {
+                return;
+            }
+            let Some(received) = received else { continue };
+            let event = match received {
                 Err(_) => {
                     if sender.send_data(Bytes::from_static(b": keepalive\n\n")).await.is_err() {
                         return;

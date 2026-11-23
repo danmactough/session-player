@@ -185,3 +185,65 @@ fn dropping_an_export_project_reader_stops_its_producer() {
 
     common::wait_until("the producer stops and closes its connection", || !wal.exists());
 }
+
+#[test]
+fn export_project_of_a_repository_with_no_sessions_here_is_not_found_before_anything_streams() {
+    let dir = TempDir::new("export-project-unknown");
+    let exporter = exporter_with_project(&dir);
+
+    let refused = ops::call_raw(&exporter, "export_project", Input::Json(json!({ "repo": "no-such-repo" })));
+
+    assert!(matches!(refused, Err(OpError::NotFound(_))), "{:?}", refused.as_ref().err());
+}
+
+#[test]
+fn an_export_project_producer_that_fails_logs_why_to_the_server_log() {
+    let dir = TempDir::new("export-project-log");
+    let exporter = exporter_with_project(&dir);
+    let log = exporter.paths().logs.join(ops::SERVER_LOG);
+
+    let RawData::Stream(mut stream) = export_project(&exporter, "widget").data else { panic!("export_project sent bytes, not a stream") };
+    let mut start = [0u8; 64];
+    stream.read_exact(&mut start).unwrap();
+    drop(stream);
+
+    common::wait_until("the failed export is logged", || std::fs::read_to_string(&log).is_ok_and(|text| text.contains("widget")));
+}
+
+/// A body that, once some bytes were read, records the mode of every upload staging file.
+struct InspectingBody {
+    data: PathBuf,
+    bytes: Cursor<Vec<u8>>,
+    modes: Arc<std::sync::Mutex<Vec<u32>>>,
+}
+
+impl Read for InspectingBody {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        use std::os::unix::fs::PermissionsExt;
+        if self.bytes.position() > 0 {
+            for entry in std::fs::read_dir(&self.data).unwrap().flatten() {
+                if entry.file_name().to_string_lossy().starts_with("upload-") {
+                    self.modes.lock().unwrap().push(entry.metadata().unwrap().permissions().mode() & 0o777);
+                }
+            }
+        }
+        let n = buf.len().min(1024);
+        self.bytes.read(&mut buf[..n])
+    }
+}
+
+#[test]
+fn an_upload_is_staged_in_a_file_only_its_owner_can_read() {
+    let dir = TempDir::new("import-staging-mode");
+    let bytes = bundle_bytes(&dir, "exporter", "b1", "Add a health check endpoint");
+    let ctx = common::open_simple(&dir.join("importer"), None);
+    let modes = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let body = InspectingBody { data: ctx.paths().data.clone(), bytes: Cursor::new(bytes), modes: modes.clone() };
+    let input = Input::Raw { body: Box::new(body), content_type: None, query: Vec::new() };
+
+    ops::call_raw(&ctx, "import_bundle", input).expect("import_bundle");
+
+    let modes = modes.lock().unwrap().clone();
+    assert!(!modes.is_empty(), "no staging file was seen");
+    assert!(modes.iter().all(|m| *m == 0o600), "{modes:?}");
+}

@@ -6,7 +6,7 @@ mod tempdir;
 
 mod common;
 
-use common::{Machine, find_files, ok};
+use common::{Machine, find_files, ok, stderr};
 use tempdir::TempDir;
 
 fn paired_machines(dir: &TempDir) -> (Machine, Machine, std::path::PathBuf, common::Server) {
@@ -50,4 +50,16 @@ fn sp_pull_dry_run_from_a_paired_server_lists_the_files_and_writes_nothing() {
     assert!(beta.stub_calls("ssh").is_empty(), "a paired name never runs ssh");
     assert!(printed.contains("Dry run: nothing was written") && printed.contains("aaaa1111-from-the-server.jsonl"), "{printed}");
     assert!(find_files(&beta.home, "aaaa1111-from-the-server.jsonl").is_empty(), "nothing is written");
+}
+
+#[test]
+fn sp_pull_with_server_is_refused_because_a_pull_always_runs_on_this_machine() {
+    let dir = TempDir::new("cli-pull-server-flag");
+    let (_alpha, beta, beta_widgets, _server) = paired_machines(&dir);
+
+    let output = beta.sp(&["--server", "lab", "pull", "lab", "--project", beta_widgets.to_str().unwrap()]);
+
+    assert_ne!(output.status.code(), Some(0));
+    assert!(stderr(&output).contains("sp pull always runs on this machine"), "{}", stderr(&output));
+    assert!(find_files(&beta.home, "aaaa1111-from-the-server.jsonl").is_empty(), "nothing is pulled");
 }

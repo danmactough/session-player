@@ -157,7 +157,12 @@ enum Command {
     /// Run the Session Player server on this machine's data folder until stopped
     ///
     /// Settings are read from server.json in the data folder.
-    Serve,
+    Serve {
+        /// Serve plain HTTP off loopback when server.json asks for it (tls mode "plain"). Tokens
+        /// and sessions then cross the network unencrypted.
+        #[arg(long)]
+        allow_insecure_http: bool,
+    },
     /// Print a pairing string another machine passes to `sp connect`
     Pair,
     /// Pair with a server, using the string `sp pair` printed there
@@ -1029,6 +1034,9 @@ fn pull_summary(pulled: PullResponse) -> sync::PullSummary {
 
 /// A server paired with `sp connect` is pulled from over HTTPS; any other name is a host for ssh.
 fn cmd_pull(cli: &Cli, paths: &Paths, host: &str, scope: &Scope, dry_run: bool) -> anyhow::Result<()> {
+    if cli.server.is_some() {
+        bail!("sp pull always runs on this machine, pulling into it from the server or host you name. Run it without --server: sp pull {host}");
+    }
     let (project, repo, since) = remote_scope(scope)?;
     eprintln!("{} {} from {host}…", if dry_run { "Checking" } else { "Pulling" }, repo.0);
     let summary = if ServersStore::new(&paths.data).get(host)?.is_some() {
@@ -1055,7 +1063,7 @@ fn cmd_pull(cli: &Cli, paths: &Paths, host: &str, scope: &Scope, dry_run: bool) 
     Ok(())
 }
 
-fn cmd_serve(paths: &Paths) -> anyhow::Result<()> {
+fn cmd_serve(paths: &Paths, allow_insecure_http: bool) -> anyhow::Result<()> {
     let file = paths.data.join("server.json");
     let config: ServerConfig = match std::fs::read(&file) {
         Ok(bytes) => serde_json::from_slice(&bytes).with_context(|| format!("Couldn't read {}; fix or remove it", file.display()))?,
@@ -1068,7 +1076,7 @@ fn cmd_serve(paths: &Paths) -> anyhow::Result<()> {
     ctrlc::set_handler(move || {
         let _ = stop.send(());
     })?;
-    let server = serve(ServeParams { ctx: ctx.clone(), data: paths.data.clone(), config })?;
+    let server = serve(ServeParams { ctx: ctx.clone(), data: paths.data.clone(), config, allow_insecure_http })?;
     // Sessions written while no server ran; the watcher picks up the ones written from now on.
     ops::call(&ctx, &REINDEX, &ReindexRequest { full: false }).map_err(backend::op_error)?;
     eprintln!("Serving {} on http://{}", paths.data.display(), server.addrs().loopback);
@@ -1176,7 +1184,7 @@ fn run(cli: &Cli, paths: &Paths) -> anyhow::Result<()> {
         // The job is the index pass, so none runs first.
         Command::Index { full } => cmd_index(&open(false)?.0, *full),
         Command::Install => cmd_install(),
-        Command::Serve => cmd_serve(paths),
+        Command::Serve { allow_insecure_http } => cmd_serve(paths, *allow_insecure_http),
         Command::Pair => cmd_pair(&open(false)?.0),
         Command::Connect { pairing, name } => cmd_connect(paths, pairing, name),
         Command::Devices => cmd_devices(&open(false)?.0),

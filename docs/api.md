@@ -63,8 +63,10 @@ Authorization: Bearer <device token>
 
 - Each paired device gets its own random token from `connect`. The server keeps only its
   SHA-256 hash, in `devices.json`.
-- Accepted on both listeners. Every device has full access; there are no roles.
-- `unpair` revokes a device. Its token stops working on the next request.
+- Accepted on both listeners. Every device has full access except to the
+  [local-only operations](#server-extensions); there are no roles.
+- `unpair` revokes a device. Its token stops working on the next request, and its open event
+  streams end within a second.
 
 ### Browser cookie
 
@@ -272,12 +274,16 @@ POST /api/v1/import_bundle?on_conflict=replace
   `replace` overwrites the library's copies; `keep` keeps them.
 - `ImportReport` is `{ imported, unchanged, kept, conflicts: [{ id, existing_title,
   incoming_title }], empty, ... }` (`src-tauri/core/src/bundle.rs`).
-- Uploads over 512 MiB get 413 `too_large` and leave nothing behind.
+- Uploads over 512 MiB get 413 `too_large` and leave nothing behind. The upload is staged in an
+  owner-only (0600) file in the data folder while it is imported.
 - The sessions are indexed before the answer, so they are listed when it returns.
 
 `export_project` streams a repository's sessions, analysis and reports in the sync format
 (`docs/sync-format.md`). `pull` on another server reads it. A cut stream has no end record, so the
 reader stores nothing from it.
+
+- A repository with no session indexed on the server gets 404 `not_found` before anything streams.
+- An export that fails part way writes why to `server.log`.
 
 ### Server extensions
 
@@ -286,12 +292,18 @@ crate adds `pull` (`src-tauri/client/src/pull.rs`).
 
 | Operation | Request | Response | Auth |
 |---|---|---|---|
-| `pair` | `{}` | `{ pairing, expires_at }` | token |
+| `pair` | `{}` | `{ pairing, expires_at }` | local token only |
 | `connect` | `{ secret, name, browser?: bool }` | `{ device, token }` | **none** |
-| `devices` | `{}` | `[{ id, name, paired_at }]` | token |
-| `unpair` | `{ id }` | `null` (404 for an unknown id) | token |
-| `pull` | `{ server, project, since?: string, dry_run?: bool }` | `PullResponse` | token |
+| `devices` | `{}` | `[{ id, name, paired_at }]` | local token only |
+| `unpair` | `{ id }` | `null` (404 for an unknown id) | local token only |
+| `pull` | `{ server, project, since?: string, dry_run?: bool }` | `PullResponse` | local token only |
 | `service` | `{ action }` | | in process only |
+
+- **Local token only** means the [local token](#local-token-servertoken) on the loopback listener (or a call
+  in process). A paired device or browser gets the same 403 `forbidden_origin` as any other
+  refused request: a device can't mint, list or revoke devices, or make the server pull from
+  other servers with its stored credentials.
+- `connect`'s request body may be at most 64 KiB; a larger one gets 413 `too_large`.
 
 - `pair` creates a one-time offer and answers its [pairing string](#pairing-strings). It needs a
   running server: in process it answers 409. At most 5 offers are open at once (409 beyond that).
@@ -318,7 +330,7 @@ Every error is JSON:
 | `code` | Status | When |
 |---|---|---|
 | `unauthenticated` | 401 | Missing or wrong credential, or a failed `connect` |
-| `forbidden_origin` | 403 | Host or Origin not allowed; cookie request without `x-sp-csrf` or from another origin |
+| `forbidden_origin` | 403 | Host or Origin not allowed; cookie request without `x-sp-csrf` or from another origin; a local-only operation called by a paired device or browser |
 | `unknown_operation` | 404 | No operation has that name (only after authentication) |
 | `not_found` | 404 | Unknown job, report, device, image or path under `/api/` |
 | `method_not_allowed` | 405 | Wrong method for an operation, the event stream or an image |
@@ -352,6 +364,11 @@ data: {"id":1763800000123,"at":1763800000456,"event":{"name":"index-progress","p
 - Event ids start at the server's start time in ms and increase by one. An id from before a
   restart, or one older than the server's buffer of recent events (1000 by default), is answered
   with a `snapshot` event instead of a replay. A client reading too slowly also gets a `snapshot`.
+- A reader keeps the id of the last event it handled and drops an event whose id is at or below
+  it, except a `snapshot`: a `snapshot` is always accepted and its id becomes the last id. A
+  server restarted with its clock behind the old one answers an old id with a `snapshot` whose id
+  is lower, and its next events follow on from that id.
+- The stream of a device that is unpaired ends within a second.
 
 | `name` | `payload` |
 |---|---|
@@ -415,6 +432,10 @@ The external listener serves HTTPS in one of three modes, set by `tls` in `serve
 | `{ "mode": "own_cert", "cert": "<pem path>", "key": "<pem path>" }` | Yours |
 | `{ "mode": "plain" }` | None: plain HTTP. Tokens cross the network unencrypted |
 
+- `plain` serves only when the server is started with `sp serve --allow-insecure-http`, which
+  prints a warning. Without the flag, `sp serve` refuses to start. The flag isn't kept in
+  `server.json`, so plain HTTP is chosen each time the server starts.
+
 - Clients pin the certificate by the fingerprint in the pairing string. They accept exactly that
   certificate and still verify the handshake signature; they don't consult certificate
   authorities or check the host name.
@@ -444,7 +465,7 @@ Every field is required when the file exists.
 | `port` | 47800 | Loopback listener port |
 | `external_port` | 47801 | External listener port; must differ from `port` |
 | `external_bind` | `null` | Address to listen on off loopback; `null` never does |
-| `advertise` | `null` | Host name or address other machines reach the server at. Goes into pairing strings and the certificate, and is the only `Host` the external listener answers |
+| `advertise` | `null` | Host name or address other machines reach the server at. Goes into pairing strings and the certificate, and is the only `Host` the external listener answers. Without it the bind address is used; with a wildcard bind (`0.0.0.0` or `::`) it is required, and `sp serve` refuses to start without it. An IPv6 address appears in brackets (`[fd00::1]:47801`) in `Host`, origins and pairing strings |
 | `tls` | `self_signed` | See [TLS](#tls) |
 
 ## Files in the data folder

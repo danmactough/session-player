@@ -5,8 +5,11 @@ mod tempdir;
 
 mod common;
 
+use std::time::Duration;
+
 use common::{Machine, ok, pairing_string, stderr, stdout};
 use session_player_client::{LocalProbe, PairingString, probe_local};
+use session_player_server::{ServerConfig, TlsMode};
 use tempdir::TempDir;
 
 #[test]
@@ -84,4 +87,43 @@ fn sp_unpair_with_an_unknown_device_fails_and_names_it() {
     let output = alpha.sp(&["unpair", "no-such-device"]);
     assert_ne!(output.status.code(), Some(0));
     assert!(stderr(&output).contains("no-such-device") && !stderr(&output).contains("panicked"), "{}", stderr(&output));
+}
+
+fn plain_external_config() -> ServerConfig {
+    ServerConfig { tls: TlsMode::Plain, ..common::external_config() }
+}
+
+#[test]
+fn sp_serve_refuses_plain_http_off_loopback_without_allow_insecure_http() {
+    let dir = TempDir::new("cli-serve-plain-refused");
+    let alpha = Machine::new(&dir, "alpha");
+    std::fs::write(alpha.data.join("server.json"), serde_json::to_vec(&plain_external_config()).unwrap()).unwrap();
+
+    let mut child = alpha.command(&["serve"]).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().expect("start sp serve");
+    let status = common::wait_exit(&mut child, Duration::from_secs(20));
+    if status.is_none() {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("sp serve kept running with plain HTTP off loopback");
+    }
+    let output = child.wait_with_output().unwrap();
+
+    assert_ne!(output.status.code(), Some(0));
+    assert!(stderr(&output).contains("--allow-insecure-http"), "{}", stderr(&output));
+    assert_eq!(probe_local(&alpha.data), LocalProbe::NotLive);
+}
+
+#[test]
+fn sp_serve_with_allow_insecure_http_serves_plain_http_off_loopback_and_warns() {
+    let dir = TempDir::new("cli-serve-plain-allowed");
+    let alpha = Machine::new(&dir, "alpha");
+    let beta = Machine::new(&dir, "beta");
+    let server = alpha.serve_with(&plain_external_config(), &["--allow-insecure-http"]);
+
+    let pairing = PairingString::parse(&pairing_string(&alpha.sp(&["pair"]))).expect("a pairing string");
+    assert_eq!(pairing.fingerprint, None, "plain HTTP pins no certificate");
+    common::pair(&alpha, &beta, "lab");
+    ok(&beta.sp(&["--server", "lab", "reports"]), "sp --server lab reports over plain HTTP");
+    let warned = server.stderr();
+    assert!(warned.contains("plain HTTP") && warned.contains("unencrypted"), "{warned}");
 }

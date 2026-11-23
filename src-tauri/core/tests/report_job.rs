@@ -108,3 +108,52 @@ fn a_report_on_no_sessions_is_a_bad_request() {
 
     assert!(matches!(refused, Err(OpError::BadRequest(_))), "{refused:?}");
 }
+
+#[test]
+fn a_panic_in_a_report_job_ends_it_failed_and_lets_the_next_report_start() {
+    let dir = TempDir::new("report-job-panic");
+    let (_fake, ctx) = setup(&dir);
+    ctx.set_publish_hook(Some(Arc::new(|event: &PushedEvent| {
+        if matches!(event, PushedEvent::ReportProgress(_)) {
+            panic!("a bug in the report job");
+        }
+    })));
+
+    let id = report(&ctx, &["s1"], None, false).expect("generate_report");
+    let (done, _) = common::wait_done(&ctx, &id);
+    ctx.set_publish_hook(None);
+
+    assert_eq!(done.state, JobState::Failed, "{done:?}");
+    assert!(done.error.is_some(), "{done:?}");
+    let next = report(&ctx, &["s1"], None, false).expect("the next report starts, not a Conflict");
+    let (next, _) = common::wait_done(&ctx, &next);
+    assert_eq!(next.state, JobState::Finished, "{next:?}");
+}
+
+#[test]
+fn the_next_report_can_start_the_moment_the_report_done_event_is_published() {
+    let dir = TempDir::new("report-job-done-then-next");
+    let (_fake, ctx) = setup(&dir);
+    let path = common::row(&ctx, "s1").path;
+    let started = Arc::new(std::sync::Mutex::new(None));
+    let weak = Arc::downgrade(&ctx);
+    let seen = started.clone();
+    ctx.set_publish_hook(Some(Arc::new(move |event: &PushedEvent| {
+        if matches!(event, PushedEvent::ReportDone(_))
+            && let Some(ctx) = weak.upgrade()
+            && seen.lock().unwrap().is_none()
+        {
+            let next = ops::call(&ctx, &GENERATE_REPORT, &GenerateReportRequest { paths: vec![path.clone()], model: None, focus: None, analyze_first: false });
+            *seen.lock().unwrap() = Some(next);
+        }
+    })));
+
+    let id = report(&ctx, &["s1"], None, false).expect("generate_report");
+    common::wait_done(&ctx, &id);
+    common::wait_until("the hook ran", || started.lock().unwrap().is_some());
+    ctx.set_publish_hook(None);
+
+    let next = started.lock().unwrap().take().unwrap().expect("the next report started, not a Conflict");
+    let (next, _) = common::wait_done(&ctx, &next);
+    assert_eq!(next.state, JobState::Finished, "{next:?}");
+}

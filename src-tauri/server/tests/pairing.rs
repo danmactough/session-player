@@ -1,6 +1,6 @@
 // Pairing offers redeem once, expire after 300 s by the Ctx clock, and all die after 5 wrong
 // secrets; every failure is the same 401. The device token a connect returns authenticates, is
-// listed by `devices` and stops working after `unpair`.
+// listed by `devices` (which only the local token may call) and stops working after `unpair`.
 //
 // With no external_bind the pairing string points at the loopback listener over plain HTTP.
 #[path = "../../testutil/tempdir.rs"]
@@ -167,7 +167,8 @@ fn a_device_token_authenticates_is_listed_by_devices_and_stops_working_after_unp
     assert_ne!(laptop.device.0, "local");
     let as_json = serde_json::to_string(&listed).unwrap();
     assert!(!as_json.contains(&laptop.token) && !as_json.contains(&phone.token), "devices must not show tokens");
-    assert_eq!(devices(&device).len(), 2, "a device has full access");
+    let listing = device.call_named::<_, Vec<DeviceInfo>>("devices", &DevicesRequest {}).expect_err("devices is local-only");
+    assert_eq!(listing.code, ErrorCode::ForbiddenOrigin, "{listing:?}");
 
     client.call_named::<_, ()>("unpair", &UnpairRequest { id: laptop.device.clone() }).expect("unpair");
 
@@ -176,5 +177,22 @@ fn a_device_token_authenticates_is_listed_by_devices_and_stops_working_after_unp
     let still = client_for(&pairing, Some(phone.token.clone()));
     still.call(&HELLO, &HelloRequest {}).expect("the other device still works");
     assert_eq!(devices(&client).len(), 1);
+    server.shutdown();
+}
+
+#[test]
+fn an_anonymous_connect_body_over_64_kb_is_too_large_and_one_under_it_is_read() {
+    let dir = TempDir::new("server-pairing-body-cap");
+    let ctx = open_ctx(CtxParams { dir: &dir, clock: None, event_capacity: None, fixtures: false });
+    let server = start(&ctx, loopback_config());
+    let addr = server.addrs().loopback;
+    let body = |name_len: usize| format!(r#"{{"secret":"wrong","name":"{}"}}"#, "n".repeat(name_len));
+
+    let small = post_json(addr, "/api/v1/connect", &[], &body(60 * 1024));
+    let large = post_json(addr, "/api/v1/connect", &[], &body(70 * 1024));
+
+    assert_eq!(small.status, 401, "a wrong secret under the cap is read and refused");
+    assert_eq!(large.status, 413, "{}", String::from_utf8_lossy(&large.body));
+    assert_eq!(large.code(), "too_large");
     server.shutdown();
 }

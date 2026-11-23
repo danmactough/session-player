@@ -88,8 +88,9 @@ impl Ctx {
         Ok(())
     }
 
-    /// Whether a device had that id.
+    /// Whether a device had that id. Its export preview goes too.
     pub fn remove_device(&self, id: &DeviceId) -> anyhow::Result<bool> {
+        self.exports.lock().unwrap().remove(id);
         let mut devices = self.devices.devices.lock().unwrap();
         if !devices.iter().any(|d| d.id == *id) {
             return Ok(false);

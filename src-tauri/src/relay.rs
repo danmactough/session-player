@@ -8,7 +8,9 @@
 //!
 //! The token never reaches the page, and a name that isn't in `servers.json` reaches nothing.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -118,7 +120,95 @@ pub fn request_headers(headers: &[(String, String)]) -> Result<RequestHeaders, S
     Ok(RequestHeaders { server, op, query, content_type })
 }
 
+/// One Client per paired server, by name, so relayed calls reuse its kept-alive connections. An
+/// entry is rebuilt when `servers.json` holds different details for that name (`sp connect` in a
+/// terminal re-paired it); pairing or removing a server in the app forgets it at once.
+#[derive(Default)]
+pub struct Clients {
+    by_name: Mutex<HashMap<String, (PairedServer, Arc<Client>)>>,
+}
+
+impl Clients {
+    /// The Client for `server`, made on first use.
+    pub fn for_server(&self, server: &PairedServer) -> Result<Arc<Client>, String> {
+        let mut by_name = self.by_name.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some((saved, client)) = by_name.get(&server.name)
+            && saved == server
+        {
+            return Ok(client.clone());
+        }
+        let client = Arc::new(Client::paired(server).map_err(|e| format!("{e:#}"))?);
+        by_name.insert(server.name.clone(), (server.clone(), client.clone()));
+        Ok(client)
+    }
+
+    /// Drops the Client kept for `name`, and with it its connections.
+    pub fn forget(&self, name: &str) {
+        self.by_name.lock().unwrap_or_else(PoisonError::into_inner).remove(name);
+    }
+
+    /// The Client kept for `name`, if any.
+    pub fn cached(&self, name: &str) -> Option<Arc<Client>> {
+        self.by_name.lock().unwrap_or_else(PoisonError::into_inner).get(name).map(|(_, client)| client.clone())
+    }
+}
+
+/// The open relayed event streams, each with the flag that ends it.
+pub struct Streams {
+    open: Mutex<HashMap<u64, Arc<AtomicBool>>>,
+    next: AtomicU64,
+}
+
+impl Default for Streams {
+    fn default() -> Streams {
+        Streams { open: Mutex::new(HashMap::new()), next: AtomicU64::new(1) }
+    }
+}
+
+impl Streams {
+    /// A new stream's id and its stop flag.
+    pub fn open(&self) -> (u64, Arc<AtomicBool>) {
+        let id = self.next.fetch_add(1, Ordering::SeqCst);
+        let stop = Arc::new(AtomicBool::new(false));
+        self.table().insert(id, stop.clone());
+        (id, stop)
+    }
+
+    /// Ends the stream `id`, if it is still open.
+    pub fn close(&self, id: u64) {
+        if let Some(stop) = self.table().remove(&id) {
+            stop.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// Ends every open stream. The shell calls this when the page reloads, since a reloaded page
+    /// can no longer close the streams the old one opened.
+    pub fn close_all(&self) {
+        for (_, stop) in self.table().drain() {
+            stop.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// Forgets `id` once its thread has returned.
+    pub fn ended(&self, id: u64) {
+        self.table().remove(&id);
+    }
+
+    pub fn len(&self) -> usize {
+        self.table().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    fn table(&self) -> std::sync::MutexGuard<'_, HashMap<u64, Arc<AtomicBool>>> {
+        self.open.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
 pub struct RelayCall<'a> {
+    pub clients: &'a Clients,
     /// What `servers.json` lists.
     pub paired: &'a [PairedServer],
     pub server: &'a str,
@@ -137,13 +227,14 @@ pub fn relay_call(call: RelayCall) -> Result<Vec<u8>, String> {
     let server = resolve_server(call.server, call.paired)?;
     validate_op(call.op)?;
     let query = parse_query(call.query)?;
-    let client = Client::paired(&server).map_err(|e| format!("{e:#}"))?;
+    let client = call.clients.for_server(&server)?;
     let raw = RawCall { name: call.op.to_string(), body: RawData::Bytes(call.body), content_type: call.content_type.to_string(), query };
     let answer = client.call_raw_answer(raw).map_err(|e| e.message)?;
     Ok(frame_answer(answer))
 }
 
 pub struct RelayImage<'a> {
+    pub clients: &'a Clients,
     pub paired: &'a [PairedServer],
     pub server: &'a str,
     /// `/api/v1/image/{generation}/{event}/{image}`, as `load_session` returned it.
@@ -157,7 +248,7 @@ pub fn relay_image(image: RelayImage) -> Result<Vec<u8>, String> {
     if ids.len() != 3 || !ids.iter().all(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit())) {
         return Err(format!("{:?} isn't an image URL from load_session.", image.path));
     }
-    let client = Client::paired(&server).map_err(|e| format!("{e:#}"))?;
+    let client = image.clients.for_server(&server)?;
     let answer = client.get(image.path).map_err(|e| e.message)?;
     Ok(frame_answer(answer))
 }
@@ -329,8 +420,75 @@ mod tests {
         // Port 9 on a TEST-NET address: if a request were sent it would fail as unreachable instead.
         let paired = [PairedServer { address: "192.0.2.1".to_string(), port: 9, ..server("work") }];
         for path in ["/api/v1/hello", "/api/v1/image/1/2", "/api/v1/image/1/2/x", "/api/v1/image/1/2/3/4", "/api/v1/image/../hello", "/api/v1/image/1/2/3?x=1", "http://evil/api/v1/image/1/2/3"] {
-            let e = relay_image(RelayImage { paired: &paired, server: "work", path }).unwrap_err();
+            let e = relay_image(RelayImage { clients: &Clients::default(), paired: &paired, server: "work", path }).unwrap_err();
             assert!(!e.contains("Couldn't reach"), "{path}: {e}");
         }
+    }
+
+    #[test]
+    fn clients_keeps_one_client_per_server_name_until_it_is_forgotten() {
+        let clients = Clients::default();
+        let work = server("work");
+
+        let first = clients.for_server(&work).unwrap();
+        let again = clients.for_server(&work).unwrap();
+        let home = clients.for_server(&server("home")).unwrap();
+
+        assert!(Arc::ptr_eq(&first, &again), "the same server reuses its Client");
+        assert!(!Arc::ptr_eq(&first, &home), "another server has its own");
+        assert!(Arc::ptr_eq(&clients.cached("work").unwrap(), &first));
+        clients.forget("work");
+        assert!(clients.cached("work").is_none());
+        assert!(clients.cached("home").is_some(), "forgetting one server keeps the others");
+        let rebuilt = clients.for_server(&work).unwrap();
+        assert!(!Arc::ptr_eq(&first, &rebuilt), "a forgotten server gets a new Client");
+        clients.forget("nobody");
+    }
+
+    #[test]
+    fn clients_rebuilds_a_servers_client_when_its_saved_details_change() {
+        let clients = Clients::default();
+        let first = clients.for_server(&server("work")).unwrap();
+
+        let repaired = PairedServer { token: "new secret".to_string(), ..server("work") };
+        let second = clients.for_server(&repaired).unwrap();
+        let moved = PairedServer { port: 47802, ..repaired.clone() };
+        let third = clients.for_server(&moved).unwrap();
+
+        assert!(!Arc::ptr_eq(&first, &second), "a new token gets a new Client");
+        assert!(!Arc::ptr_eq(&second, &third), "a new port gets a new Client");
+        assert!(Arc::ptr_eq(&clients.for_server(&moved).unwrap(), &third));
+    }
+
+    #[test]
+    fn streams_close_sets_the_streams_stop_flag_and_forgets_it() {
+        let streams = Streams::default();
+        let (a, stop_a) = streams.open();
+        let (b, stop_b) = streams.open();
+        assert_ne!(a, b);
+        assert_eq!(streams.len(), 2);
+
+        streams.close(a);
+        assert!(stop_a.load(Ordering::SeqCst));
+        assert!(!stop_b.load(Ordering::SeqCst));
+        assert_eq!(streams.len(), 1);
+        streams.close(a);
+        streams.ended(b);
+        assert!(streams.is_empty());
+        assert!(!stop_b.load(Ordering::SeqCst), "a stream whose thread returned isn't stopped again");
+    }
+
+    #[test]
+    fn streams_close_all_stops_every_open_stream_and_empties_the_table() {
+        let streams = Streams::default();
+        let flags: Vec<Arc<AtomicBool>> = (0..3).map(|_| streams.open().1).collect();
+
+        streams.close_all();
+
+        assert!(streams.is_empty());
+        assert!(flags.iter().all(|f| f.load(Ordering::SeqCst)));
+        let (_, fresh) = streams.open();
+        assert!(!fresh.load(Ordering::SeqCst), "a stream the reloaded page opens runs");
+        assert_eq!(streams.len(), 1);
     }
 }

@@ -5,7 +5,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { Channel, invoke as tauriInvoke, type InvokeArgs, type InvokeOptions } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { ask as tauriAsk, message as tauriMessage, open as tauriOpen, save as tauriSave } from "@tauri-apps/plugin-dialog";
+import { ask as tauriAsk, message as tauriMessage, open as tauriOpen } from "@tauri-apps/plugin-dialog";
 import { openUrl as tauriOpenUrl } from "@tauri-apps/plugin-opener";
 import { relaunch as tauriRelaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
@@ -46,11 +46,6 @@ export async function message(
   }
   const { yes, no } = options.buttons;
   return window.confirm(`${full}\n\nOK: ${yes}\nCancel: ${no}`) ? yes : no;
-}
-
-/** The save dialog; null when cancelled. App only. */
-export function saveDialog(options: { title: string; defaultPath?: string; filters?: { name: string; extensions: string[] }[] }): Promise<string | null> {
-  return tauriSave(options);
 }
 
 /** The open dialog for one folder; null when cancelled. App only. */
@@ -103,11 +98,17 @@ export const openInTerminal = (app: string, s: SessionRow) =>
   invoke<void>("open_in_terminal", { app, source: s.source, nativeId: s.native_id, path: s.path, cwd: s.cwd });
 /** Opens the log of Analyze and report runs on this machine. */
 export const openAnalyzeLog = () => invoke<void>("open_analyze_log");
-/** Writes a report's Markdown to `dest` (from the save dialog); resolves to the path written. */
-export const saveMarkdown = (dest: string, text: string) => invoke<string>("save_markdown", { dest, text });
-/** Writes `bytes` to `dest` (from the save dialog); resolves to the path written. */
-export async function saveFile(dest: string, bytes: Blob): Promise<string> {
-  return invoke<string>("save_file", new Uint8Array(await bytes.arrayBuffer()), { headers: { dest: encodeURIComponent(dest) } });
+/**
+ * Saves a report's Markdown where the user picks in the shell's save dialog, suggesting `name`.
+ * Resolves to the path written (always `.md`), or null when the user cancels.
+ */
+export const saveMarkdown = (name: string, text: string) => invoke<string | null>("save_markdown", { name, text });
+/**
+ * Saves an export bundle where the user picks in the shell's save dialog, suggesting `name`.
+ * Resolves to the path written (always the bundle extension), or null when the user cancels.
+ */
+export async function saveFile(name: string, bytes: Blob): Promise<string | null> {
+  return invoke<string | null>("save_file", new Uint8Array(await bytes.arrayBuffer()), { headers: { name: encodeURIComponent(name) } });
 }
 
 // ---- The local server and paired servers ----

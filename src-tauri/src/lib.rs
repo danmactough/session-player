@@ -3,6 +3,7 @@ mod cli;
 pub mod local;
 pub mod paired;
 pub mod relay;
+pub mod save;
 mod terminals;
 
 // The app's data lives on the server (`sp serve`, on this machine or a paired one). The page talks
@@ -10,16 +11,15 @@ mod terminals;
 // here, which holds that server's token. What stays in the shell is native: Finder, terminals,
 // other apps, dialogs, the updater, and managing the local server as a service.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use session_player_client::ServersStore;
 use session_player_core::ops::ServerEvent;
-use session_player_core::runlog;
+use session_player_core::{bundle, runlog};
 use tauri::ipc::{Channel, InvokeBody, Request, Response};
+use tauri::webview::PageLoadEvent;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 struct AppState {
@@ -31,9 +31,10 @@ struct AppState {
     /// The `sp` inside the app, which manages the local server as a service. None in a build
     /// without one (`npm run app`).
     sp: Option<PathBuf>,
-    /// Open relayed event streams, with the flag that ends each.
-    streams: Mutex<HashMap<u64, Arc<AtomicBool>>>,
-    next_stream: AtomicU64,
+    /// One Client per paired server, which relayed calls share.
+    clients: relay::Clients,
+    /// Open relayed event streams.
+    streams: relay::Streams,
 }
 
 type Shared = Arc<AppState>;
@@ -66,38 +67,69 @@ async fn relay_request(state: State<'_, Shared>, request: Request<'_>) -> Result
         InvokeBody::Json(value) => serde_json::to_vec(value).map_err(err)?,
     };
     let paired = store(&state).list().map_err(|e| format!("{e:#}"))?;
-    let framed = blocking(move || relay::relay_call(relay::RelayCall { paired: &paired, server: &server, op: &op, query: &query, content_type: &content_type, body })).await?;
+    let shared = state.inner().clone();
+    let framed = blocking(move || relay::relay_call(relay::RelayCall { clients: &shared.clients, paired: &paired, server: &server, op: &op, query: &query, content_type: &content_type, body })).await?;
     Ok(Response::new(framed))
 }
 
-/// Writes a report exported as Markdown to the path the user chose in the save dialog. Only
-/// `.md` files are written; any other name gets `.md` added.
-#[tauri::command]
-fn save_markdown(dest: String, text: String) -> Result<String, String> {
-    let mut dest = PathBuf::from(dest);
-    if dest.extension().is_none_or(|e| !e.eq_ignore_ascii_case("md")) {
-        dest.as_mut_os_string().push(".md");
-    }
-    std::fs::write(&dest, text).map_err(err)?;
-    Ok(dest.to_string_lossy().into_owned())
+struct SaveDialog {
+    app: AppHandle,
+    title: &'static str,
+    /// The filter's label, e.g. "Markdown".
+    kind: &'static str,
+    /// Without the dot; the saved file always ends in it.
+    extension: &'static str,
+    /// The page's suggested file name; only its last part is used.
+    name: String,
+    contents: Vec<u8>,
 }
 
-/// Writes a downloaded export to the path the user chose in the save dialog. The raw body is
-/// the file; the `dest` header is the path, percent-encoded.
+/// Shows the save dialog and writes `contents` where the user chose. The page never names the
+/// path, so it can't write anywhere the user didn't pick. None when the user cancels.
+async fn save_with_dialog(save: SaveDialog) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    // The blocking dialog waits on the main thread, so it must not be shown from it.
+    blocking(move || {
+        let chosen = save
+            .app
+            .dialog()
+            .file()
+            .set_title(save.title)
+            .set_file_name(save::suggested_name(&save.name, save.extension))
+            .add_filter(save.kind, &[save.extension])
+            .blocking_save_file();
+        let Some(chosen) = chosen else { return Ok(None) };
+        let path = save::force_extension(chosen.into_path().map_err(err)?, save.extension);
+        std::fs::write(&path, &save.contents).map_err(err)?;
+        Ok(Some(path.to_string_lossy().into_owned()))
+    })
+    .await
+}
+
+/// Saves a report's Markdown through the save dialog, as `.md`. `name` is the suggested file name.
+/// Returns the path written, or None when the user cancels.
 #[tauri::command]
-fn save_file(request: Request<'_>) -> Result<String, String> {
-    let dest = request.headers().get("dest").and_then(|v| v.to_str().ok()).ok_or("The save needs a dest header.")?;
-    let dest = relay::percent_decode(dest)?;
+async fn save_markdown(app: AppHandle, name: String, text: String) -> Result<Option<String>, String> {
+    save_with_dialog(SaveDialog { app, title: "Save report", kind: "Markdown", extension: "md", name, contents: text.into_bytes() }).await
+}
+
+/// Saves a downloaded export through the save dialog, as a session bundle. The raw body is the
+/// file; the `name` header is the suggested file name, percent-encoded. Returns the path written,
+/// or None when the user cancels.
+#[tauri::command]
+async fn save_file(app: AppHandle, request: Request<'_>) -> Result<Option<String>, String> {
+    let name = request.headers().get("name").and_then(|v| v.to_str().ok()).ok_or("The save needs a name header.")?;
+    let name = relay::percent_decode(name)?;
     let InvokeBody::Raw(bytes) = request.body() else { return Err("The save needs a raw body.".to_string()) };
-    std::fs::write(&dest, bytes).map_err(err)?;
-    Ok(dest)
+    save_with_dialog(SaveDialog { app, title: "Export session", kind: "Session bundle", extension: bundle::EXTENSION, name, contents: bytes.clone() }).await
 }
 
 /// An image URL from a paired server's `load_session`, framed like `relay_request`.
 #[tauri::command]
 async fn relay_image(state: State<'_, Shared>, server: String, path: String) -> Result<Response, String> {
     let paired = store(&state).list().map_err(|e| format!("{e:#}"))?;
-    let framed = blocking(move || relay::relay_image(relay::RelayImage { paired: &paired, server: &server, path: &path })).await?;
+    let shared = state.inner().clone();
+    let framed = blocking(move || relay::relay_image(relay::RelayImage { clients: &shared.clients, paired: &paired, server: &server, path: &path })).await?;
     Ok(Response::new(framed))
 }
 
@@ -108,23 +140,20 @@ async fn relay_image(state: State<'_, Shared>, server: String, path: String) -> 
 fn relay_open_stream(state: State<'_, Shared>, server: String, last_id: Option<u64>, on_event: Channel<ServerEvent>) -> Result<u64, String> {
     let paired = store(&state).list().map_err(|e| format!("{e:#}"))?;
     let server = relay::resolve_server(&server, &paired)?;
-    let id = state.next_stream.fetch_add(1, Ordering::SeqCst);
-    let stop = Arc::new(AtomicBool::new(false));
-    state.streams.lock().unwrap().insert(id, stop.clone());
+    let (id, stop) = state.streams.open();
     let shared = state.inner().clone();
     std::thread::spawn(move || {
+        // A failed send means the page's channel is gone; returning false ends the stream.
         let mut send = |event: ServerEvent| on_event.send(event).is_ok();
         relay::run_stream(relay::StreamParams { server, last_id, stop: &stop, retry: Duration::from_secs(2), on_event: &mut send });
-        shared.streams.lock().unwrap().remove(&id);
+        shared.streams.ended(id);
     });
     Ok(id)
 }
 
 #[tauri::command]
 fn relay_close_stream(state: State<'_, Shared>, id: u64) {
-    if let Some(stop) = state.streams.lock().unwrap().remove(&id) {
-        stop.store(true, Ordering::SeqCst);
-    }
+    state.streams.close(id);
 }
 
 #[tauri::command]
@@ -171,14 +200,14 @@ async fn paired_server_connect(state: State<'_, Shared>, pairing: String, name: 
     let shared = state.inner().clone();
     blocking(move || {
         let device_name = hostname();
-        paired::connect(paired::ConnectParams { store: &store(&shared), pairing: &pairing, name: name.as_deref(), device_name: &device_name })
+        paired::connect(paired::ConnectParams { store: &store(&shared), clients: &shared.clients, pairing: &pairing, name: name.as_deref(), device_name: &device_name })
     })
     .await
 }
 
 #[tauri::command]
 fn paired_server_remove(state: State<'_, Shared>, name: String) -> Result<(), String> {
-    paired::remove(&store(&state), &name)
+    paired::remove(paired::RemoveParams { store: &store(&state), clients: &state.clients, name: &name })
 }
 
 /// What the server lists this machine as.
@@ -332,11 +361,21 @@ pub fn run() {
                 data_dir,
                 log_path: logs.join("analyze.log"),
                 sp,
-                streams: Mutex::new(HashMap::new()),
-                next_stream: AtomicU64::new(1),
+                clients: relay::Clients::default(),
+                streams: relay::Streams::default(),
             }));
             install_menu(app.handle())?;
             Ok(())
+        })
+        // A reload (or any new page) can't close the streams the old page opened, and their
+        // channels may still accept sends, so close them all when the main webview starts loading.
+        .on_page_load(|webview, payload| {
+            if webview.label() == "main"
+                && payload.event() == PageLoadEvent::Started
+                && let Some(state) = webview.try_state::<Shared>()
+            {
+                state.streams.close_all();
+            }
         })
         .on_menu_event(|app, event| match event.id().as_ref() {
             "settings" => {

@@ -93,3 +93,27 @@ fn a_failed_generate_job_keeps_only_the_first_line_of_the_error() {
     );
     assert!(!common::is_analyzed(&ctx, &key));
 }
+
+#[test]
+fn a_panic_in_a_generate_job_ends_it_failed_and_lets_the_session_be_generated_again() {
+    let dir = TempDir::new("generate-job-panic");
+    let fake = FakeClaude::new(&dir);
+    let ctx = common::open_simple(&dir, Some(fake.claude()));
+    common::session(&dir, "s1", "Add a health check endpoint");
+    common::reindex(&ctx);
+    ctx.set_publish_hook(Some(Arc::new(|event: &PushedEvent| {
+        if matches!(event, PushedEvent::GenerateProgress(_)) {
+            panic!("a bug in the generate job");
+        }
+    })));
+
+    let id = generate(&ctx, "s1").expect("generate_notes");
+    let (done, _) = common::wait_done(&ctx, &id);
+    ctx.set_publish_hook(None);
+
+    assert_eq!(done.state, JobState::Failed, "{done:?}");
+    assert!(done.error.is_some(), "{done:?}");
+    let next = generate(&ctx, "s1").expect("the session can be generated again, not a Conflict");
+    let (next, _) = common::wait_done(&ctx, &next);
+    assert_eq!(next.state, JobState::Finished, "{next:?}");
+}

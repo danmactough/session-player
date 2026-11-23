@@ -4,6 +4,8 @@ use serde::Serialize;
 use session_player_client::{Client, PairedServer, ServersStore, check_compat};
 use session_player_core::ops::{HELLO, HelloRequest};
 
+use crate::relay::Clients;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ServerRef {
     pub name: String,
@@ -25,6 +27,8 @@ pub fn list(store: &ServersStore) -> Result<Vec<ServerRef>, String> {
 
 pub struct ConnectParams<'a> {
     pub store: &'a ServersStore,
+    /// The relay's Clients; one kept for a server saved under the same name is dropped.
+    pub clients: &'a Clients,
     pub pairing: &'a str,
     /// What to save the server as; None uses its address.
     pub name: Option<&'a str>,
@@ -44,12 +48,23 @@ pub fn connect(params: ConnectParams) -> Result<ServerRef, String> {
     check_compat(&hello)?;
     let saved = ServerRef::from(&server);
     params.store.save(server).map_err(|e| format!("{e:#}"))?;
+    params.clients.forget(&saved.name);
     Ok(saved)
 }
 
+pub struct RemoveParams<'a> {
+    pub store: &'a ServersStore,
+    /// The relay's Clients; the one kept for this server is dropped.
+    pub clients: &'a Clients,
+    pub name: &'a str,
+}
+
 /// Forgets the server. Its device token stays valid on the server until it is unpaired there.
-pub fn remove(store: &ServersStore, name: &str) -> Result<(), String> {
-    if store.remove(name).map_err(|e| format!("{e:#}"))? {
+pub fn remove(params: RemoveParams) -> Result<(), String> {
+    let RemoveParams { store, clients, name } = params;
+    let removed = store.remove(name).map_err(|e| format!("{e:#}"))?;
+    clients.forget(name);
+    if removed {
         Ok(())
     } else {
         Err(format!("No paired server is named {name:?}."))

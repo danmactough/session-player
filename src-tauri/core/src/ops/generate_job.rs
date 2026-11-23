@@ -1,6 +1,6 @@
 //! Analyze for one session: `claude` writes its metadata and annotations, as a job.
 
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::{Deserialize, Serialize};
@@ -58,14 +58,7 @@ pub(super) fn generate_notes(ctx: &Arc<Ctx>, _device: &DeviceId, req: &GenerateN
     let req = req.clone();
     let job = id.clone();
     std::thread::spawn(move || {
-        // Clears the session's entry even if this thread panics, so it can be generated again.
-        struct Running(Arc<Ctx>, String);
-        impl Drop for Running {
-            fn drop(&mut self) {
-                self.0.generating.lock().unwrap().remove(&self.1);
-            }
-        }
-        let running = Running(ctx.clone(), req.key.clone());
+        let running = Running { ctx: ctx.clone(), key: req.key.clone(), job: job.clone() };
         let key = req.key.clone();
         let result = ctx.claude().and_then(|claude| {
             analyze_session(&ctx, &AnalyzeSession { claude: &claude, key: &key, path: &req.path, branch: req.branch.as_deref(), focus: req.focus.as_deref(), cancel: &cancel }, &mut |done, total| {
@@ -73,7 +66,7 @@ pub(super) fn generate_notes(ctx: &Arc<Ctx>, _device: &DeviceId, req: &GenerateN
                 ctx.publish(PushedEvent::GenerateProgress(GenerateProgress { key: key.clone(), done, total }));
             })
         });
-        drop(running);
+        running.free();
         let (done, state) = match result {
             Ok(generated) => (GenerateDone { key, error: None, cancelled: false, rejected: generated.rejected }, JobState::Finished),
             Err(e) if generate::is_cancelled(&e) => (GenerateDone { key, error: None, cancelled: true, rejected: 0 }, JobState::Cancelled),
@@ -84,6 +77,35 @@ pub(super) fn generate_notes(ctx: &Arc<Ctx>, _device: &DeviceId, req: &GenerateN
         ctx.end_job(&job, state, error);
     });
     Ok(id)
+}
+
+/// Held by a Generate job's thread. `free` clears the session's entry so it can be generated
+/// again; dropping the guard clears it too and ends the job as Failed unless it already ended, so a
+/// thread that panics leaves neither the session marked as generating nor the job Running.
+struct Running {
+    ctx: Arc<Ctx>,
+    key: String,
+    job: JobId,
+}
+
+impl Running {
+    fn free(&self) {
+        let mut generating = self.ctx.generating.lock().unwrap_or_else(PoisonError::into_inner);
+        if generating.get(&self.key) == Some(&self.job) {
+            generating.remove(&self.key);
+        }
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        self.free();
+        if std::thread::panicking() {
+            runlog::append(&self.ctx.analyze_log(), &format!("Analyze {} stopped unexpectedly", self.key));
+        }
+        let error = format!("The job stopped unexpectedly. Details are in {}.", self.ctx.analyze_log().display());
+        self.ctx.end_job(&self.job, JobState::Failed, Some(error));
+    }
 }
 
 pub(super) struct AnalyzeSession<'a> {

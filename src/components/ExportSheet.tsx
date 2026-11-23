@@ -3,7 +3,7 @@ import { api } from "../api";
 import type { ExportPreview, SessionRow } from "../types";
 import { basename, bytes } from "../lib/format";
 import { downloadBlob } from "../lib/download";
-import { isApp, saveDialog, saveFile } from "../lib/native";
+import { isApp, saveFile } from "../lib/native";
 
 const RELATION: Record<string, string> = { parent: "Parent", subagent: "Subagent", branch: "Branch" };
 const CONTEXT_KIND = { instructions: "Instruction file", skill: "Skill", agent: "Agent definition", mcp: "MCP server instructions" };
@@ -71,20 +71,16 @@ export function ExportSheet({
   const saveBundle = async () => {
     if (!preview) return;
     setErr(null);
-    let dest: string | null = null;
-    if (isApp) {
-      dest = await saveDialog({
-        title: "Export session",
-        defaultPath: preview.summary.file_name,
-        filters: [{ name: "Session bundle", extensions: ["spsession"] }],
-      });
-      if (!dest) return;
-    }
     setBusy(true);
     try {
       const file = await api.exportDownload(preview.token, authorName.trim());
-      if (dest) setSaved(await saveFile(dest, file.blob));
-      else setSaved(downloadBlob({ blob: file.blob, filename: file.filename ?? preview.summary.file_name }));
+      // The shell shows the save dialog once the bundle is in hand; null means the user cancelled.
+      if (isApp) {
+        const dest = await saveFile(preview.summary.file_name, file.blob);
+        if (dest) setSaved(dest);
+      } else {
+        setSaved(downloadBlob({ blob: file.blob, filename: file.filename ?? preview.summary.file_name }));
+      }
     } catch (e) {
       setErr(String(e));
     } finally {

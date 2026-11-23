@@ -158,8 +158,7 @@ export class FetchTransport implements Transport {
             onOpen?.();
           }
           if (frame === null) continue;
-          // Ids only increase; an older or repeated one would be a replay already seen.
-          if (last !== null && frame.id <= last) continue;
+          if (!acceptEvent(last, frame)) continue;
           last = frame.id;
           onEvent(frame);
         }
@@ -175,6 +174,16 @@ export class FetchTransport implements Transport {
       controller.abort();
     };
   }
+}
+
+/**
+ * Whether to handle `e`, given the id of the last event handled (null: none yet). Ids only
+ * increase, so an event at or below `last` is a replay already seen and is dropped. A snapshot is
+ * always taken: the server sends one in place of events the page missed, and after a restart its
+ * ids start lower. The caller then sets `last` to `e.id`, even when that is lower.
+ */
+export function acceptEvent(last: number | null, e: ServerEvent): boolean {
+  return e.event.name === "snapshot" || last === null || e.id > last;
 }
 
 /**
@@ -298,7 +307,7 @@ export class RelayTransport implements Transport {
       server: this.server,
       lastId,
       onEvent: (e) => {
-        if (last !== null && e.id <= last) return;
+        if (!acceptEvent(last, e)) return;
         last = e.id;
         onEvent(e);
       },

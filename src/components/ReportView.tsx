@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { downloadBlob } from "../lib/download";
-import { ask, isApp, saveDialog, saveMarkdown } from "../lib/native";
+import { ask, isApp, saveMarkdown } from "../lib/native";
 import type { ActionResponse, ActionStatus, CitedAnnotation, Evidence, LatestVerdict, Report, UserImpact } from "../types";
 import { KIND_LABEL, OUTCOME_LABEL } from "../lib/notes";
 import { fullDate } from "../lib/format";
@@ -60,10 +60,9 @@ export function ReportView({ id, onOpenSession, canOpenSession, onDeleted, onOpe
       setNotice(`Downloaded ${downloadBlob({ blob: new Blob([markdown], { type: "text/markdown" }), filename: `${name}.md` })}`);
       return;
     }
-    const dest = await saveDialog({ title: "Save report", defaultPath: `${name}.md`, filters: [{ name: "Markdown", extensions: ["md"] }] });
-    if (!dest) return;
     try {
-      setNotice(`Saved to ${await saveMarkdown(dest, markdown)}`);
+      const saved = await saveMarkdown(`${name}.md`, markdown);
+      if (saved) setNotice(`Saved to ${saved}`);
     } catch (e) {
       setNotice(`Couldn’t save: ${e}`);
     }

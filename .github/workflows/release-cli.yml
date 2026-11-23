@@ -45,6 +45,17 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      # sp serves the web UI from dist/, embedded at compile time. Without this build it would
+      # ship a placeholder page instead.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci --ignore-scripts
+
+      - run: npm run build
+
       - run: cargo build --release --locked --manifest-path src-tauri/Cargo.toml -p session-player-cli --target ${{ matrix.target }}
 
       - name: Check the binary

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ask } from "@tauri-apps/plugin-dialog";
+import { ask } from "../lib/native";
 import type { Annotation, AnnotationKind, Outcome, SessionMeta } from "../types";
 import { KINDS, KIND_LABEL, OUTCOME_LABEL } from "../lib/notes";
 import { fullDate } from "../lib/format";

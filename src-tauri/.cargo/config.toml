@@ -1,0 +1,3 @@
+[alias]
+# The four library crates' tests, without building the Tauri app (which needs GTK and WebKit).
+tw = "test --workspace --exclude session-player"

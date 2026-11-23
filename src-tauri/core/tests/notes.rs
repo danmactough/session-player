@@ -4,6 +4,10 @@ use std::path::{Path, PathBuf};
 
 use session_player_core::test_support::{annotations as notes, index, parse};
 
+#[path = "../../testutil/tempdir.rs"]
+mod tempdir;
+use tempdir::TempDir;
+
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name)
 }
@@ -24,20 +28,18 @@ fn every_event_has_an_anchor_and_a_pi_branch_keeps_its_chain_anchors() {
     assert_eq!(chain_tail, view_events);
 }
 
-fn temp_db(name: &str) -> (PathBuf, rusqlite::Connection) {
-    let path = std::env::temp_dir().join(format!("sp-notes-{name}-{}.sqlite", std::process::id()));
-    for suffix in ["", "-wal", "-shm"] {
-        let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
-    }
+fn temp_db(name: &str) -> (TempDir, PathBuf, rusqlite::Connection) {
+    let dir = TempDir::new(&format!("notes-{name}"));
+    let path = dir.join("index.sqlite");
     let conn = index::open(&path).unwrap();
-    (path, conn)
+    (dir, path, conn)
 }
 
 const KEY: &str = "local:claude:abc";
 
 #[test]
 fn metadata_is_saved_edited_and_kept_through_an_index_rebuild() {
-    let (path, mut conn) = temp_db("meta");
+    let (_dir, path, mut conn) = temp_db("meta");
     assert_eq!(notes::meta(&conn, KEY).unwrap(), None);
     let mut meta = notes::SessionMeta {
         key: KEY.into(),
@@ -82,7 +84,7 @@ fn person() -> notes::Author {
 
 #[test]
 fn annotations_are_created_edited_and_deleted() {
-    let (_, conn) = temp_db("annotations");
+    let (_dir, _, conn) = temp_db("annotations");
     let created = notes::save_annotation(
         &conn,
         notes::Annotation::new(KEY, notes::Kind::ToolError, "npm test failed", vec![event_ref("e4", "tool_result", Some(1767261605000))], person()),
@@ -110,7 +112,7 @@ fn annotations_are_created_edited_and_deleted() {
 
 #[test]
 fn editing_an_annotation_that_was_deleted_fails() {
-    let (_, conn) = temp_db("invalid");
+    let (_dir, _, conn) = temp_db("invalid");
     let mut unknown = notes::Annotation::new(KEY, notes::Kind::Other, "x", vec![event_ref("e1", "user", None)], person());
     unknown.id = "missing".into();
     assert!(notes::save_annotation(&conn, unknown).unwrap_err().to_string().contains("no longer exists"));
@@ -134,9 +136,8 @@ fn anchors_are_checked_against_the_transcript_and_refound_when_events_shift() {
 
 #[test]
 fn search_finds_sessions_by_their_metadata_and_annotations() {
-    let (path, mut conn) = temp_db("search");
+    let (_dir, path, mut conn) = temp_db("search");
     let root = path.with_extension("agents");
-    let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("claude/-work-repo")).unwrap();
     std::fs::create_dir_all(root.join("pi/--work-pi--")).unwrap();
     std::fs::copy(fixture("claude.jsonl"), root.join("claude/-work-repo/abc.jsonl")).unwrap();
@@ -161,12 +162,11 @@ fn search_finds_sessions_by_their_metadata_and_annotations() {
     assert_eq!(pi_summary.kinds, [notes::Kind::AgentStuck]);
     let claude_summary = summaries.iter().find(|s| s.key == KEY).unwrap();
     assert_eq!((claude_summary.components.as_slice(), claude_summary.outcome), (["packages/quokka".to_string()].as_slice(), notes::Outcome::Unknown));
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
 fn an_annotation_must_point_at_an_event() {
-    let (_, conn) = temp_db("anchorless");
+    let (_dir, _, conn) = temp_db("anchorless");
     let err = notes::save_annotation(&conn, notes::Annotation::new(KEY, notes::Kind::Other, "about everything", vec![], person())).unwrap_err().to_string();
     assert!(err.contains("needs an event"), "{err}");
 }
@@ -195,9 +195,8 @@ fn pi_anchors_follow_their_entry_and_other_branches_are_kept_apart() {
 
 #[test]
 fn notes_never_change_the_agent_files() {
-    let (path, mut conn) = temp_db("untouched");
+    let (_dir, path, mut conn) = temp_db("untouched");
     let root = path.with_extension("agents");
-    let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("claude/-work-repo")).unwrap();
     let file = root.join("claude/-work-repo/abc.jsonl");
     std::fs::copy(fixture("claude.jsonl"), &file).unwrap();
@@ -208,7 +207,6 @@ fn notes_never_change_the_agent_files() {
     notes::save_annotation(&conn, notes::Annotation::new(KEY, notes::Kind::ToolError, "y", vec![event_ref("e4", "tool_result", None)], person())).unwrap();
     index::run(&mut conn, true, None, &|_, _| {}).unwrap();
     assert_eq!((std::fs::read(&file).unwrap(), std::fs::metadata(&file).unwrap().modified().unwrap()), before);
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -235,7 +233,7 @@ fn versions(conn: &rusqlite::Connection, id: &str) -> Vec<u32> {
 
 #[test]
 fn each_change_saves_a_new_version_and_only_cited_old_versions_are_kept() {
-    let (_, conn) = temp_db("versions");
+    let (_dir, _, conn) = temp_db("versions");
     let first = notes::save_annotation(&conn, notes::Annotation::new(KEY, notes::Kind::ToolError, "one", vec![event_ref("e1", "user", None)], person())).unwrap();
     assert_eq!(first.version, 1);
 
@@ -258,7 +256,7 @@ fn each_change_saves_a_new_version_and_only_cited_old_versions_are_kept() {
 
 #[test]
 fn deleting_keeps_only_the_versions_a_report_cites() {
-    let (_, conn) = temp_db("delete-versions");
+    let (_dir, _, conn) = temp_db("delete-versions");
     let new = |note: &str| notes::save_annotation(&conn, notes::Annotation::new(KEY, notes::Kind::Other, note, vec![event_ref("e1", "user", None)], person())).unwrap();
 
     let uncited = new("never cited");
@@ -287,7 +285,7 @@ fn deleting_keeps_only_the_versions_a_report_cites() {
 
 #[test]
 fn an_imported_annotation_adds_a_version_only_when_it_differs() {
-    let (_, conn) = temp_db("import-versions");
+    let (_dir, _, conn) = temp_db("import-versions");
     let saved = notes::save_annotation(&conn, notes::Annotation::new(KEY, notes::Kind::Other, "mine", vec![event_ref("e1", "user", None)], person())).unwrap();
     let unnumbered = notes::Annotation { version: 0, ..saved.clone() };
     notes::put_annotation(&conn, &unnumbered).unwrap();
@@ -304,10 +302,8 @@ fn an_imported_annotation_adds_a_version_only_when_it_differs() {
 
 #[test]
 fn annotations_saved_before_versions_existed_become_version_1() {
-    let path = std::env::temp_dir().join(format!("sp-notes-migrate-{}.sqlite", std::process::id()));
-    for suffix in ["", "-wal", "-shm"] {
-        let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
-    }
+    let dir = TempDir::new("notes-migrate");
+    let path = dir.join("index.sqlite");
     let old = notes::Annotation { id: "old-1".into(), created_at: 1, updated_at: 1, ..notes::Annotation::new(KEY, notes::Kind::Other, "from 0.13", vec![event_ref("e1", "user", None)], person()) };
     let json = serde_json::to_string(&old).unwrap();
     assert!(!json.contains("\"version\""));
@@ -325,7 +321,7 @@ fn annotations_saved_before_versions_existed_become_version_1() {
 
 #[test]
 fn summaries_count_annotations_by_kind_author_and_confidence() {
-    let (_, conn) = temp_db("summary-counts");
+    let (_dir, _, conn) = temp_db("summary-counts");
     let at = || vec![event_ref("e1", "user", None)];
     let model = || notes::Author::Model { model: "claude-haiku-5-5".into() };
     for (kind, author, confidence) in [

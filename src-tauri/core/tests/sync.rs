@@ -6,23 +6,29 @@ use std::path::{Path, PathBuf};
 use serde_json::json;
 use session_player_core::test_support::{annotations as notes, generate, index, reports, sync};
 
+#[path = "../../testutil/tempdir.rs"]
+mod tempdir;
+use tempdir::TempDir;
+
 /// One machine: a home folder, a checkout of the repository, and the app's database.
 struct Machine {
     home: PathBuf,
     project: PathBuf,
     conn: rusqlite::Connection,
+    // Last, so the database closes before its folder is removed. None when the
+    // machine uses folders that belong to another machine.
+    _dir: Option<TempDir>,
 }
 
 /// A machine whose checkout is at `checkout` below its own temporary folder.
 fn machine(test: &str, name: &str, checkout: &str) -> Machine {
-    let dir = std::env::temp_dir().join(format!("sp-sync-{test}-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = TempDir::new(&format!("sync-{test}-{name}"));
     let home = dir.join("home");
     let project = dir.join(checkout);
     std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(project.join(".git")).unwrap();
     let conn = index::open(&dir.join("index.sqlite")).unwrap();
-    Machine { home, project, conn }
+    Machine { home, project, conn, _dir: Some(dir) }
 }
 
 /// The folder Claude Code keeps a working directory's sessions in.
@@ -470,7 +476,7 @@ fn checkouts_in_differently_named_folders_are_one_repository_when_their_origins_
     // Another repository on the laptop, in a folder with the desktop checkout's name.
     let other = laptop.project.parent().unwrap().join("widgets-main");
     std::fs::create_dir_all(other.join(".git")).unwrap();
-    let elsewhere = Machine { home: laptop.home.clone(), project: other, conn: rusqlite::Connection::open_in_memory().unwrap() };
+    let elsewhere = Machine { home: laptop.home.clone(), project: other, conn: rusqlite::Connection::open_in_memory().unwrap(), _dir: None };
     claude_session(&elsewhere, "unrelated", &["Something else"]);
 
     pull(&mut laptop, &mut desktop);
@@ -595,7 +601,7 @@ fn a_pull_moves_no_session_but_the_ones_it_brought() {
     // The desktop already has a session with the same id, held in another repository.
     let gadgets = desktop.project.parent().unwrap().join("gadgets");
     std::fs::create_dir_all(gadgets.join(".git")).unwrap();
-    let elsewhere = Machine { home: desktop.home.clone(), project: gadgets.clone(), conn: rusqlite::Connection::open_in_memory().unwrap() };
+    let elsewhere = Machine { home: desktop.home.clone(), project: gadgets.clone(), conn: rusqlite::Connection::open_in_memory().unwrap(), _dir: None };
     claude_session(&elsewhere, "s1", &["Something else"]);
     reindex(&mut desktop);
 

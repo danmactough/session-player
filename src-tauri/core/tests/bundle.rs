@@ -6,18 +6,22 @@ use session_player_core::test_support::bundle::{self, ExportRequest};
 use session_player_core::test_support::index;
 use session_player_core::test_support::model::EventKind;
 
+#[path = "../../testutil/tempdir.rs"]
+mod tempdir;
+use tempdir::TempDir;
+
 /// A sender's machine: agent folders laid out the way each agent writes them,
 /// indexed into their own database.
 struct Sender {
-    base: PathBuf,
     root: PathBuf,
     conn: rusqlite::Connection,
+    // Last, so the database closes before its folder is removed.
+    base: TempDir,
 }
 
 impl Sender {
     fn new(name: &str) -> Sender {
-        let base = std::env::temp_dir().join(format!("sp-bundle-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        let base = TempDir::new(&format!("bundle-{name}"));
         let root = base.join("agents");
         let fx = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
         let claude = root.join("claude/-work-repo");
@@ -54,24 +58,17 @@ impl Sender {
     }
 }
 
-impl Drop for Sender {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.base);
-    }
-}
-
 /// A recipient with an empty library and index of its own.
 struct Recipient {
-    base: PathBuf,
     library: PathBuf,
     conn: rusqlite::Connection,
+    // Last, so the database closes before its folder is removed.
+    base: TempDir,
 }
 
 impl Recipient {
     fn new(name: &str) -> Recipient {
-        let base = std::env::temp_dir().join(format!("sp-recipient-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        std::fs::create_dir_all(&base).unwrap();
+        let base = TempDir::new(&format!("recipient-{name}"));
         let conn = index::open(&base.join("index.sqlite")).unwrap();
         Recipient { library: base.join("library"), base, conn }
     }
@@ -79,12 +76,6 @@ impl Recipient {
     fn reindex(&mut self) -> Vec<session_player_core::test_support::Row> {
         index::run(&mut self.conn, false, Some(&self.library), &|_, _| {}).unwrap();
         index::list(&self.conn).unwrap()
-    }
-}
-
-impl Drop for Recipient {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.base);
     }
 }
 

@@ -3704,3 +3704,30 @@ button.report-row:hover {
 .report-note textarea {
   padding-right: 64px;
 }
+
+/* ---------- server ---------- */
+.server-wait {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  height: 100vh;
+  padding: 0 16px;
+  color: var(--muted);
+  text-align: center;
+}
+.sheet.server-modal {
+  max-height: calc(100vh - 64px);
+  overflow-y: auto;
+}
+.server-name {
+  font-weight: 600;
+}
+.img-loading {
+  display: inline-block;
+  width: 120px;
+  height: 80px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}

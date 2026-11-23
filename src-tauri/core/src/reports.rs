@@ -191,7 +191,7 @@ pub struct Report {
 }
 
 /// What the report list shows.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReportSummary {
     pub id: String,
     pub created_at: i64,
@@ -203,7 +203,7 @@ pub struct ReportSummary {
 
 /// Saves a new report and records the annotation versions it was given.
 pub fn save_report(conn: &Connection, report: &Report) -> anyhow::Result<()> {
-    let tx = conn.unchecked_transaction()?;
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
     tx.execute(
         "INSERT INTO reports(id, created_at, json) VALUES(?1, ?2, ?3)",
         params![report.id, report.created_at, serde_json::to_string(report)?],
@@ -245,7 +245,7 @@ pub fn reports(conn: &Connection) -> anyhow::Result<Vec<ReportSummary>> {
 
 /// Deletes the report, then drops the annotation versions only it was keeping.
 pub fn delete_report(conn: &Connection, id: &str) -> anyhow::Result<()> {
-    let tx = conn.unchecked_transaction()?;
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
     let cited: Vec<String> = {
         let mut stmt = tx.prepare("SELECT DISTINCT annotation_id FROM report_citations WHERE report_id=?1")?;
         stmt.query_map([id], |r| r.get(0))?.collect::<Result<_, _>>()?
@@ -261,7 +261,7 @@ pub fn delete_report(conn: &Connection, id: &str) -> anyhow::Result<()> {
 }
 
 /// An annotation as a report was given it, and what has happened to it since.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CitedAnnotation {
     /// The version the report was given.
     pub annotation: annotations::Annotation,
@@ -433,7 +433,7 @@ pub(crate) fn saved_reports(conn: &Connection) -> anyhow::Result<Vec<Report>> {
 }
 
 /// The most recent verdict on an action, and the report that gave it.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LatestVerdict {
     pub action_index: usize,
     pub verdict: Verdict,

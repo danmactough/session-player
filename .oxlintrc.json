@@ -3,6 +3,23 @@
   "plugins": ["react", "typescript", "oxc"],
   "rules": {
     "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
+    "react/only-export-components": ["warn", { "allowConstantExport": true }],
+    "no-restricted-imports": [
+      "error",
+      {
+        "patterns": [
+          {
+            "regex": "^@tauri-apps/",
+            "message": "Only src/lib/native.ts talks to the app shell; add what you need there."
+          }
+        ]
+      }
+    ]
+  },
+  "overrides": [
+    {
+      "files": ["src/lib/native.ts"],
+      "rules": { "no-restricted-imports": "off" }
+    }
+  ]
 }

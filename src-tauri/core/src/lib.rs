@@ -3,6 +3,7 @@ pub mod bundle;
 pub mod generate;
 pub mod index;
 pub mod model;
+pub mod ops;
 pub mod parse;
 pub mod reports;
 pub mod runlog;

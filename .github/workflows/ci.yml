@@ -44,7 +44,22 @@ jobs:
 
       - run: npm run lint
 
-      - run: cargo test --manifest-path src-tauri/Cargo.toml -p session-player-core -p session-player-cli
+      # No web build here: the server's build.rs writes a placeholder dist/ when it is missing,
+      # and the server tests only need some index.html to serve.
+      - run: cargo test --manifest-path src-tauri/Cargo.toml -p session-player-core -p session-player-cli -p session-player-server -p session-player-client
+
+      # The TLS crates use default-features = false with the ring provider so that aws-lc-sys never
+      # enters the build. A default feature turned back on anywhere would bring it in quietly.
+      # cargo tree exits with an error when the spec matches no package, which is the pass case.
+      - name: Check that aws-lc-sys is not a dependency
+        run: |
+          if out=$(cargo tree --manifest-path src-tauri/Cargo.toml --workspace --target all -i aws-lc-sys 2>&1); then
+            echo "$out"
+            echo "aws-lc-sys is in the dependency tree" >&2
+            exit 1
+          fi
+          echo "$out"
+          echo "$out" | grep -q "did not match any packages"
 
   # The command layer in src-tauri/src: app detection, the pending-export slot, the image
   # cache and the transcript watcher. Only these tests link GTK/WebKit, so they run in their

@@ -29,10 +29,21 @@ pub fn link(bundled: &Path, home: &Path) -> Result<PathBuf, String> {
 mod tests {
     use super::*;
 
+    /// Removes the test's folder however the test ends. (testutil/tempdir.rs can't be included
+    /// from an inline module in this file: `#[path]` would resolve under a src/cli/ that doesn't exist.)
+    struct Remove(PathBuf);
+
+    impl Drop for Remove {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     #[test]
     fn the_link_points_at_the_apps_sp_and_replaces_an_older_copy() {
         let dir = std::env::temp_dir().join(format!("sp-cli-link-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
+        let _remove = Remove(dir.clone());
         let bundled = dir.join("Session Player.app/Contents/MacOS/sp");
         std::fs::create_dir_all(bundled.parent().unwrap()).unwrap();
         std::fs::write(&bundled, "the app's sp").unwrap();

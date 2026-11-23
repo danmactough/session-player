@@ -26,6 +26,8 @@ function statusText(i: QueueItem): string {
       return `Failed: ${i.message ?? "unknown error"}`;
     case "cancelled":
       return "Cancelled";
+    case "interrupted":
+      return "Interrupted: the server stopped while this ran";
   }
 }
 
@@ -49,6 +51,7 @@ export function QueueStatus({ items, onOpen, onCancel, onCancelAll, onClear }: P
     [count("skipped"), "skipped"],
     [failed, "failed"],
     [count("cancelled"), "cancelled"],
+    [count("interrupted"), "interrupted"],
   ]
     .filter(([n]) => n)
     .map(([n, what]) => `${n} ${what}`)

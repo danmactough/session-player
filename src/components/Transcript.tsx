@@ -1,9 +1,8 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Annotation, AnnotationKind, EventRef, SessionEvent, SessionMeta, SessionRow } from "../types";
-import { ask, message } from "@tauri-apps/plugin-dialog";
-import { listen } from "@tauri-apps/api/event";
-import { api } from "../api";
+import { api, onServerEvent } from "../api";
+import { ask, message } from "../lib/native";
 import { buildBlocks, blockText, type Block, type ToolStep } from "../lib/blocks";
 import {
   SOURCE_LABEL,
@@ -229,16 +228,20 @@ export function Transcript({
     let heard = false;
     void api.generating().then((keys) => live && !heard && keys.includes(key) && setGen({ done: 0, total: 0 }));
     const un = [
-      listen<{ key: string; done: number; total: number }>("generate-progress", (e) => {
-        if (e.payload.key !== key) return;
+      onServerEvent("generate-progress", (p) => {
+        if (p.key !== key) return;
         heard = true;
-        setGen({ done: e.payload.done, total: e.payload.total });
+        setGen({ done: p.done, total: p.total });
       }),
-      listen<{ key: string; error: string | null; cancelled: boolean; rejected: number }>("generate-done", (e) => {
-        if (e.payload.key !== key) return;
+      // Events were missed; a generate job for this session that isn't running any more was lost.
+      onServerEvent("snapshot", ({ running }) => {
+        if (!running.some((j) => j.kind === "generate" && j.key === key)) setGen(null);
+      }),
+      onServerEvent("generate-done", (p) => {
+        if (p.key !== key) return;
         heard = true;
         setGen(null);
-        const { error, cancelled, rejected } = e.payload;
+        const { error, cancelled, rejected } = p;
         if (error) setGenMessage(`Couldn't analyze this session: ${error}`);
         else if (cancelled) setGenMessage("Analysis was cancelled.");
         else {
@@ -254,7 +257,7 @@ export function Transcript({
     ];
     return () => {
       live = false;
-      un.forEach((p) => p.then((f) => f()));
+      un.forEach((f) => f());
     };
   }, [key]);
 
@@ -1344,20 +1347,42 @@ function Images({ images }: { images?: string[] }) {
             {src === "omitted:remote" ? "remote image not included" : "image omitted (too large)"}
           </span>
         ) : (
-          <img
-            key={i}
-            src={src}
-            onClick={() => setZoom(src)}
-            loading="lazy"
-            onError={() => api.log("error", `image failed to load: ${src.slice(0, 60)}`)}
-          />
+          <ServerImage key={i} src={src} onClick={() => setZoom(src)} />
         ),
       )}
       {zoom && (
         <div className="lightbox" onClick={() => setZoom(null)}>
-          <img src={zoom} />
+          <ServerImage src={zoom} />
         </div>
       )}
     </div>
   );
+}
+
+/**
+ * An image from the transcript. The server's image URLs need its credential, so they are fetched
+ * through the active transport and shown from a blob URL; other sources (data: URLs) show as they are.
+ */
+function ServerImage({ src, onClick }: { src: string; onClick?: () => void }) {
+  const fromServer = src.startsWith("/api/");
+  const [url, setUrl] = useState<string | null>(fromServer ? null : src);
+  useEffect(() => {
+    if (!fromServer) return;
+    let live = true;
+    let made: string | null = null;
+    api.image(src).then(
+      (u) => {
+        made = u;
+        if (live) setUrl(u);
+        else URL.revokeObjectURL(u);
+      },
+      (e) => api.log("error", `image failed to load: ${src.slice(0, 60)}: ${e}`),
+    );
+    return () => {
+      live = false;
+      if (made) URL.revokeObjectURL(made);
+    };
+  }, [src, fromServer]);
+  if (!url) return <span className="img-loading" />;
+  return <img src={url} onClick={onClick} loading="lazy" onError={() => api.log("error", `image failed to load: ${src.slice(0, 60)}`)} />;
 }

@@ -3,6 +3,10 @@ use std::path::Path;
 
 use session_player_core::test_support::{index_one, load_branch, Row};
 
+#[path = "../../testutil/tempdir.rs"]
+mod tempdir;
+use tempdir::TempDir;
+
 fn fixture(name: &str) -> String {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name).to_string_lossy().into_owned()
 }
@@ -44,24 +48,24 @@ fn codex_session() {
 #[test]
 fn agent_title_is_used_as_given() {
     let original = std::fs::read_to_string(fixture("claude.jsonl")).unwrap();
+    let dir = TempDir::new("title");
     for title in ["/review", "feat", "fix-login-bug", "main"] {
-        let path = std::env::temp_dir().join(format!("sp-title-{}-{}.jsonl", std::process::id(), title.replace('/', "_")));
+        let path = dir.join(format!("sp-title-{}.jsonl", title.replace('/', "_")));
         let body = original.replace(r#""aiTitle":"Flaky login test""#, &format!(r#""aiTitle":"{title}""#));
         std::fs::write(&path, body).unwrap();
         let (row, _) = index_one(path.to_str().unwrap());
-        std::fs::remove_file(path).unwrap();
         assert_eq!((row.title.as_str(), row.title_source.as_str()), (title, "ai"));
     }
 }
 
 #[test]
 fn compressed_codex_session_matches_plain_transcript() {
-    let path = std::env::temp_dir().join(format!("sp-compressed-{}.jsonl.zst", std::process::id()));
+    let dir = TempDir::new("compressed");
+    let path = dir.join("sp-compressed.jsonl.zst");
     let bytes = std::fs::read(fixture("codex.jsonl")).unwrap();
     std::fs::write(&path, zstd::stream::encode_all(bytes.as_slice(), 1).unwrap()).unwrap();
     let (plain, events) = index_one(&fixture("codex.jsonl"));
     let (compressed, compressed_events) = index_one(path.to_str().unwrap());
-    std::fs::remove_file(path).unwrap();
     assert_eq!(compressed_events, events);
     assert_eq!(compressed.native_id, plain.native_id);
     assert_eq!(compressed.title, plain.title);
@@ -72,8 +76,7 @@ fn compressed_codex_session_matches_plain_transcript() {
 #[test]
 fn index_discovers_compressed_sessions_and_tracks_updates() {
     use session_player_core::test_support::index;
-    let root = std::env::temp_dir().join(format!("sp-compressed-index-{}", std::process::id()));
-    std::fs::create_dir_all(&root).unwrap();
+    let root = TempDir::new("compressed-index");
     let path = root.join("rollout.jsonl.zst");
     let mut bytes = std::fs::read(fixture("codex.jsonl")).unwrap();
     std::fs::write(&path, zstd::stream::encode_all(bytes.as_slice(), 1).unwrap()).unwrap();
@@ -90,14 +93,12 @@ fn index_discovers_compressed_sessions_and_tracks_updates() {
     std::fs::remove_file(&path).unwrap();
     assert_eq!(index::run(&mut conn, false, None, &|_, _| {}).unwrap().removed, 1);
     assert!(index::list(&conn).unwrap().is_empty());
-    drop(conn);
-    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
 fn codex_session_imported_from_claude_code() {
     // The import record sits next to the sessions folder, as in ~/.codex.
-    let home = std::env::temp_dir().join(format!("sp-codex-import-{}", std::process::id()));
+    let home = TempDir::new("codex-import");
     let day = home.join("sessions/2026/01/02");
     std::fs::create_dir_all(&day).unwrap();
     let rollout = day.join("rollout-2026-01-02T10-00-00-019d-codex.jsonl");
@@ -108,7 +109,6 @@ fn codex_session_imported_from_claude_code() {
     )
     .unwrap();
     let (row, _) = index_one(&rollout.to_string_lossy());
-    std::fs::remove_dir_all(&home).unwrap();
     assert_eq!(row.imported_from.as_deref(), Some("Claude Code"));
 }
 
@@ -166,8 +166,7 @@ fn pi_branches_of_branches_nest_under_their_source() {
 
 #[test]
 fn pi_fork_file_starts_after_the_copied_history() {
-    let dir = std::env::temp_dir().join(format!("sp-pi-fork-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = TempDir::new("pi-fork");
     let parent = dir.join("2026-02-01T10-00-00-000Z_01b-tree.jsonl");
     std::fs::copy(fixture("pi-tree.jsonl"), &parent).unwrap();
     let lines: Vec<String> = std::fs::read_to_string(&parent).unwrap().lines().map(str::to_string).collect();
@@ -184,7 +183,6 @@ fn pi_fork_file_starts_after_the_copied_history() {
     )
     .unwrap();
     let (row, events) = index_one(&fork.to_string_lossy());
-    std::fs::remove_dir_all(&dir).unwrap();
     assert_eq!(row.parent_id.as_deref(), Some("01b-tree"));
     assert_eq!(row.fork_entry.as_deref(), Some("m2"));
     assert_eq!(row.fork_turn, Some(1));
@@ -225,7 +223,7 @@ fn claude_file_mentions_are_shown_inside_the_prompt() {
 fn codex_chats_outside_projects_share_a_project() {
     // The Codex app gives each chat outside a project its own folder under
     // ~/Documents/Codex and lists those threads in its global state.
-    let home = std::env::temp_dir().join(format!("sp-codex-projectless-{}", std::process::id()));
+    let home = TempDir::new("codex-projectless");
     let day = home.join(".codex/sessions/2026/10/28");
     std::fs::create_dir_all(&day).unwrap();
     std::fs::write(home.join(".codex/.codex-global-state.json"), r#"{"projectless-thread-ids":["019d-listed"]}"#).unwrap();
@@ -245,7 +243,6 @@ fn codex_chats_outside_projects_share_a_project() {
         std::fs::write(&file, src.replace("019d-codex", id).replace("/work/other", &cwd.to_string_lossy())).unwrap();
         projects.push(index_one(&file.to_string_lossy()).0.project);
     }
-    std::fs::remove_dir_all(&home).unwrap();
     let root = root.to_string_lossy().into_owned();
     assert_eq!(projects, vec![root.clone(), root, home.join("code/app").to_string_lossy().into_owned()]);
 }
@@ -359,8 +356,7 @@ fn context_events_are_numbered_apart_from_the_conversation() {
 
 #[test]
 fn pi_addendum_and_delegate_agents_are_context_and_malformed_tags_are_skipped() {
-    let dir = std::env::temp_dir().join(format!("sp-pi-addendum-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = TempDir::new("pi-addendum");
     let file = dir.join("session.jsonl");
     let system = serde_json::json!({
         "type": "message", "id": "s1", "parentId": null, "timestamp": "2026-04-03T10:00:00.000Z",
@@ -374,7 +370,6 @@ fn pi_addendum_and_delegate_agents_are_context_and_malformed_tags_are_skipped() 
         "message": { "role": "user", "content": [{ "type": "text", "text": "<skill name=\"plain\">\nBody mentions location=\"/nope\" in passing.\n</skill>\n\ndo it" }] } });
     std::fs::write(&file, format!("{}\n{}\n{}\n", r#"{"type":"session","version":3,"id":"pi-add","timestamp":"2026-04-03T10:00:00.000Z","cwd":"/w"}"#, system, user)).unwrap();
     let events = parsed(&file.to_string_lossy());
-    let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(
         context_of(&events),
         [
@@ -465,9 +460,8 @@ fn pi_child_notice(key: &str, run: &str) -> String {
 
 /// Lays out a parent log and one subagent log the way pi writes them, and returns
 /// the parent's path, the subagent's path, and the session folder's temp root.
-fn pi_subagent_files(test: &str, parent_extra: &str, child: &str) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
-    let root = std::env::temp_dir().join(format!("sp-pi-subagent-{test}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+fn pi_subagent_files(test: &str, parent_extra: &str, child: &str) -> (std::path::PathBuf, std::path::PathBuf, TempDir) {
+    let root = TempDir::new(&format!("pi-subagent-{test}"));
     let project = root.join("--work-pi--");
     let stem = "2026-01-03T10-00-00-000Z_01a0cdf2-badc-7337-8fd2-81ab00fb91b7";
     let run_dir = project.join(stem).join("eecbe780-f75c-46aa-80cf-d68570eddea1/run-0");
@@ -482,9 +476,8 @@ fn pi_subagent_files(test: &str, parent_extra: &str, child: &str) -> (std::path:
 }
 
 fn pi_subagent_title(test: &str, parent_extra: &str, child: &str) -> (String, String) {
-    let (_, path, root) = pi_subagent_files(test, parent_extra, child);
+    let (_, path, _root) = pi_subagent_files(test, parent_extra, child);
     let (row, _) = index_one(path.to_str().unwrap());
-    std::fs::remove_dir_all(&root).unwrap();
     (row.title, row.title_source)
 }
 
@@ -536,7 +529,6 @@ fn a_pi_subagent_picks_up_its_key_when_the_parent_is_notified_later() {
     std::fs::write(&parent, log).unwrap();
     index::run(&mut conn, false, None, &|_, _| {}).unwrap();
     assert_eq!(title(&conn), "worker: perry-local");
-    std::fs::remove_dir_all(&root).unwrap();
 }
 
 fn codex_subagent_title(test: &str, source: &str, fork: bool) -> (String, String) {
@@ -544,10 +536,10 @@ fn codex_subagent_title(test: &str, source: &str, fork: bool) -> (String, String
     let log = format!(
         "{{\"timestamp\":\"2026-11-04T01:56:33.164Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"child\",{fork}\"cwd\":\"/work/repo\",\"timestamp\":\"2026-11-04T01:56:33.164Z\",\"source\":{source}}}}}\n{{\"timestamp\":\"2026-11-04T01:56:34.000Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":\"You are checking the login flow\"}}]}}}}\n"
     );
-    let path = std::env::temp_dir().join(format!("sp-codex-subagent-{test}-{}.jsonl", std::process::id()));
+    let dir = TempDir::new(&format!("codex-subagent-{test}"));
+    let path = dir.join("codex-subagent.jsonl");
     std::fs::write(&path, log).unwrap();
     let (row, _) = index_one(path.to_str().unwrap());
-    std::fs::remove_file(&path).unwrap();
     assert!(row.is_subagent);
     (row.title, row.title_source)
 }
@@ -591,10 +583,10 @@ fn a_forked_codex_session_keeps_its_own_id_after_its_parents_copied_metadata() {
     let log = meta("child", &thread_spawn("null", r#""agent_path":"/root/explorer","#))
         + &meta("parent", r#""exec""#)
         + "{\"timestamp\":\"2026-11-04T01:56:34.000Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"The parent's prompt\"}]}}\n";
-    let path = std::env::temp_dir().join(format!("sp-codex-second-meta-{}.jsonl", std::process::id()));
+    let dir = TempDir::new("codex-second-meta");
+    let path = dir.join("codex-second-meta.jsonl");
     std::fs::write(&path, log).unwrap();
     let (row, _) = index_one(path.to_str().unwrap());
-    std::fs::remove_file(&path).unwrap();
     assert_eq!(row.native_id, "child");
     assert_eq!(row.cwd.as_deref(), Some("/work/child"));
     assert_eq!(row.parent_id.as_deref(), Some("parent"));

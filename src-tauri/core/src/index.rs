@@ -4,7 +4,7 @@ use std::time::UNIX_EPOCH;
 
 use rayon::prelude::*;
 use rusqlite::{Connection, OptionalExtension, params};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
 use crate::model::{EventKind, Parsed, SessionRow, Source};
@@ -119,7 +119,7 @@ pub fn remove_root(conn: &mut Connection, path: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Default, Clone, Serialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct IndexStats {
     pub scanned: usize,
     pub updated: usize,
@@ -868,12 +868,16 @@ pub fn root_counts(conn: &Connection) -> anyhow::Result<HashMap<String, i64>> {
 }
 
 #[cfg(test)]
+#[path = "../../testutil/tempdir.rs"]
+mod tempdir;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use super::tempdir::TempDir;
 
-    fn temp_tree(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("sp-project-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+    fn temp_tree(name: &str) -> TempDir {
+        let dir = TempDir::new(&format!("project-{name}"));
         std::fs::create_dir_all(dir.join("repo/.git/worktrees/feat")).unwrap();
         std::fs::create_dir_all(dir.join("repo/src/deep")).unwrap();
         std::fs::create_dir_all(dir.join("elsewhere/feat/src")).unwrap();

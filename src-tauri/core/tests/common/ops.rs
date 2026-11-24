@@ -185,10 +185,8 @@ pub fn is_analyzed(ctx: &Ctx, key: &str) -> bool {
 
 /// Whether a process is running (a reaped or zombie process is not).
 pub fn alive(pid: u32) -> bool {
-    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-        Ok(stat) => stat.rsplit_once(") ").is_some_and(|(_, rest)| !rest.starts_with('Z')),
-        Err(_) => false,
-    }
+    let output = std::process::Command::new("ps").args(["-o", "stat=", "-p", &pid.to_string()]).output().expect("run ps");
+    output.status.success() && !String::from_utf8_lossy(&output.stdout).trim().is_empty() && !String::from_utf8_lossy(&output.stdout).trim().starts_with('Z')
 }
 
 /// The error the fake `claude` fails with: two lines, of which only the first should be shown.

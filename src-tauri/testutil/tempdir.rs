@@ -18,7 +18,9 @@ impl TempDir {
         let dir = std::env::temp_dir().join(format!("sp-{label}-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create the test's temp folder");
-        TempDir(dir)
+        // On macOS the temp folder is behind a symlink (/var -> /private/var), and sp resolves
+        // the paths it is given, so tests compare against the resolved path.
+        TempDir(std::fs::canonicalize(&dir).expect("resolve the test's temp folder"))
     }
 
     pub fn path(&self) -> &Path {

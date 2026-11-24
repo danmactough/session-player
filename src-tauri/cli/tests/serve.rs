@@ -5,7 +5,6 @@ mod tempdir;
 
 mod common;
 
-use std::time::Duration;
 
 use common::{Machine, ok, pairing_string, stderr, stdout};
 use session_player_client::{LocalProbe, PairingString, probe_local};

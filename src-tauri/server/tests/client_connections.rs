@@ -9,6 +9,8 @@ use session_player_core::ops::{HELLO, HelloRequest};
 use tempdir::TempDir;
 
 /// Threads of this process named like the client's runtime workers.
+// Reads /proc, which only Linux has.
+#[cfg(target_os = "linux")]
 fn client_threads() -> usize {
     std::fs::read_dir("/proc/self/task")
         .unwrap()
@@ -19,12 +21,15 @@ fn client_threads() -> usize {
 
 /// TCP sockets of this machine whose far end is `port` on 127.0.0.1, in any state (TIME_WAIT
 /// included), so each connection a client opened shows up.
+// Reads /proc, which only Linux has.
+#[cfg(target_os = "linux")]
 fn sockets_to(port: u16) -> usize {
     let wanted = format!("0100007F:{port:04X}");
     std::fs::read_to_string("/proc/net/tcp").unwrap().lines().skip(1).filter(|l| l.split_whitespace().nth(2) == Some(wanted.as_str())).count()
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn many_clients_share_one_runtime() {
     let dir = TempDir::new("client-shared-runtime");
     let ctx = open_ctx(CtxParams { dir: &dir, clock: None, event_capacity: None, fixtures: false });
@@ -41,6 +46,7 @@ fn many_clients_share_one_runtime() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn one_client_reuses_its_connection_for_call_after_call() {
     let dir = TempDir::new("client-keepalive");
     let ctx = open_ctx(CtxParams { dir: &dir, clock: None, event_capacity: None, fixtures: false });

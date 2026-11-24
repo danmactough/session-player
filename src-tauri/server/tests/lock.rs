@@ -4,11 +4,16 @@
 mod tempdir;
 mod common;
 
+// These need /proc, which only Linux has.
+#[cfg(target_os = "linux")]
 use std::collections::HashSet;
 
 use common::{CtxParams, loopback_config, open_ctx, read_token, start};
+#[cfg(target_os = "linux")]
 use session_player_client::Client;
+#[cfg(target_os = "linux")]
 use session_player_core::ops::{HELLO, HelloRequest};
+#[cfg(target_os = "linux")]
 use session_player_server::{ServeParams, serve};
 use tempdir::TempDir;
 
@@ -17,6 +22,8 @@ use tempdir::TempDir;
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Inodes of the TCP sockets in LISTEN state this process holds open.
+// Reads /proc, which only Linux has.
+#[cfg(target_os = "linux")]
 fn listening_sockets_of_this_process() -> HashSet<String> {
     let mut listening = HashSet::new();
     for table in ["/proc/net/tcp", "/proc/net/tcp6"] {
@@ -43,6 +50,7 @@ fn listening_sockets_of_this_process() -> HashSet<String> {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn a_second_server_on_the_same_data_folder_is_refused_without_disturbing_the_first_and_can_start_after_it_stops() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let dir = TempDir::new("server-lock");

@@ -13,6 +13,10 @@ use common::{CtxParams, SessionFile, local_client, loopback_config, open_ctx, ro
 use session_player_core::ops::{ADD_ROOT, AddRootRequest, Ctx, EventsSince, PushedEvent, REMOVE_ROOT, RemoveRootRequest};
 use tempdir::TempDir;
 
+/// macOS delivers file events to every watcher in the process through one system service, and a
+/// watcher added while others are busy can miss events, so these tests run one at a time.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// The newest event id, to read later events after.
 fn cursor(ctx: &Ctx) -> u64 {
     ctx.events_since(EventsSince { after: Some(u64::MAX), wait: Duration::ZERO })[0].id
@@ -37,6 +41,7 @@ fn drop_session(dir: &TempDir, id: &str) {
 
 #[test]
 fn a_new_session_file_in_a_root_is_listed_within_two_seconds_with_index_events() {
+    let _serial = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let dir = TempDir::new("server-watcher-new");
     let ctx = open_ctx(CtxParams { dir: &dir, clock: None, event_capacity: None, fixtures: true });
     let before = cursor(&ctx);
@@ -54,6 +59,7 @@ fn a_new_session_file_in_a_root_is_listed_within_two_seconds_with_index_events()
 
 #[test]
 fn an_idle_server_runs_no_index_passes() {
+    let _serial = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let dir = TempDir::new("server-watcher-idle");
     let ctx = open_ctx(CtxParams { dir: &dir, clock: None, event_capacity: None, fixtures: true });
     let before = cursor(&ctx);
@@ -68,6 +74,7 @@ fn an_idle_server_runs_no_index_passes() {
 
 #[test]
 fn after_a_triggered_pass_the_server_stays_idle() {
+    let _serial = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let dir = TempDir::new("server-watcher-settle");
     let ctx = open_ctx(CtxParams { dir: &dir, clock: None, event_capacity: None, fixtures: true });
     let before = cursor(&ctx);
@@ -89,6 +96,7 @@ fn after_a_triggered_pass_the_server_stays_idle() {
 
 #[test]
 fn a_root_added_while_serving_is_watched_and_a_removed_root_is_not() {
+    let _serial = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let dir = TempDir::new("server-watcher-roots");
     let ctx = open_ctx(CtxParams { dir: &dir, clock: None, event_capacity: None, fixtures: true });
     let server = start(&ctx, loopback_config());

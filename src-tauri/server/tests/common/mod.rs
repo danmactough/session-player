@@ -220,7 +220,14 @@ fn dechunk(mut body: &[u8]) -> Vec<u8> {
 pub fn raw(addr: SocketAddr, req: RawRequest) -> RawResponse {
     let mut stream = send(addr, &req);
     let mut bytes = Vec::new();
-    stream.read_to_end(&mut bytes).expect("read the response");
+    // A server that answers without reading the whole request (a refusal) can close with unread
+    // data, which TCP reports as a reset. The response arrived before it, and read_to_end keeps it.
+    match stream.read_to_end(&mut bytes) {
+        Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset && !bytes.is_empty() => {}
+        other => {
+            other.expect("read the response");
+        }
+    }
     let split = bytes.windows(4).position(|w| w == b"\r\n\r\n").expect("a response head");
     let (status, headers) = parse_head(&String::from_utf8_lossy(&bytes[..split]));
     let rest = &bytes[split + 4..];

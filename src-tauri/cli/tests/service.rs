@@ -5,7 +5,7 @@ mod tempdir;
 
 mod common;
 
-use common::{Machine, ok, stderr};
+use common::{Machine, stderr};
 use tempdir::TempDir;
 
 #[cfg(target_os = "linux")]

@@ -1,8 +1,8 @@
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
-/** `sp serve`'s default port. */
-const SERVER_PORT = 47800;
+/** The port of the server to talk to: `sp serve`'s default, or `SP_PORT` for one started with `--port`. */
+const SERVER_PORT = Number(process.env.SP_PORT) || 47800;
 
 export default defineConfig({
   plugins: [react()],

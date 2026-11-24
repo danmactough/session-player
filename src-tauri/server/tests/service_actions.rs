@@ -78,7 +78,7 @@ impl Home {
             platform,
             home: &self.home,
             uid: UID,
-            unit: UnitParams { sp: &self.sp, logs: &self.logs, path: "/usr/bin", data_dir: None },
+            unit: UnitParams { sp: &self.sp, logs: &self.logs, path: "/usr/bin", label: None, args: &["serve"] },
             manager,
         })
     }
@@ -86,7 +86,7 @@ impl Home {
     /// Installs with a manager that succeeds at everything.
     fn installed(&self, platform: Platform) -> PathBuf {
         self.run(platform, ServiceAction::Install, &mut FakeManager::new(ok)).expect("install");
-        let file = unit_file(platform, &self.home);
+        let file = unit_file(platform, &self.home, None);
         assert!(file.is_file(), "{}", file.display());
         file
     }
@@ -183,7 +183,7 @@ fn status_reports_installed_from_the_unit_file_and_running_from_the_manager_on_b
 
         assert!(up.installed && up.running, "{platform:?}: {up:?}");
         assert!(down.installed && !down.running, "{platform:?}: {down:?}");
-        assert_eq!(up.unit_file, unit_file(platform, &home.home));
+        assert_eq!(up.unit_file, unit_file(platform, &home.home, None));
         let expected = match platform {
             Platform::Systemd => strings(&["--user", "is-active", SYSTEMD_UNIT]),
             Platform::Launchd => strings(&["print", &format!("gui/{UID}/{LAUNCHD_LABEL}")]),

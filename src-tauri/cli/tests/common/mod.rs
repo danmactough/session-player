@@ -38,10 +38,11 @@ impl Machine {
     pub fn command(&self, args: &[&str]) -> Command {
         let mut command = Command::new(SP);
         command
+            .arg("--data-dir")
+            .arg(&self.data)
             .args(args)
             .env_clear()
             .env("HOME", &self.home)
-            .env("SESSION_PLAYER_DATA_DIR", &self.data)
             .env("PATH", format!("{}:/usr/bin:/bin", self.bin.display()))
             .current_dir(&self.root)
             .stdin(Stdio::null());
@@ -118,18 +119,19 @@ impl Machine {
         ServersStore::new(&self.data).list().unwrap()
     }
 
-    /// Starts `sp serve` with `config` written to server.json and waits until it answers hello.
+    /// Starts `sp serve` with the flags for `config` and waits until it answers hello.
     pub fn serve(&self, config: &ServerConfig) -> Server {
         self.serve_with(config, &[])
     }
 
-    /// `sp serve {args}` with `config` written to server.json, once it answers hello.
+    /// `sp serve` with the flags for `config`, then `args`, once it answers hello.
     pub fn serve_with(&self, config: &ServerConfig, args: &[&str]) -> Server {
-        std::fs::write(self.data.join("server.json"), serde_json::to_vec_pretty(config).unwrap()).unwrap();
         let stdout = std::fs::File::create(self.root.join("serve-stdout.log")).unwrap();
         let stderr = std::fs::File::create(self.root.join("serve-stderr.log")).unwrap();
-        let mut command_args = vec!["serve"];
-        command_args.extend_from_slice(args);
+        let mut command_args = vec!["serve".to_string()];
+        command_args.extend(config.to_args());
+        command_args.extend(args.iter().map(|a| a.to_string()));
+        let command_args: Vec<&str> = command_args.iter().map(String::as_str).collect();
         let child = self.command(&command_args).stdout(stdout).stderr(stderr).spawn().expect("start sp serve");
         let mut server = Server { child: Some(child), root: self.root.clone(), data: self.data.clone() };
         let deadline = Instant::now() + Duration::from_secs(30);

@@ -28,7 +28,7 @@ use session_player_core::ops::{
 use session_player_core::{annotations, generate, index, reports, sync};
 use session_player_server::pairing::{DeviceInfo, DevicesRequest, PairRequest, PairResponse, UnpairRequest};
 use session_player_server::service::{ServiceAction, ServiceReport, ServiceRequest};
-use session_player_server::{ServeParams, ServerConfig, serve};
+use session_player_server::{ServeParams, ServerConfig, TlsMode, serve};
 
 use backend::{Backend, Detached, RunParams};
 use route::{Route, RouteParams};
@@ -45,8 +45,53 @@ struct Cli {
     /// Run on a server paired with `sp connect`, by the name it was saved under
     #[arg(long, global = true, value_name = "NAME")]
     server: Option<String>,
+    /// Keep the database, logs and server files in this folder instead of the app's own
+    #[arg(long, global = true, value_name = "DIR")]
+    data_dir: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
+}
+
+/// How the server listens. Every flag is optional; with none, it listens on 127.0.0.1:47800 only.
+#[derive(clap::Args, Default)]
+struct ServeFlags {
+    /// The loopback listener's port
+    #[arg(long, value_name = "PORT")]
+    port: Option<u16>,
+    /// The listener for paired devices; it must differ from --port
+    #[arg(long, value_name = "PORT")]
+    external_port: Option<u16>,
+    /// Listen for paired devices on this address; without it the server never listens off loopback
+    #[arg(long, value_name = "ADDR")]
+    bind: Option<std::net::IpAddr>,
+    /// The host name or address devices reach this machine at, which goes into pairing strings and
+    /// the certificate. Required with a wildcard --bind such as 0.0.0.0.
+    #[arg(long, value_name = "HOST")]
+    advertise: Option<String>,
+    /// Serve devices with this certificate (PEM) instead of a generated one
+    #[arg(long, value_name = "FILE", requires = "tls_key", conflicts_with = "allow_insecure_http")]
+    tls_cert: Option<PathBuf>,
+    /// The private key (PEM) for --tls-cert
+    #[arg(long, value_name = "FILE", requires = "tls_cert")]
+    tls_key: Option<PathBuf>,
+    /// Serve devices over plain HTTP, so tokens and sessions cross the network unencrypted
+    #[arg(long)]
+    allow_insecure_http: bool,
+}
+
+impl ServeFlags {
+    fn config(&self) -> ServerConfig {
+        let default = ServerConfig::default();
+        let tls = match (&self.tls_cert, &self.tls_key) {
+            (Some(cert), Some(key)) => TlsMode::OwnCert { cert: cert.clone(), key: key.clone() },
+            _ if self.allow_insecure_http => TlsMode::Plain,
+            _ => default.tls,
+        };
+        let port = self.port.unwrap_or(default.port);
+        // The external listener's default is the loopback port plus one, so moving one moves both.
+        let external_port = self.external_port.unwrap_or(if self.port.is_some() { port.saturating_add(1) } else { default.external_port });
+        ServerConfig { port, external_port, external_bind: self.bind, advertise: self.advertise.clone(), tls }
+    }
 }
 
 #[derive(Subcommand)]
@@ -156,12 +201,9 @@ enum Command {
     Install,
     /// Run the Session Player server on this machine's data folder until stopped
     ///
-    /// Settings are read from server.json in the data folder.
     Serve {
-        /// Serve plain HTTP off loopback when server.json asks for it (tls mode "plain"). Tokens
-        /// and sessions then cross the network unencrypted.
-        #[arg(long)]
-        allow_insecure_http: bool,
+        #[command(flatten)]
+        flags: ServeFlags,
     },
     /// Print a pairing string another machine passes to `sp connect`
     Pair,
@@ -181,9 +223,17 @@ enum Command {
         device: String,
     },
     /// Install, remove, start, stop or check the server as a per-user service (launchd or systemd)
+    ///
+    /// `install` runs the server with the flags given here, so `sp service install --bind 0.0.0.0
+    /// --advertise studio.local` keeps those settings across restarts.
     Service {
         #[arg(value_enum)]
         action: ServiceArg,
+        /// The launchd label (systemd unit name) to manage, so a second server can run beside the first
+        #[arg(long, value_name = "NAME")]
+        label: Option<String>,
+        #[command(flatten)]
+        flags: ServeFlags,
     },
     /// Stop a job running on the server
     Cancel {
@@ -255,10 +305,10 @@ enum Status {
 }
 
 /// The folders the app uses (Tauri's `app_data_dir` and `app_log_dir`), so
-/// both work on one database. `SESSION_PLAYER_DATA_DIR` points both elsewhere.
-fn paths() -> anyhow::Result<Paths> {
-    let (data, logs) = match std::env::var_os("SESSION_PLAYER_DATA_DIR").filter(|d| !d.is_empty()) {
-        Some(dir) => (PathBuf::from(&dir), PathBuf::from(&dir).join("logs")),
+/// both work on one database. `--data-dir` points both elsewhere.
+fn paths(data_dir: Option<&Path>) -> anyhow::Result<Paths> {
+    let (data, logs) = match data_dir {
+        Some(dir) => (dir.to_path_buf(), dir.join("logs")),
         None => {
             let data = dirs::data_dir().context("Couldn't find the folder for application data")?.join(APP_ID);
             let logs = if cfg!(target_os = "macos") {
@@ -711,7 +761,7 @@ Work through its \"Recommended actions\":
     )
 }
 
-fn cmd_doctor(backend: &Backend, remote: Option<&str>, paths: &Paths, report: Option<&str>, project: &ProjectArg, print: bool) -> anyhow::Result<()> {
+fn cmd_doctor(backend: &Backend, remote: Option<&str>, paths: &Paths, data_dir: Option<&Path>, report: Option<&str>, project: &ProjectArg, print: bool) -> anyhow::Result<()> {
     let report = find_report(backend, report, &|| project_keys(backend, remote, project))?;
     if report.actions.is_empty() {
         bail!("Report {} recommends no actions.", report.id);
@@ -722,7 +772,10 @@ fn cmd_doctor(backend: &Backend, remote: Option<&str>, paths: &Paths, report: Op
     std::fs::write(&report_file, render(backend, &report)?)?;
 
     // The full path, so the session can run it even when `sp` isn't on its PATH.
-    let sp = std::env::current_exe().map(|p| shell_quote(&p.to_string_lossy())).unwrap_or_else(|_| "sp".into());
+    let mut sp = std::env::current_exe().map(|p| shell_quote(&p.to_string_lossy())).unwrap_or_else(|_| "sp".into());
+    if let Some(dir) = data_dir {
+        sp = format!("{sp} --data-dir {}", shell_quote(&dir.to_string_lossy()));
+    }
     let prompt = doctor_prompt(&report, &report_file, &sp);
     if print {
         println!("{prompt}");
@@ -1063,20 +1116,18 @@ fn cmd_pull(cli: &Cli, paths: &Paths, host: &str, scope: &Scope, dry_run: bool) 
     Ok(())
 }
 
-fn cmd_serve(paths: &Paths, allow_insecure_http: bool) -> anyhow::Result<()> {
-    let file = paths.data.join("server.json");
-    let config: ServerConfig = match std::fs::read(&file) {
-        Ok(bytes) => serde_json::from_slice(&bytes).with_context(|| format!("Couldn't read {}; fix or remove it", file.display()))?,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => ServerConfig::default(),
-        Err(e) => return Err(e).with_context(|| format!("Couldn't read {}", file.display())),
-    };
+fn cmd_serve(paths: &Paths, flags: &ServeFlags) -> anyhow::Result<()> {
+    let config = flags.config();
+    if config.port != 0 && config.port == config.external_port {
+        bail!("--port and --external-port are both {}; they must differ.", config.port);
+    }
     let ctx = backend::open_ctx(paths)?;
     // Ctrl-C and SIGTERM (a service manager stopping the server) both shut it down cleanly.
     let (stop, stopped) = std::sync::mpsc::channel();
     ctrlc::set_handler(move || {
         let _ = stop.send(());
     })?;
-    let server = serve(ServeParams { ctx: ctx.clone(), data: paths.data.clone(), config, allow_insecure_http })?;
+    let server = serve(ServeParams { ctx: ctx.clone(), data: paths.data.clone(), config, allow_insecure_http: flags.allow_insecure_http })?;
     // Sessions written while no server ran; the watcher picks up the ones written from now on.
     ops::call(&ctx, &REINDEX, &ReindexRequest { full: false }).map_err(backend::op_error)?;
     eprintln!("Serving {} on http://{}", paths.data.display(), server.addrs().loopback);
@@ -1130,7 +1181,7 @@ fn cmd_unpair(backend: &Backend, device: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_service(cli: &Cli, paths: &Paths, action: ServiceArg) -> anyhow::Result<()> {
+fn cmd_service(cli: &Cli, paths: &Paths, action: ServiceArg, label: Option<&str>, flags: &ServeFlags) -> anyhow::Result<()> {
     if cli.server.is_some() {
         bail!("sp service manages the server on this machine only. Run it on that machine, without --server.");
     }
@@ -1142,7 +1193,7 @@ fn cmd_service(cli: &Cli, paths: &Paths, action: ServiceArg) -> anyhow::Result<(
         ServiceArg::Status => ServiceAction::Status,
     };
     let backend = Backend::open(backend::OpenParams { route: Route::Local, paths, index: false })?;
-    let report: ServiceReport = backend.call_named("service", &ServiceRequest { action })?;
+    let report: ServiceReport = backend.call_named("service", &ServiceRequest { action, label: label.map(str::to_string), data_dir: cli.data_dir.clone(), serve_args: flags.config().to_args() })?;
     println!("{}: {}", if report.installed { "Installed" } else { "Not installed" }, report.unit_file.display());
     println!("{}", if report.running { "Running" } else { "Not running" });
     Ok(())
@@ -1177,19 +1228,19 @@ fn run(cli: &Cli, paths: &Paths) -> anyhow::Result<()> {
         }
         Command::Doctor { report, project, print } => {
             let (b, remote) = open(true)?;
-            cmd_doctor(&b, remote.as_deref(), paths, report.as_deref(), project, *print)
+            cmd_doctor(&b, remote.as_deref(), paths, cli.data_dir.as_deref(), report.as_deref(), project, *print)
         }
         Command::Action { report, number, status, note } => cmd_action(&open(false)?.0, report, *number, *status, note.clone()),
         Command::Pull { host, scope, dry_run } => cmd_pull(cli, paths, host, scope, *dry_run),
         // The job is the index pass, so none runs first.
         Command::Index { full } => cmd_index(&open(false)?.0, *full),
         Command::Install => cmd_install(),
-        Command::Serve { allow_insecure_http } => cmd_serve(paths, *allow_insecure_http),
+        Command::Serve { flags } => cmd_serve(paths, flags),
         Command::Pair => cmd_pair(&open(false)?.0),
         Command::Connect { pairing, name } => cmd_connect(paths, pairing, name),
         Command::Devices => cmd_devices(&open(false)?.0),
         Command::Unpair { device } => cmd_unpair(&open(false)?.0, device),
-        Command::Service { action } => cmd_service(cli, paths, *action),
+        Command::Service { action, label, flags } => cmd_service(cli, paths, *action, label.as_deref(), flags),
         Command::Cancel { job } => cmd_cancel(&open(false)?.0, job),
         Command::ExportProject { repo, since } => cmd_export_project(paths, repo, *since),
         Command::ImportProject { project, dry_run } => cmd_import_project(paths, project, *dry_run),
@@ -1198,7 +1249,7 @@ fn run(cli: &Cli, paths: &Paths) -> anyhow::Result<()> {
 
 fn main() {
     let cli = Cli::parse();
-    let result = paths().and_then(|paths| run(&cli, &paths));
+    let result = paths(cli.data_dir.as_deref()).and_then(|paths| run(&cli, &paths));
     if let Err(e) = result {
         if let Some(detached) = e.downcast_ref::<Detached>() {
             eprintln!("{detached}");

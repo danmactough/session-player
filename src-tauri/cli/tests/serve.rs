@@ -94,23 +94,26 @@ fn plain_external_config() -> ServerConfig {
 }
 
 #[test]
-fn sp_serve_refuses_plain_http_off_loopback_without_allow_insecure_http() {
-    let dir = TempDir::new("cli-serve-plain-refused");
+fn sp_serve_refuses_a_certificate_without_its_key() {
+    let dir = TempDir::new("cli-serve-cert-without-key");
     let alpha = Machine::new(&dir, "alpha");
-    std::fs::write(alpha.data.join("server.json"), serde_json::to_vec(&plain_external_config()).unwrap()).unwrap();
 
-    let mut child = alpha.command(&["serve"]).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().expect("start sp serve");
-    let status = common::wait_exit(&mut child, Duration::from_secs(20));
-    if status.is_none() {
-        let _ = child.kill();
-        let _ = child.wait();
-        panic!("sp serve kept running with plain HTTP off loopback");
-    }
-    let output = child.wait_with_output().unwrap();
+    let output = alpha.sp(&["serve", "--tls-cert", "cert.pem"]);
 
     assert_ne!(output.status.code(), Some(0));
-    assert!(stderr(&output).contains("--allow-insecure-http"), "{}", stderr(&output));
+    assert!(stderr(&output).contains("--tls-key"), "{}", stderr(&output));
     assert_eq!(probe_local(&alpha.data), LocalProbe::NotLive);
+}
+
+#[test]
+fn sp_serve_refuses_a_wildcard_bind_without_an_advertised_host() {
+    let dir = TempDir::new("cli-serve-wildcard-bind");
+    let alpha = Machine::new(&dir, "alpha");
+
+    let output = alpha.sp(&["serve", "--port", "0", "--external-port", "0", "--bind", "0.0.0.0"]);
+
+    assert_ne!(output.status.code(), Some(0));
+    assert!(stderr(&output).contains("--advertise"), "{}", stderr(&output));
 }
 
 #[test]
@@ -118,7 +121,7 @@ fn sp_serve_with_allow_insecure_http_serves_plain_http_off_loopback_and_warns() 
     let dir = TempDir::new("cli-serve-plain-allowed");
     let alpha = Machine::new(&dir, "alpha");
     let beta = Machine::new(&dir, "beta");
-    let server = alpha.serve_with(&plain_external_config(), &["--allow-insecure-http"]);
+    let server = alpha.serve(&plain_external_config());
 
     let pairing = PairingString::parse(&pairing_string(&alpha.sp(&["pair"]))).expect("a pairing string");
     assert_eq!(pairing.fingerprint, None, "plain HTTP pins no certificate");

@@ -39,7 +39,8 @@ fn the_launch_agent_plist_escapes_every_value_and_runs_sp_serve_with_path_set() 
     let logs = Path::new("/Users/a&b/Library/Logs/sp");
     let data = Path::new("/Users/a&b/sp data");
 
-    let plist = launchd_plist(&UnitParams { sp, logs, path: "/usr/bin:/Users/a&b/.local/bin", data_dir: Some(data) });
+    let data = data.to_string_lossy();
+    let plist = launchd_plist(&UnitParams { sp, logs, path: "/usr/bin:/Users/a&b/.local/bin", label: None, args: &["--data-dir", &data, "serve", "--port", "47900"] });
 
     assert!(plist.starts_with("<?xml"), "{plist}");
     assert!(plist.contains("<!DOCTYPE plist"), "{plist}");
@@ -47,9 +48,8 @@ fn the_launch_agent_plist_escapes_every_value_and_runs_sp_serve_with_path_set() 
     let program_arguments = &plist[plist.find("<key>ProgramArguments</key>").expect("ProgramArguments")..];
     let array = &program_arguments[..program_arguments.find("</array>").expect("an array")];
     assert!(array.contains("<string>/Users/a&amp;b/&lt;odd&gt; &quot;apps&quot;/sp</string>"), "{plist}");
-    assert!(array.contains("<string>serve</string>"), "{plist}");
+    assert!(array.contains("<string>--data-dir</string>\n\t\t<string>/Users/a&amp;b/sp data</string>\n\t\t<string>serve</string>\n\t\t<string>--port</string>\n\t\t<string>47900</string>"), "{plist}");
     assert_eq!(string_after_key(&plist, "PATH"), "/usr/bin:/Users/a&amp;b/.local/bin");
-    assert_eq!(string_after_key(&plist, "SESSION_PLAYER_DATA_DIR"), "/Users/a&amp;b/sp data");
     assert_eq!(string_after_key(&plist, "StandardOutPath"), "/Users/a&amp;b/Library/Logs/sp/server.log");
     assert_eq!(string_after_key(&plist, "StandardErrorPath"), "/Users/a&amp;b/Library/Logs/sp/server.log");
     assert!(plist.contains("<key>RunAtLoad</key>") && plist.contains("<true/>"), "{plist}");
@@ -57,8 +57,8 @@ fn the_launch_agent_plist_escapes_every_value_and_runs_sp_serve_with_path_set() 
     let unescaped = plist.replace("&amp;", "").replace("&lt;", "").replace("&gt;", "").replace("&quot;", "");
     assert!(!unescaped.contains('&'), "an unescaped & in {plist}");
 
-    let without_data = launchd_plist(&UnitParams { sp, logs, path: "/usr/bin", data_dir: None });
-    assert!(!without_data.contains("SESSION_PLAYER_DATA_DIR"), "{without_data}");
+    let named = launchd_plist(&UnitParams { sp, logs, path: "/usr/bin", label: Some("dev.sp.server"), args: &["serve"] });
+    assert_eq!(string_after_key(&named, "Label"), "dev.sp.server");
 }
 
 #[test]
@@ -67,14 +67,14 @@ fn installing_on_launchd_writes_an_escaped_launch_agent_and_bootstraps_then_kick
     let home = dir.join("home");
     let logs = dir.join("logs & more");
     let sp = dir.join("bin/sp");
-    let unit = || UnitParams { sp: &sp, logs: &logs, path: "/usr/bin", data_dir: None };
+    let unit = || UnitParams { sp: &sp, logs: &logs, path: "/usr/bin", label: None, args: &["serve"] };
     let mut manager = FakeManager::default();
 
     let report = run_service(ServiceParams { action: ServiceAction::Install, platform: Platform::Launchd, home: &home, uid: 501, unit: unit(), manager: &mut manager })
         .expect("install");
 
     let file = home.join("Library/LaunchAgents").join(format!("{LAUNCHD_LABEL}.plist"));
-    assert_eq!(unit_file(Platform::Launchd, &home), file);
+    assert_eq!(unit_file(Platform::Launchd, &home, None), file);
     assert_eq!(report.unit_file, file);
     assert!(report.installed);
     assert_eq!(std::fs::read_to_string(&file).expect("the plist"), launchd_plist(&unit()));
@@ -90,4 +90,22 @@ fn installing_on_launchd_writes_an_escaped_launch_agent_and_bootstraps_then_kick
         "{:?}",
         manager.commands
     );
+}
+
+#[test]
+fn a_labelled_launch_agent_has_its_own_plist_and_target() {
+    let dir = TempDir::new("server-service-launchd-label");
+    let home = dir.join("home");
+    let logs = dir.join("logs");
+    let sp = dir.join("bin/sp");
+    let mut manager = FakeManager::default();
+    let unit = UnitParams { sp: &sp, logs: &logs, path: "/usr/bin", label: Some("dev.sp.server"), args: &["serve", "--port", "47900"] };
+
+    let report = run_service(ServiceParams { action: ServiceAction::Install, platform: Platform::Launchd, home: &home, uid: 501, unit, manager: &mut manager }).expect("install");
+
+    let file = home.join("Library/LaunchAgents/dev.sp.server.plist");
+    assert_eq!(report.unit_file, file);
+    assert!(std::fs::read_to_string(&file).expect("the plist").contains("<string>dev.sp.server</string>"));
+    assert!(manager.commands.iter().any(|(_, a)| a.last().is_some_and(|t| t == "gui/501/dev.sp.server")), "{:?}", manager.commands);
+    assert!(!home.join(format!("Library/LaunchAgents/{LAUNCHD_LABEL}.plist")).exists());
 }

@@ -4,11 +4,11 @@ members = ["core", "cli", "server", "client"]
 # The sp command ships with the app and reports the app's version. `npm version`
 # rewrites every line here that starts with "version".
 [workspace.package]
-version = "0.16.0"
+version = "0.17.0"
 
 [package]
 name = "session-player"
-version = "0.16.0"
+version = "0.17.0"
 description = "A unified viewer for coding-agent sessions"
 authors = ["Dan MacTough"]
 license = "MIT"

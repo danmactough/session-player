@@ -418,7 +418,7 @@ export interface ServerEvent {
 }
 
 /** The local server, as the app shell sees it. */
-export type LocalServerState = { state: "not_installed" } | { state: "installed" } | { state: "running"; port: number };
+export type LocalServerState = { state: "not_installed" } | { state: "installed" } | { state: "running"; port: number; sidecar: boolean };
 
 /** A paired remote server saved in the shell's servers.json. */
 export interface ServerRef {

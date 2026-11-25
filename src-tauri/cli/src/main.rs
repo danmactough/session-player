@@ -10,6 +10,7 @@ use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow, bail};
 use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, TimeZone};
@@ -21,8 +22,8 @@ use session_player_client::{
 use session_player_core::model::SessionRow;
 use session_player_core::ops::{
     self, ACTION_RESPONSES, ACTION_VERDICTS, ANALYZE_SESSIONS, ActionResponseChange, ActionResponsesRequest, ActionVerdictsRequest, AnalyzeSessionsRequest,
-    CANCEL_JOB, CancelJobRequest, GENERATE_REPORT, GET_REPORT, GET_ROOTS, GenerateReportRequest, GetReportRequest, GetRootsRequest, HELLO, HelloRequest, Job,
-    JobId, JobState, LIST_REPORTS, LIST_SESSIONS, ListReportsRequest, ListSessionsRequest, NOTE_SUMMARIES, NoteSummariesRequest, Paths, PushedEvent,
+    CANCEL_JOB, CancelJobRequest, Ctx, GENERATE_REPORT, GET_REPORT, GET_ROOTS, GenerateReportRequest, GetReportRequest, GetRootsRequest, HELLO, HelloRequest, Job,
+    JobId, JobKind, JobState, LIST_REPORTS, LIST_SESSIONS, ListReportsRequest, ListSessionsRequest, NOTE_SUMMARIES, NoteSummariesRequest, Paths, PushedEvent,
     REINDEX, REPORT_ANNOTATIONS, ReindexRequest, ReportAnnotationsRequest, SESSION_NOTES, SET_ACTION_RESPONSE, SessionNotesRequest, SetActionResponseRequest,
 };
 use session_player_core::{annotations, generate, index, reports, sync};
@@ -204,6 +205,10 @@ enum Command {
     Serve {
         #[command(flatten)]
         flags: ServeFlags,
+        /// Also stop when standard input closes, cancelling running jobs. The Mac app runs its
+        /// server this way, so the server ends with the app however the app ends.
+        #[arg(long)]
+        exit_on_stdin_eof: bool,
     },
     /// Print a pairing string another machine passes to `sp connect`
     Pair,
@@ -1116,7 +1121,24 @@ fn cmd_pull(cli: &Cli, paths: &Paths, host: &str, scope: &Scope, dry_run: bool) 
     Ok(())
 }
 
-fn cmd_serve(paths: &Paths, flags: &ServeFlags) -> anyhow::Result<()> {
+/// How long a server whose standard input closed waits for its cancelled jobs to stop `claude`.
+const CANCEL_WAIT: Duration = Duration::from_secs(3);
+
+/// `claude` runs in its own process group, so it would outlive a server that exits without
+/// cancelling its jobs. Index passes can't be cancelled and are left to end with the process.
+fn cancel_jobs(ctx: &Arc<Ctx>) {
+    let cancellable = || ctx.running_jobs().into_iter().filter(|job| job.kind != JobKind::Index).collect::<Vec<_>>();
+    for job in cancellable() {
+        // Fails only for a job that has already ended.
+        let _ = ops::call(ctx, &CANCEL_JOB, &CancelJobRequest { id: job.id });
+    }
+    let deadline = Instant::now() + CANCEL_WAIT;
+    while !cancellable().is_empty() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn cmd_serve(paths: &Paths, flags: &ServeFlags, exit_on_stdin_eof: bool) -> anyhow::Result<()> {
     let config = flags.config();
     if config.port != 0 && config.port == config.external_port {
         bail!("--port and --external-port are both {}; they must differ.", config.port);
@@ -1124,6 +1146,14 @@ fn cmd_serve(paths: &Paths, flags: &ServeFlags) -> anyhow::Result<()> {
     let ctx = backend::open_ctx(paths)?;
     // Ctrl-C and SIGTERM (a service manager stopping the server) both shut it down cleanly.
     let (stop, stopped) = std::sync::mpsc::channel();
+    if exit_on_stdin_eof {
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            // A read error also means nothing is left to hold the pipe open.
+            let _ = std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink());
+            let _ = stop.send(());
+        });
+    }
     ctrlc::set_handler(move || {
         let _ = stop.send(());
     })?;
@@ -1132,6 +1162,9 @@ fn cmd_serve(paths: &Paths, flags: &ServeFlags) -> anyhow::Result<()> {
     ops::call(&ctx, &REINDEX, &ReindexRequest { full: false }).map_err(backend::op_error)?;
     eprintln!("Serving {} on http://{}", paths.data.display(), server.addrs().loopback);
     let _ = stopped.recv();
+    if exit_on_stdin_eof {
+        cancel_jobs(&ctx);
+    }
     server.shutdown();
     Ok(())
 }
@@ -1235,7 +1268,7 @@ fn run(cli: &Cli, paths: &Paths) -> anyhow::Result<()> {
         // The job is the index pass, so none runs first.
         Command::Index { full } => cmd_index(&open(false)?.0, *full),
         Command::Install => cmd_install(),
-        Command::Serve { flags } => cmd_serve(paths, flags),
+        Command::Serve { flags, exit_on_stdin_eof } => cmd_serve(paths, flags, *exit_on_stdin_eof),
         Command::Pair => cmd_pair(&open(false)?.0),
         Command::Connect { pairing, name } => cmd_connect(paths, pairing, name),
         Command::Devices => cmd_devices(&open(false)?.0),

@@ -9,7 +9,7 @@ mod terminals;
 // The app's data lives on the server (`sp serve`, on this machine or a paired one). The page talks
 // to the local server directly over loopback HTTP, and to a paired remote one through the relay
 // here, which holds that server's token. What stays in the shell is native: Finder, terminals,
-// other apps, dialogs, the updater, and managing the local server as a service.
+// other apps, dialogs, the updater, and running the local server, as a sidecar or as a service.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -30,9 +30,12 @@ struct AppState {
     data_override: Option<PathBuf>,
     /// The log of Analyze and report runs; see `runlog`.
     log_path: PathBuf,
-    /// The `sp` inside the app, which manages the local server as a service. None in a build
-    /// without one (`npm run app`).
+    /// Where the sidecar's output goes; the service writes the same file.
+    server_log_path: PathBuf,
+    /// The `sp` inside the app, which runs the local server. None in a build without one
+    /// (`npm run bundle`).
     sp: Option<PathBuf>,
+    local: local::LocalServer,
     /// One Client per paired server, which relayed calls share.
     clients: relay::Clients,
     /// Open relayed event streams.
@@ -41,7 +44,7 @@ struct AppState {
 
 type Shared = Arc<AppState>;
 
-/// How long install and start wait for the server to take its lock.
+/// How long starting the sidecar or the service waits for the server to take its lock.
 const START_WAIT: Duration = Duration::from_secs(15);
 
 fn err(e: impl std::fmt::Display) -> String {
@@ -161,34 +164,40 @@ fn relay_close_stream(state: State<'_, Shared>, id: u64) {
 #[tauri::command]
 async fn local_server_state(state: State<'_, Shared>) -> Result<local::LocalServerState, String> {
     let shared = state.inner().clone();
-    blocking(move || Ok(local::server_state(local::StateParams { data: &shared.data_dir, sp: shared.sp.as_deref(), data_override: shared.data_override.as_deref() }))).await
+    blocking(move || Ok(shared.local.state(local::StateParams { data: &shared.data_dir, sp: shared.sp.as_deref(), data_override: shared.data_override.as_deref() }))).await
 }
 
-fn bundled_sp(state: &AppState) -> Result<PathBuf, String> {
-    state.sp.clone().ok_or_else(|| "This build of Session Player has no sp command inside it, so it can't install the server. Releases do; run `sp service install` instead.".to_string())
+fn sidecar_params<'a>(state: &'a AppState, sp: &'a Path) -> local::SidecarParams<'a> {
+    local::SidecarParams {
+        start: local::StartParams { data: &state.data_dir, sp, data_override: state.data_override.as_deref(), wait: START_WAIT },
+        log: &state.server_log_path,
+    }
 }
 
-/// Installs the server as a per-user service (LaunchAgent or systemd user unit) and waits for it.
+/// Installs the server as a per-user service (LaunchAgent or systemd user unit), or starts the
+/// installed one, in place of the sidecar.
 #[tauri::command]
-async fn local_server_install(state: State<'_, Shared>) -> Result<local::LocalServerState, String> {
+async fn local_server_keep_running(state: State<'_, Shared>) -> Result<local::LocalServerState, String> {
     let shared = state.inner().clone();
-    let sp = bundled_sp(&shared)?;
-    blocking(move || local::install(local::StartParams { data: &shared.data_dir, sp: &sp, data_override: shared.data_override.as_deref(), wait: START_WAIT })).await
+    blocking(move || {
+        let sp = shared.sp.as_deref().ok_or("This build of Session Player has no sp command inside it, so it can't install the server. Releases do; run `sp service install` instead.")?;
+        shared.local.keep_running(sidecar_params(&shared, sp))
+    })
+    .await
 }
 
-/// Starts the installed, stopped service and waits for it.
-#[tauri::command]
-async fn local_server_start(state: State<'_, Shared>) -> Result<local::LocalServerState, String> {
-    let shared = state.inner().clone();
-    let sp = bundled_sp(&shared)?;
-    blocking(move || local::start(local::StartParams { data: &shared.data_dir, sp: &sp, data_override: shared.data_override.as_deref(), wait: START_WAIT })).await
-}
-
-/// `{ url, token }` of the running local server.
+/// `{ url, token }` of the local server, starting the sidecar first when no server runs. The page
+/// asks again when it loses the server, which restarts a sidecar that died.
 #[tauri::command]
 async fn local_server_connection(state: State<'_, Shared>) -> Result<local::Connection, String> {
     let shared = state.inner().clone();
-    blocking(move || local::local_connection(&session_player_client::probe_local(&shared.data_dir))).await
+    blocking(move || {
+        if let Some(sp) = shared.sp.as_deref() {
+            shared.local.ensure(sidecar_params(&shared, sp))?;
+        }
+        local::local_connection(&session_player_client::probe_local(&shared.data_dir))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -365,21 +374,13 @@ pub fn run() {
             let (data_dir, logs) = folders(app, data_override.as_deref())?;
             std::fs::create_dir_all(&data_dir)?;
             let sp = cli::bundled();
-            // After an update the service may still name the sp of an older app; reinstalling
-            // points it at this one.
-            let refresh_override = data_override.clone();
-            if let Some(sp) = sp.clone() {
-                std::thread::spawn(move || {
-                    if let Err(e) = local::refresh_after_update(&sp, refresh_override.as_deref()) {
-                        eprintln!("Couldn't refresh the server's service: {e}");
-                    }
-                });
-            }
             app.manage::<Shared>(Arc::new(AppState {
                 data_dir,
                 data_override,
                 log_path: logs.join("analyze.log"),
+                server_log_path: logs.join("server.log"),
                 sp,
+                local: if cfg!(debug_assertions) { local::LocalServer::leaving_service_alone() } else { local::LocalServer::default() },
                 clients: relay::Clients::default(),
                 streams: relay::Streams::default(),
             }));
@@ -415,8 +416,7 @@ pub fn run() {
             relay_open_stream,
             relay_close_stream,
             local_server_state,
-            local_server_install,
-            local_server_start,
+            local_server_keep_running,
             local_server_connection,
             paired_servers_list,
             paired_server_connect,
@@ -430,6 +430,15 @@ pub fn run() {
             save_markdown,
             save_file
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building the tauri application")
+        // Waiting here for the sidecar to exit means an app relaunched by the updater doesn't
+        // attach to a server that is about to stop.
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event
+                && let Some(state) = app.try_state::<Shared>()
+            {
+                state.local.shutdown();
+            }
+        });
 }

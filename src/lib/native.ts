@@ -114,8 +114,7 @@ export async function saveFile(name: string, bytes: Blob): Promise<string | null
 // ---- The local server and paired servers ----
 
 export const localServerState = () => invoke<LocalServerState>("local_server_state");
-export const localServerInstall = () => invoke<LocalServerState>("local_server_install");
-export const localServerStart = () => invoke<LocalServerState>("local_server_start");
+export const localServerKeepRunning = () => invoke<LocalServerState>("local_server_keep_running");
 export const localServerConnection = () => invoke<{ url: string; token: string }>("local_server_connection");
 export const pairedServersList = () => invoke<ServerRef[]>("paired_servers_list");
 export const pairedServerConnect = (pairing: string, name: string | null) => invoke<ServerRef>("paired_server_connect", { pairing, name });

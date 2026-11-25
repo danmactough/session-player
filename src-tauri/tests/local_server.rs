@@ -11,21 +11,35 @@ use std::time::Duration;
 
 use common::{CtxParams, loopback_config, open_ctx, start, wait_until};
 use session_player_client::{LocalProbe, probe_local};
-use session_player_lib::local::{self, LocalServerState, ServiceFacts, StartParams, StateParams, local_connection, local_state, parse_service_status};
+use session_player_lib::local::{self, LocalServer, LocalServerState, ServiceFacts, SidecarParams, StartParams, StateParams, local_connection, local_state, parse_service_status};
 use tempdir::TempDir;
+
+/// A stand-in `sp` in `dir` for `serve`: appends its arguments to `dir/sp.log`, touches
+/// `dir/serve.done`, then runs until its standard input closes and touches `dir/serve.exited`.
+/// Other commands answer as `fake_sp` does.
+fn fake_sidecar_sp(dir: &Path) -> PathBuf {
+    let d = dir.display();
+    write_script(dir, &format!(
+        "#!/bin/sh\necho \"$@\" >> '{d}/sp.log'\nif [ \"$1\" = serve ]; then touch '{d}/serve.done'; cat > /dev/null; touch '{d}/serve.exited'; exit 0; fi\ntouch '{d}/'\"$2\".done\ncat '{d}/status'\n"
+    ))
+}
 
 /// A stand-in `sp` in `dir`: appends its arguments to `dir/sp.log`, prints `dir/status` for any
 /// `service` action, and touches `dir/{action}.done`.
 fn fake_sp(dir: &Path) -> PathBuf {
-    let sp = dir.join("sp");
     let script = format!(
         "#!/bin/sh\necho \"$@\" >> '{d}/sp.log'\ntouch '{d}/'\"$2\".done\ncat '{d}/status'\n",
         d = dir.display()
     );
+    write_script(dir, &script)
+}
+
+fn write_script(dir: &Path, script: &str) -> PathBuf {
+    let sp = dir.join("sp");
     // A shell writes the script so this process never holds it open for writing: a parallel test's
     // fork would inherit that handle, and Linux then refuses to run the script ("Text file busy").
     let written = std::process::Command::new("/bin/sh")
-        .args(["-c", r#"printf '%s' "$1" > "$2" && chmod 755 "$2""#, "sh", &script])
+        .args(["-c", r#"printf '%s' "$1" > "$2" && chmod 755 "$2""#, "sh", script])
         .arg(&sp)
         .status()
         .unwrap();
@@ -61,12 +75,12 @@ fn local_state_is_running_for_a_live_lock_and_otherwise_follows_the_service() {
     let installed = ServiceFacts { installed: true, running: false, unit_file: PathBuf::from("/u") };
     let missing = ServiceFacts { installed: false, running: false, unit_file: PathBuf::from("/u") };
 
-    assert_eq!(local_state(&live, None), LocalServerState::Running { port: 47800 });
-    assert_eq!(local_state(&live, Some(&missing)), LocalServerState::Running { port: 47800 });
+    assert_eq!(local_state(&live, None), LocalServerState::Running { port: 47800, sidecar: false });
+    assert_eq!(local_state(&live, Some(&missing)), LocalServerState::Running { port: 47800, sidecar: false });
     assert_eq!(local_state(&LocalProbe::NotLive, Some(&installed)), LocalServerState::Installed);
     assert_eq!(local_state(&LocalProbe::NotLive, Some(&missing)), LocalServerState::NotInstalled);
     assert_eq!(local_state(&LocalProbe::NotLive, None), LocalServerState::NotInstalled);
-    assert_eq!(serde_json::to_value(LocalServerState::Running { port: 1 }).unwrap(), serde_json::json!({ "state": "running", "port": 1 }));
+    assert_eq!(serde_json::to_value(LocalServerState::Running { port: 1, sidecar: false }).unwrap(), serde_json::json!({ "state": "running", "port": 1, "sidecar": false }));
     assert_eq!(serde_json::to_value(LocalServerState::NotInstalled).unwrap(), serde_json::json!({ "state": "not_installed" }));
 }
 
@@ -81,7 +95,7 @@ fn a_server_started_here_is_found_through_its_lock_and_token_files() {
     let state = local::server_state(StateParams { data: &data, sp: None, data_override: None });
     let connection = local_connection(&probe_local(&data)).expect("attach to the running server");
 
-    assert_eq!(state, LocalServerState::Running { port });
+    assert_eq!(state, LocalServerState::Running { port, sidecar: false });
     assert_eq!(connection.url, format!("http://127.0.0.1:{port}"));
     assert_eq!(connection.token, std::fs::read_to_string(data.join("server.token")).unwrap().trim());
     handle.shutdown();
@@ -122,7 +136,7 @@ fn start_runs_sp_service_start_and_waits_for_the_server_to_be_live() {
     let state = local::start(StartParams { data: &data, sp: &sp, data_override: None, wait: Duration::from_secs(10) }).expect("start");
 
     let handle = manager.join().unwrap();
-    assert_eq!(state, LocalServerState::Running { port: handle.addrs().loopback.port() });
+    assert_eq!(state, LocalServerState::Running { port: handle.addrs().loopback.port(), sidecar: false });
     assert_eq!(sp_log(&root), vec!["service start"]);
     handle.shutdown();
 }
@@ -171,4 +185,78 @@ fn after_an_update_the_service_is_reinstalled_only_when_installed_and_naming_ano
     assert!(local::refresh_after_update(&sp, None).unwrap(), "names another sp");
 
     assert_eq!(sp_log(&root), vec!["service status", "service status", "service status", "service install"]);
+}
+
+fn sidecar_params<'a>(data: &'a Path, sp: &'a Path, log: &'a Path) -> SidecarParams<'a> {
+    SidecarParams { start: StartParams { data, sp, data_override: None, wait: Duration::from_secs(10) }, log }
+}
+
+#[test]
+fn ensure_uses_a_running_server_without_starting_a_sidecar() {
+    let root = TempDir::new("shell-sidecar-existing");
+    let ctx = open_ctx(CtxParams { dir: &root, clock: None, event_capacity: None, fixtures: false });
+    let data = ctx.paths().data.clone();
+    let sp = fake_sidecar_sp(&root);
+    set_status(&root, &root.join("unit"), false, false);
+    let handle = start(&ctx, loopback_config());
+
+    let state = LocalServer::default().ensure(sidecar_params(&data, &sp, &root.join("server.log"))).expect("ensure");
+
+    assert_eq!(state, LocalServerState::Running { port: handle.addrs().loopback.port(), sidecar: false });
+    assert_eq!(sp_log(&root), vec!["service status"]);
+    handle.shutdown();
+}
+
+#[test]
+fn ensure_starts_a_sidecar_when_no_server_runs_and_shutdown_ends_it() {
+    let root = TempDir::new("shell-sidecar-start");
+    let ctx = open_ctx(CtxParams { dir: &root, clock: None, event_capacity: None, fixtures: false });
+    let data = ctx.paths().data.clone();
+    let sp = fake_sidecar_sp(&root);
+    set_status(&root, &root.join("unit"), false, false);
+    // The stand-in can't take server.lock, so this plays the server it would run.
+    let marker = root.join("serve.done");
+    let serving = std::thread::spawn(move || {
+        wait_until("the sidecar starts", Duration::from_secs(10), || marker.exists());
+        start(&ctx, loopback_config())
+    });
+    let server = LocalServer::default();
+
+    let state = server.ensure(sidecar_params(&data, &sp, &root.join("server.log"))).expect("ensure");
+
+    let handle = serving.join().unwrap();
+    assert_eq!(state, LocalServerState::Running { port: handle.addrs().loopback.port(), sidecar: true });
+    assert_eq!(sp_log(&root), vec!["service status", "serve --exit-on-stdin-eof"]);
+    assert!(!root.join("serve.exited").exists());
+    server.shutdown();
+    assert!(root.join("serve.exited").exists(), "shutdown closes the sidecar's standard input and waits for it");
+    handle.shutdown();
+}
+
+#[test]
+fn ensure_reports_a_sidecar_that_exits_while_starting() {
+    let root = TempDir::new("shell-sidecar-fails");
+    let data = root.join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    // Prints the status for every command, so `serve` exits at once.
+    let sp = fake_sp(&root);
+    set_status(&root, &root.join("unit"), false, false);
+
+    let e = LocalServer::default().ensure(sidecar_params(&data, &sp, &root.join("server.log"))).unwrap_err();
+
+    assert!(e.contains("stopped while starting"), "{e}");
+}
+
+#[test]
+fn no_sidecar_starts_once_the_app_is_quitting() {
+    let root = TempDir::new("shell-sidecar-closed");
+    let data = root.join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let sp = fake_sidecar_sp(&root);
+    set_status(&root, &root.join("unit"), false, false);
+    let server = LocalServer::default();
+    server.shutdown();
+
+    assert!(server.ensure(sidecar_params(&data, &sp, &root.join("server.log"))).is_err());
+    assert_eq!(sp_log(&root), vec!["service status"]);
 }

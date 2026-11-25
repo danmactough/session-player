@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { dispatchServerEvent, dispatchStreamOpen, setTransport } from "../api";
 import { BrowserPairing, ServerModal, type ServerChoice } from "../components/ServerModal";
-import type { HelloResponse, LocalServerState } from "../types";
+import type { HelloResponse, LocalServerState, ServerRef } from "../types";
 import { setHome } from "./format";
 import * as native from "./native";
 import { FetchTransport, RelayTransport, ServerError, type Transport } from "./transport";
@@ -38,7 +38,7 @@ async function open(choice: ServerChoice): Promise<ActiveServer> {
     const c = await native.localServerConnection();
     const refresh = () => native.localServerConnection().then((r) => ({ baseUrl: base(r.url), token: r.token }));
     transport = new FetchTransport({ baseUrl: base(c.url), token: c.token, refresh });
-    name = "This computer";
+    name = "local";
   } else if (choice.kind === "remote") {
     transport = new RelayTransport({ server: choice.name, relay: native.relay });
     name = choice.name;
@@ -60,15 +60,17 @@ type Phase =
   | { phase: "failed"; error: string };
 
 /**
- * Connects the page to one server before the app renders. In the app that is the local server
- * when it runs (or the server chosen last time); otherwise the first-run picker. In a browser it
- * is the page's own origin, after pairing the browser if it isn't yet.
+ * Connects the page to one server before the app renders. In the app that is the server chosen
+ * last time, else this computer's, which the shell starts as a sidecar when none runs; the picker
+ * appears only when that fails. In a browser it is the page's own origin, after pairing the
+ * browser if it isn't yet.
  */
 export function ServerProvider({ children }: { children: ReactNode }) {
   const [active, setActive] = useState<ActiveServer | null>(null);
   const [phase, setPhase] = useState<Phase>({ phase: "starting" });
   // The picker over a connected app, opened from Settings.
   const [switching, setSwitching] = useState<{ local: LocalServerState | null; error: string | null } | null>(null);
+  const [paired, setPaired] = useState<ServerRef[]>([]);
   // Bumped on every switch, so the app remounts with nothing from the previous server.
   const [generation, setGeneration] = useState(0);
   const closeStream = useRef<(() => void) | null>(null);
@@ -129,19 +131,13 @@ export function ServerProvider({ children }: { children: ReactNode }) {
           // Unreachable or no longer paired; fall back to the local server.
         }
       }
-      let local: LocalServerState | null = null;
-      let error: string | null = null;
       try {
-        local = await native.localServerState();
-        if (local.state === "running") {
-          const server = await open({ kind: "local" });
-          if (live) await activate(server);
-          return;
-        }
+        const server = await open({ kind: "local" });
+        if (live) await activate(server);
       } catch (e) {
-        error = String(e);
+        const local = await native.localServerState().catch(() => null);
+        if (live) setPhase({ phase: "choosing", local, error: String(e) });
       }
-      if (live) setPhase({ phase: "choosing", local, error });
     })();
     return () => {
       live = false;
@@ -149,6 +145,14 @@ export function ServerProvider({ children }: { children: ReactNode }) {
   }, [activate]);
 
   useEffect(() => () => closeStream.current?.(), []);
+
+  // The picker can pair and remove servers, so the list is read again when it closes.
+  const pickerOpen = switching !== null;
+  useEffect(() => {
+    if (!native.isApp || pickerOpen) return;
+    // When the list can't be read, the picker shows why.
+    native.pairedServersList().then(setPaired, () => setPaired([]));
+  }, [pickerOpen, generation]);
 
   const switchServer = useCallback(() => {
     if (!native.isApp) return;
@@ -161,7 +165,7 @@ export function ServerProvider({ children }: { children: ReactNode }) {
 
   if (active) {
     return (
-      <ServerContext.Provider value={{ server: active, switchServer }}>
+      <ServerContext.Provider value={{ server: active, paired, connect: choose, switchServer }}>
         <Fragment key={generation}>{children}</Fragment>
         {switching && (
           <ServerModal

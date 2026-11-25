@@ -16,6 +16,8 @@ interface Props<K extends string> {
   options: MenuOption<K>[];
   onChange: (key: K) => void;
   label: string;
+  /** A heading row above the options. */
+  header?: string;
   className?: string;
   title?: string;
   /** Replaces the button's "current choice ▾" content, e.g. with just a chevron. */
@@ -23,7 +25,7 @@ interface Props<K extends string> {
 }
 
 /** A small dropdown that matches the app instead of the native select menu. */
-export function Menu<K extends string>({ value, options, onChange, label, className = "", title, trigger }: Props<K>) {
+export function Menu<K extends string>({ value, options, onChange, label, header, className = "", title, trigger }: Props<K>) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   /** Index into the open flyout's options, or null when none is open. */
@@ -114,6 +116,11 @@ export function Menu<K extends string>({ value, options, onChange, label, classN
       </button>
       {open && (
         <ul className={`menu-list ${options.some((o) => o.icon) ? "with-icons" : ""}`} role="listbox" aria-label={label}>
+          {header && (
+            <li className="menu-header" role="presentation">
+              {header}
+            </li>
+          )}
           {options.map((o, i) => (
             <li
               key={o.key}

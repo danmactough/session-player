@@ -1,9 +1,10 @@
-//! The server on this machine: whether it runs, and installing or starting it as a per-user
-//! service. The service is managed by running the `sp` bundled in the app (`sp service ...`), so
-//! the unit it writes starts that same `sp`.
+//! The server on this machine: whether it runs, running it as the app's sidecar when none does,
+//! and installing or starting it as a per-user service. Both run the `sp` bundled in the app, so
+//! the service's unit starts that same `sp`.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command, Stdio};
+use std::sync::{Mutex, MutexGuard, PoisonError, TryLockError};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -16,7 +17,8 @@ pub enum LocalServerState {
     NotInstalled,
     /// Installed as a service, not running.
     Installed,
-    Running { port: u16 },
+    /// `sidecar`: this app started the server, which stops when the app quits.
+    Running { port: u16, sidecar: bool },
 }
 
 /// What `sp service status` printed.
@@ -56,7 +58,7 @@ pub fn parse_service_status(text: &str) -> Option<ServiceFacts> {
 /// A live lock is Running whatever the service says (it may be a `sp serve` in a terminal).
 pub fn local_state(probe: &LocalProbe, service: Option<&ServiceFacts>) -> LocalServerState {
     match (probe, service) {
-        (LocalProbe::Live { port, .. }, _) => LocalServerState::Running { port: *port },
+        (LocalProbe::Live { port, .. }, _) => LocalServerState::Running { port: *port, sidecar: false },
         (LocalProbe::NotLive, Some(facts)) if facts.installed => LocalServerState::Installed,
         (LocalProbe::NotLive, _) => LocalServerState::NotInstalled,
     }
@@ -103,6 +105,7 @@ pub fn server_state(params: StateParams) -> LocalServerState {
     local_state(&probe, service.as_ref())
 }
 
+#[derive(Clone, Copy)]
 pub struct StartParams<'a> {
     pub data: &'a Path,
     pub sp: &'a Path,
@@ -128,7 +131,7 @@ fn wait_live(params: &StartParams) -> Result<LocalServerState, String> {
     loop {
         // probe_local itself waits up to 500 ms for a server that is binding.
         if let LocalProbe::Live { port, .. } = probe_local(params.data) {
-            return Ok(LocalServerState::Running { port });
+            return Ok(LocalServerState::Running { port, sidecar: false });
         }
         if Instant::now() >= deadline {
             return Err(format!("The server didn't start within {} s. Its log is server.log beside analyze.log.", params.wait.as_secs_f32()));
@@ -153,4 +156,171 @@ pub fn refresh_after_update(sp: &Path, data_override: Option<&Path>) -> Result<b
     }
     run_service(sp, "install", data_override)?;
     Ok(true)
+}
+
+/// How long a sidecar gets to exit after its standard input closes, before it is killed.
+const SIDECAR_EXIT_WAIT: Duration = Duration::from_secs(8);
+
+pub struct SidecarParams<'a> {
+    pub start: StartParams<'a>,
+    /// Where the sidecar's output goes.
+    pub log: &'a Path,
+}
+
+/// The app's hold on this machine's server. One lock covers starting a sidecar and changing the
+/// service, so a reconnecting page can't start a sidecar that takes `server.lock` from a service
+/// that is on its way up.
+#[derive(Default)]
+pub struct LocalServer {
+    inner: Mutex<Inner>,
+}
+
+#[derive(Default)]
+struct Inner {
+    sidecar: Option<Child>,
+    refreshed: bool,
+    /// Set when the app is quitting, after which no sidecar starts.
+    closed: bool,
+}
+
+impl Inner {
+    fn sidecar_runs(&mut self) -> bool {
+        self.sidecar.as_mut().is_some_and(|child| matches!(child.try_wait(), Ok(None)))
+    }
+
+    /// `refresh_after_update`, once per launch, before anything else looks for a server: a
+    /// reinstall restarts the service, and a sidecar must not start in that gap.
+    fn refresh_once(&mut self, params: &StartParams) {
+        if std::mem::replace(&mut self.refreshed, true) {
+            return;
+        }
+        match refresh_after_update(params.sp, params.data_override) {
+            Ok(false) => {}
+            Ok(true) => {
+                if let Err(e) = wait_live(params) {
+                    eprintln!("{e}");
+                }
+            }
+            Err(e) => eprintln!("Couldn't refresh the server's service: {e}"),
+        }
+    }
+
+    /// Closing the sidecar's standard input asks it to exit.
+    fn stop_sidecar(&mut self) {
+        let Some(mut child) = self.sidecar.take() else { return };
+        drop(child.stdin.take());
+        let deadline = Instant::now() + SIDECAR_EXIT_WAIT;
+        while matches!(child.try_wait(), Ok(None)) {
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn ensure(&mut self, params: &SidecarParams) -> Result<LocalServerState, String> {
+        let start = &params.start;
+        if let LocalProbe::Live { port, .. } = probe_local(start.data) {
+            return Ok(LocalServerState::Running { port, sidecar: self.sidecar_runs() });
+        }
+        if self.closed {
+            return Err("Session Player is quitting.".to_string());
+        }
+        self.stop_sidecar();
+        self.sidecar = Some(spawn_sidecar(params)?);
+        let deadline = Instant::now() + start.wait;
+        loop {
+            if let LocalProbe::Live { port, .. } = probe_local(start.data) {
+                return Ok(LocalServerState::Running { port, sidecar: self.sidecar_runs() });
+            }
+            if !self.sidecar_runs() {
+                self.stop_sidecar();
+                return Err(format!("The server stopped while starting. Its log is {}.", params.log.display()));
+            }
+            if Instant::now() >= deadline {
+                self.stop_sidecar();
+                return Err(format!("The server didn't start within {} s. Its log is {}.", start.wait.as_secs_f32(), params.log.display()));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+}
+
+fn spawn_sidecar(params: &SidecarParams) -> Result<Child, String> {
+    let log_error = |e: std::io::Error| format!("Couldn't open {}: {e}", params.log.display());
+    if let Some(dir) = params.log.parent() {
+        std::fs::create_dir_all(dir).map_err(log_error)?;
+    }
+    let log = std::fs::File::options().create(true).append(true).open(params.log).map_err(log_error)?;
+    let mut command = Command::new(params.start.sp);
+    if let Some(dir) = params.start.data_override {
+        command.arg("--data-dir").arg(dir);
+    }
+    command
+        .args(["serve", "--exit-on-stdin-eof"])
+        // The app holds the write end until it exits. A crash or a force quit closes it too.
+        .stdin(Stdio::piped())
+        .stdout(log.try_clone().map_err(log_error)?)
+        .stderr(log)
+        .spawn()
+        .map_err(|e| format!("Couldn't run {}: {e}", params.start.sp.display()))
+}
+
+impl LocalServer {
+    /// Never rewrites the installed service. A dev build uses this: its `sp` differs from the
+    /// one the service names, and must not take the service over.
+    pub fn leaving_service_alone() -> LocalServer {
+        LocalServer { inner: Mutex::new(Inner { refreshed: true, ..Inner::default() }) }
+    }
+
+    fn inner(&self) -> MutexGuard<'_, Inner> {
+        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Uses the server running on this machine; when none runs, starts one as a sidecar.
+    pub fn ensure(&self, params: SidecarParams) -> Result<LocalServerState, String> {
+        let mut inner = self.inner();
+        inner.refresh_once(&params.start);
+        inner.ensure(&params)
+    }
+
+    pub fn state(&self, params: StateParams) -> LocalServerState {
+        // Locked first, so the answer doesn't describe a server that is being replaced.
+        let mut inner = self.inner();
+        match server_state(params) {
+            LocalServerState::Running { port, .. } => LocalServerState::Running { port, sidecar: inner.sidecar_runs() },
+            other => other,
+        }
+    }
+
+    /// Replaces the sidecar with the per-user service, which keeps running after the app quits.
+    /// An installed service is only started, which keeps the `sp serve` flags it was installed
+    /// with. When that fails, the sidecar starts again.
+    pub fn keep_running(&self, params: SidecarParams) -> Result<LocalServerState, String> {
+        let mut inner = self.inner();
+        inner.refresh_once(&params.start);
+        let facts = run_service(params.start.sp, "status", params.start.data_override)?;
+        inner.stop_sidecar();
+        let result = if facts.installed { start(params.start) } else { install(params.start) };
+        if result.is_err()
+            && let Err(e) = inner.ensure(&params)
+        {
+            eprintln!("{e}");
+        }
+        result
+    }
+
+    /// Stops the sidecar as the app quits. While another call holds the lock this does nothing:
+    /// the app's exit closes the sidecar's standard input anyway.
+    pub fn shutdown(&self) {
+        let mut inner = match self.inner.try_lock() {
+            Ok(inner) => inner,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => return,
+        };
+        inner.closed = true;
+        inner.stop_sidecar();
+    }
 }

@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Annotation, AnnotationKind, EventRef, SessionEvent, SessionMeta, SessionRow } from "../types";
 import { api, onServerEvent } from "../api";
@@ -1338,6 +1339,18 @@ async function removeImported(session: SessionRow, children: SessionRow[]) {
 
 function Images({ images }: { images?: string[] }) {
   const [zoom, setZoom] = useState<string | null>(null);
+  useEffect(() => {
+    if (!zoom) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      // Captured first so Escape only closes the overlay, not whatever else listens for it.
+      e.stopPropagation();
+      e.preventDefault();
+      setZoom(null);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [zoom]);
   if (!images?.length) return null;
   return (
     <div className="imgs">
@@ -1350,11 +1363,14 @@ function Images({ images }: { images?: string[] }) {
           <ServerImage key={i} src={src} onClick={() => setZoom(src)} />
         ),
       )}
-      {zoom && (
-        <div className="lightbox" onClick={() => setZoom(null)}>
-          <ServerImage src={zoom} />
-        </div>
-      )}
+      {zoom &&
+        // Transcript rows are positioned with a transform, which would confine a fixed overlay to its row.
+        createPortal(
+          <div className="lightbox" onClick={() => setZoom(null)}>
+            <ServerImage src={zoom} />
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }

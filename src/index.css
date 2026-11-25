@@ -1912,7 +1912,7 @@ mark {
 .lightbox {
   position: fixed;
   inset: 0;
-  z-index: 50;
+  z-index: 100;
   background: rgba(0, 0, 0, 0.72);
   display: flex;
   align-items: center;
@@ -1920,8 +1920,8 @@ mark {
   cursor: zoom-out;
 }
 .lightbox img {
-  max-width: 92vw;
-  max-height: 92vh;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 32px);
   border-radius: 6px;
 }
 

@@ -22,9 +22,14 @@ fn fake_sp(dir: &Path) -> PathBuf {
         "#!/bin/sh\necho \"$@\" >> '{d}/sp.log'\ntouch '{d}/'\"$2\".done\ncat '{d}/status'\n",
         d = dir.display()
     );
-    std::fs::write(&sp, script).unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&sp, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // A shell writes the script so this process never holds it open for writing: a parallel test's
+    // fork would inherit that handle, and Linux then refuses to run the script ("Text file busy").
+    let written = std::process::Command::new("/bin/sh")
+        .args(["-c", r#"printf '%s' "$1" > "$2" && chmod 755 "$2""#, "sh", &script])
+        .arg(&sp)
+        .status()
+        .unwrap();
+    assert!(written.success(), "write the fake sp");
     sp
 }
 
@@ -73,7 +78,7 @@ fn a_server_started_here_is_found_through_its_lock_and_token_files() {
     let handle = start(&ctx, loopback_config());
     let port = handle.addrs().loopback.port();
 
-    let state = local::server_state(StateParams { data: &data, sp: None });
+    let state = local::server_state(StateParams { data: &data, sp: None, data_override: None });
     let connection = local_connection(&probe_local(&data)).expect("attach to the running server");
 
     assert_eq!(state, LocalServerState::Running { port });
@@ -82,7 +87,7 @@ fn a_server_started_here_is_found_through_its_lock_and_token_files() {
     handle.shutdown();
     // A process forked by a parallel test can hold the lock file for a moment after shutdown.
     wait_until("the lock is released", Duration::from_secs(5), || probe_local(&data) == LocalProbe::NotLive);
-    assert_eq!(local::server_state(StateParams { data: &data, sp: None }), LocalServerState::NotInstalled);
+    assert_eq!(local::server_state(StateParams { data: &data, sp: None, data_override: None }), LocalServerState::NotInstalled);
     assert!(local_connection(&probe_local(&data)).is_err());
 }
 
@@ -94,7 +99,7 @@ fn an_installed_stopped_service_is_reported_from_sp_service_status() {
     let sp = fake_sp(&root);
     set_status(&root, &root.join("unit"), true, false);
 
-    let state = local::server_state(StateParams { data: &data, sp: Some(&sp) });
+    let state = local::server_state(StateParams { data: &data, sp: Some(&sp), data_override: None });
 
     assert_eq!(state, LocalServerState::Installed);
     assert_eq!(sp_log(&root), vec!["service status"]);
@@ -114,7 +119,7 @@ fn start_runs_sp_service_start_and_waits_for_the_server_to_be_live() {
         start(&ctx, loopback_config())
     });
 
-    let state = local::start(StartParams { data: &data, sp: &sp, wait: Duration::from_secs(10) }).expect("start");
+    let state = local::start(StartParams { data: &data, sp: &sp, data_override: None, wait: Duration::from_secs(10) }).expect("start");
 
     let handle = manager.join().unwrap();
     assert_eq!(state, LocalServerState::Running { port: handle.addrs().loopback.port() });
@@ -130,7 +135,7 @@ fn start_fails_when_the_server_never_comes_up() {
     let sp = fake_sp(&root);
     set_status(&root, &root.join("unit"), true, false);
 
-    let e = local::start(StartParams { data: &data, sp: &sp, wait: Duration::from_millis(300) }).unwrap_err();
+    let e = local::start(StartParams { data: &data, sp: &sp, data_override: None, wait: Duration::from_millis(300) }).unwrap_err();
 
     assert!(e.contains("didn't start"), "{e}");
 }
@@ -144,7 +149,7 @@ fn install_runs_sp_service_install() {
     set_status(&root, &root.join("unit"), true, true);
 
     // Nothing serves in this test, so it times out after sp ran.
-    let _ = local::install(StartParams { data: &data, sp: &sp, wait: Duration::from_millis(100) });
+    let _ = local::install(StartParams { data: &data, sp: &sp, data_override: None, wait: Duration::from_millis(100) });
 
     assert_eq!(sp_log(&root), vec!["service install"]);
 }
@@ -156,14 +161,14 @@ fn after_an_update_the_service_is_reinstalled_only_when_installed_and_naming_ano
     let unit = root.join("unit");
 
     set_status(&root, &unit, false, false);
-    assert!(!local::refresh_after_update(&sp).unwrap(), "not installed");
+    assert!(!local::refresh_after_update(&sp, None).unwrap(), "not installed");
 
     set_status(&root, &unit, true, true);
     std::fs::write(&unit, format!("ExecStart=\"{}\" serve\n", sp.display())).unwrap();
-    assert!(!local::refresh_after_update(&sp).unwrap(), "already names this sp");
+    assert!(!local::refresh_after_update(&sp, None).unwrap(), "already names this sp");
 
     std::fs::write(&unit, "ExecStart=\"/Applications/Old Session Player.app/Contents/MacOS/sp\" serve\n").unwrap();
-    assert!(local::refresh_after_update(&sp).unwrap(), "names another sp");
+    assert!(local::refresh_after_update(&sp, None).unwrap(), "names another sp");
 
     assert_eq!(sp_log(&root), vec!["service status", "service status", "service status", "service install"]);
 }

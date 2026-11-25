@@ -15,6 +15,19 @@ pub const LAUNCHD_LABEL: &str = "com.danmactough.sessionplayer.server";
 /// The systemd user unit, at `~/.config/systemd/user/{SYSTEMD_UNIT}`.
 pub const SYSTEMD_UNIT: &str = "session-player.service";
 
+const SYSTEMD_LABEL: &str = "session-player";
+
+/// The name the service manager knows the service by: the launchd label, or the systemd unit name
+/// without `.service`. `sp service --label` replaces the default, so a second server can run beside
+/// the first.
+pub fn service_label(platform: Platform, requested: Option<&str>) -> String {
+    match (requested, platform) {
+        (Some(label), _) => label.to_string(),
+        (None, Platform::Launchd) => LAUNCHD_LABEL.to_string(),
+        (None, Platform::Systemd) => SYSTEMD_LABEL.to_string(),
+    }
+}
+
 pub const SERVICE: Extension = Extension { spec: OpSpec { name: "service", body: Body::Json, inline: false, access: Access::NotOverHttp }, handler: service };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -37,6 +50,15 @@ pub enum ServiceAction {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServiceRequest {
     pub action: ServiceAction,
+    /// See `service_label`.
+    #[serde(default)]
+    pub label: Option<String>,
+    /// The server's data folder, when it isn't the default one.
+    #[serde(default)]
+    pub data_dir: Option<PathBuf>,
+    /// The `sp serve` flags to install the service with.
+    #[serde(default)]
+    pub serve_args: Vec<String>,
 }
 
 /// What the unit file says.
@@ -47,8 +69,10 @@ pub struct UnitParams<'a> {
     pub logs: &'a Path,
     /// PATH for the server, so it finds `claude` (see `service_path`).
     pub path: &'a str,
-    /// Set as `SESSION_PLAYER_DATA_DIR` when the installing sp had it set.
-    pub data_dir: Option<&'a Path>,
+    /// See `service_label`.
+    pub label: Option<&'a str>,
+    /// What follows `sp` on the command line the service runs, such as `serve --port 47900`.
+    pub args: &'a [&'a str],
 }
 
 pub struct ServicePathParams<'a> {
@@ -85,11 +109,9 @@ fn systemd_quoted(text: &str) -> String {
 pub fn systemd_unit(params: &UnitParams) -> String {
     let log = systemd_literal(&params.logs.join("server.log").to_string_lossy());
     let mut text = String::from("[Unit]\nDescription=Session Player server\n\n[Service]\n");
-    text.push_str(&format!("ExecStart={} serve\n", systemd_quoted(&params.sp.to_string_lossy())));
+    let command: Vec<String> = std::iter::once(params.sp.to_string_lossy().into_owned()).chain(params.args.iter().map(|a| a.to_string())).map(|word| systemd_quoted(&word)).collect();
+    text.push_str(&format!("ExecStart={}\n", command.join(" ")));
     text.push_str(&format!("Environment={}\n", systemd_quoted(&format!("PATH={}", params.path))));
-    if let Some(data) = params.data_dir {
-        text.push_str(&format!("Environment={}\n", systemd_quoted(&format!("SESSION_PLAYER_DATA_DIR={}", data.to_string_lossy()))));
-    }
     text.push_str(&format!("StandardOutput=append:{log}\nStandardError=append:{log}\n"));
     text.push_str("Restart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=default.target\n");
     text
@@ -102,10 +124,8 @@ fn xml(text: &str) -> String {
 /// The LaunchAgent plist's text, with every value XML-escaped.
 pub fn launchd_plist(params: &UnitParams) -> String {
     let log = xml(&params.logs.join("server.log").to_string_lossy());
-    let mut environment = format!("\t\t<key>PATH</key>\n\t\t<string>{}</string>\n", xml(params.path));
-    if let Some(data) = params.data_dir {
-        environment.push_str(&format!("\t\t<key>SESSION_PLAYER_DATA_DIR</key>\n\t\t<string>{}</string>\n", xml(&data.to_string_lossy())));
-    }
+    let environment = format!("\t\t<key>PATH</key>\n\t\t<string>{}</string>\n", xml(params.path));
+    let arguments: String = std::iter::once(params.sp.to_string_lossy().into_owned()).chain(params.args.iter().map(|a| a.to_string())).map(|word| format!("\t\t<string>{}</string>\n", xml(&word))).collect();
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -115,9 +135,7 @@ pub fn launchd_plist(params: &UnitParams) -> String {
 	<string>{label}</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>{sp}</string>
-		<string>serve</string>
-	</array>
+{arguments}	</array>
 	<key>EnvironmentVariables</key>
 	<dict>
 {environment}	</dict>
@@ -135,16 +153,16 @@ pub fn launchd_plist(params: &UnitParams) -> String {
 </dict>
 </plist>
 "#,
-        label = xml(LAUNCHD_LABEL),
-        sp = xml(&params.sp.to_string_lossy()),
+        label = xml(&service_label(Platform::Launchd, params.label)),
     )
 }
 
 /// Where the unit file lives under `home`.
-pub fn unit_file(platform: Platform, home: &Path) -> PathBuf {
+pub fn unit_file(platform: Platform, home: &Path, label: Option<&str>) -> PathBuf {
+    let label = service_label(platform, label);
     match platform {
-        Platform::Launchd => home.join("Library/LaunchAgents").join(format!("{LAUNCHD_LABEL}.plist")),
-        Platform::Systemd => home.join(".config/systemd/user").join(SYSTEMD_UNIT),
+        Platform::Launchd => home.join("Library/LaunchAgents").join(format!("{label}.plist")),
+        Platform::Systemd => home.join(".config/systemd/user").join(format!("{label}.service")),
     }
 }
 
@@ -211,10 +229,12 @@ fn must(manager: &mut dyn ServiceManager, program: &str, args: &[&str]) -> anyho
 /// the manager whether the server runs.
 pub fn run_service(params: ServiceParams) -> anyhow::Result<ServiceReport> {
     let ServiceParams { action, platform, home, uid, unit, manager } = params;
-    let file = unit_file(platform, home);
+    let file = unit_file(platform, home, unit.label);
     let file_text = file.to_string_lossy().into_owned();
     let domain = format!("gui/{uid}");
-    let target = format!("{domain}/{LAUNCHD_LABEL}");
+    let label = service_label(platform, unit.label);
+    let target = format!("{domain}/{label}");
+    let unit_name = format!("{label}.service");
     let report = |installed: bool, running: bool| ServiceReport { installed, running, unit_file: file.clone() };
     if matches!(action, ServiceAction::Start) && !file.is_file() {
         bail!("The server isn't installed as a service. Run `sp service install` first.");
@@ -233,7 +253,7 @@ pub fn run_service(params: ServiceParams) -> anyhow::Result<ServiceReport> {
             match platform {
                 Platform::Systemd => {
                     must(manager, "systemctl", &["--user", "daemon-reload"])?;
-                    must(manager, "systemctl", &["--user", "enable", "--now", SYSTEMD_UNIT])?;
+                    must(manager, "systemctl", &["--user", "enable", "--now", &unit_name])?;
                 }
                 Platform::Launchd => {
                     // A reinstall (after an update) replaces an agent that is already loaded; when
@@ -247,7 +267,7 @@ pub fn run_service(params: ServiceParams) -> anyhow::Result<ServiceReport> {
         }
         (ServiceAction::Uninstall, Platform::Systemd) => {
             // Disabling a unit that isn't loaded fails; the file still goes.
-            run(manager, "systemctl", &["--user", "disable", "--now", SYSTEMD_UNIT])?;
+            run(manager, "systemctl", &["--user", "disable", "--now", &unit_name])?;
             remove(&file)?;
             must(manager, "systemctl", &["--user", "daemon-reload"])?;
             Ok(report(false, false))
@@ -258,7 +278,7 @@ pub fn run_service(params: ServiceParams) -> anyhow::Result<ServiceReport> {
             Ok(report(false, false))
         }
         (ServiceAction::Start, Platform::Systemd) => {
-            must(manager, "systemctl", &["--user", "start", SYSTEMD_UNIT])?;
+            must(manager, "systemctl", &["--user", "start", &unit_name])?;
             Ok(report(true, true))
         }
         (ServiceAction::Start, Platform::Launchd) => {
@@ -268,7 +288,7 @@ pub fn run_service(params: ServiceParams) -> anyhow::Result<ServiceReport> {
             Ok(report(true, true))
         }
         (ServiceAction::Stop, Platform::Systemd) => {
-            must(manager, "systemctl", &["--user", "stop", SYSTEMD_UNIT])?;
+            must(manager, "systemctl", &["--user", "stop", &unit_name])?;
             Ok(report(file.is_file(), false))
         }
         (ServiceAction::Stop, Platform::Launchd) => {
@@ -278,7 +298,7 @@ pub fn run_service(params: ServiceParams) -> anyhow::Result<ServiceReport> {
             Ok(report(file.is_file(), false))
         }
         (ServiceAction::Status, Platform::Systemd) => {
-            let result = run(manager, "systemctl", &["--user", "is-active", SYSTEMD_UNIT])?;
+            let result = run(manager, "systemctl", &["--user", "is-active", &unit_name])?;
             Ok(report(file.is_file(), result.success && result.stdout.trim() == "active"))
         }
         (ServiceAction::Status, Platform::Launchd) => {
@@ -312,13 +332,19 @@ fn service(ctx: &Arc<Ctx>, _device: &DeviceId, input: Input) -> Result<Output, O
     let uid = if platform == Platform::Launchd { current_uid().map_err(internal)? } else { 0 };
     let current = std::env::var("PATH").ok();
     let path = service_path(ServicePathParams { current: current.as_deref(), home: &home });
-    let data_dir = std::env::var_os("SESSION_PLAYER_DATA_DIR").map(PathBuf::from);
+    let data_dir = req.data_dir.as_ref().map(|d| d.to_string_lossy().into_owned());
+    let mut args: Vec<&str> = Vec::new();
+    if let Some(data) = &data_dir {
+        args.extend(["--data-dir", data]);
+    }
+    args.push("serve");
+    args.extend(req.serve_args.iter().map(String::as_str));
     let report = run_service(ServiceParams {
         action: req.action,
         platform,
         home: &home,
         uid,
-        unit: UnitParams { sp: &sp, logs: &ctx.paths().logs, path: &path, data_dir: data_dir.as_deref() },
+        unit: UnitParams { sp: &sp, logs: &ctx.paths().logs, path: &path, label: req.label.as_deref(), args: &args },
         manager: &mut SystemManager,
     })
     .map_err(internal)?;

@@ -33,8 +33,8 @@ fn args(list: &[&str]) -> Vec<String> {
     list.iter().map(|a| a.to_string()).collect()
 }
 
-fn unit<'a>(sp: &'a Path, logs: &'a Path, data_dir: Option<&'a Path>) -> UnitParams<'a> {
-    UnitParams { sp, logs, path: "/usr/bin:/home/someone/.local/bin", data_dir }
+fn unit<'a>(sp: &'a Path, logs: &'a Path, args: &'a [&'a str]) -> UnitParams<'a> {
+    UnitParams { sp, logs, path: "/usr/bin:/home/someone/.local/bin", label: None, args }
 }
 
 /// The values of every `key=` line.
@@ -46,25 +46,23 @@ fn values<'a>(text: &'a str, key: &str) -> Vec<&'a str> {
 fn the_systemd_unit_runs_sp_serve_with_path_set_and_logs_to_server_log() {
     let sp = Path::new("/opt/session player/bin/sp");
     let logs = Path::new("/home/someone/.local/share/sp/logs");
-    let data = Path::new("/home/someone/sp-data");
 
-    let text = systemd_unit(&unit(sp, logs, Some(data)));
+    let text = systemd_unit(&unit(sp, logs, &["--data-dir", "/home/someone/sp-data", "serve", "--bind", "0.0.0.0"]));
 
     let exec = values(&text, "ExecStart=");
     assert_eq!(exec.len(), 1, "{text}");
     assert!(exec[0].contains("/opt/session player/bin/sp"), "{text}");
-    assert!(exec[0].trim_end().ends_with(" serve"), "{text}");
+    assert!(exec[0].trim_end().ends_with(r#""--data-dir" "/home/someone/sp-data" "serve" "--bind" "0.0.0.0""#), "{text}");
     let environment = values(&text, "Environment=").join("\n");
     assert!(environment.contains("PATH=/usr/bin:/home/someone/.local/bin"), "{text}");
-    assert!(environment.contains("SESSION_PLAYER_DATA_DIR=/home/someone/sp-data"), "{text}");
     let log = "/home/someone/.local/share/sp/logs/server.log";
     assert_eq!(values(&text, "StandardOutput="), vec![format!("append:{log}").as_str()], "{text}");
     assert_eq!(values(&text, "StandardError="), vec![format!("append:{log}").as_str()], "{text}");
     assert_eq!(values(&text, "WantedBy="), vec!["default.target"], "{text}");
     assert!(!values(&text, "Restart=").is_empty(), "the server restarts after a crash: {text}");
 
-    let without_data = systemd_unit(&unit(sp, logs, None));
-    assert!(!without_data.contains("SESSION_PLAYER_DATA_DIR"), "{without_data}");
+    let plain = systemd_unit(&unit(sp, logs, &["serve"]));
+    assert!(values(&plain, "ExecStart=")[0].trim_end().ends_with(r#""/opt/session player/bin/sp" "serve""#), "{plain}");
 }
 
 #[test]
@@ -98,17 +96,17 @@ fn installing_on_systemd_writes_the_user_unit_and_enables_it() {
         platform: Platform::Systemd,
         home: &home,
         uid: 1000,
-        unit: unit(&sp, &logs, None),
+        unit: unit(&sp, &logs, &["serve"]),
         manager: &mut manager,
     })
     .expect("install");
 
     let file = home.join(".config/systemd/user").join(SYSTEMD_UNIT);
-    assert_eq!(unit_file(Platform::Systemd, &home), file);
+    assert_eq!(unit_file(Platform::Systemd, &home, None), file);
     assert_eq!(report.unit_file, file);
     assert!(report.installed);
     let written = std::fs::read_to_string(&file).expect("the unit file");
-    assert_eq!(written, systemd_unit(&unit(&sp, &logs, None)));
+    assert_eq!(written, systemd_unit(&unit(&sp, &logs, &["serve"])));
     assert_eq!(
         manager.commands,
         vec![

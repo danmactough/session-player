@@ -107,7 +107,7 @@ Then:
 
 - If `~/.local/bin` isn't on your `PATH`, the install says so; add it.
 - `sp analyze`, `sp report` and `sp doctor` run the `claude` command, so Claude Code must be installed and signed in on the machine. The other commands don't need it.
-- On Linux the database is in `~/.local/share/com.danmactough.sessionplayer`. Set `SESSION_PLAYER_DATA_DIR` to keep it somewhere else.
+- On Linux the database is in `~/.local/share/com.danmactough.sessionplayer`. Pass `--data-dir <folder>` to any `sp` command to keep it somewhere else.
 
 The commands:
 
@@ -157,7 +157,8 @@ sp --local analyze                    # run in this process, even with a server 
 sp cancel <job>                       # stop a job running on the server
 ```
 
-- The server listens on `127.0.0.1:47800`. Settings, such as listening for other machines, are in `server.json` in the data folder; see [docs/api.md](docs/api.md#configuration-serverjson).
+- The server listens on `127.0.0.1:47800`. Flags to `sp serve` change that, such as listening for other machines; see [docs/api.md](docs/api.md#sp-serve-flags). `sp service install` takes the same flags and keeps them in the service.
+- `--label <name>` on any `sp service` command manages a service under another name (the launchd label, or the systemd unit name), so a second server can run beside the first.
 - `sp service install` writes `~/Library/LaunchAgents/com.danmactough.sessionplayer.server.plist` on a Mac and `~/.config/systemd/user/session-player.service` on Linux. Its output goes to `server.log` in the logs folder. The service's `PATH` includes `~/.local/bin` and `~/.claude/local`, so it finds `claude`.
 - Jobs belong to the server. Pressing Ctrl-C during `sp analyze` or `sp report` over the server leaves the job running and prints its id; `sp cancel <id>` stops it.
 
@@ -165,7 +166,7 @@ sp cancel <job>                       # stop a job running on the server
 
 Pairing lets one machine use another's server over the network, with a token for each device and a certificate pinned at pairing.
 
-1. On the machine with the sessions, set `external_bind` and `advertise` in `server.json` (see [docs/api.md](docs/api.md#configuration-serverjson)) and restart the server.
+1. On the machine with the sessions, restart the server with `--bind` and `--advertise`, such as `sp service install --bind 0.0.0.0 --advertise studio.example.ts.net` (see [docs/api.md](docs/api.md#sp-serve-flags)).
 2. There, run `sp pair`. It prints a pairing string starting with `sp1.`, good once, for 5 minutes.
 3. On the other machine, run `sp connect <string> --name studio`, or paste the string into the app's server dialog.
 
@@ -181,7 +182,7 @@ sp unpair <device>                       # on the server: revoke one
 - `sp pull <name>` uses the paired server when `<name>` is one saved by `sp connect`, and SSH otherwise.
 - The server opens its network listener (port 47801) only while a device is paired or a pairing string is waiting to be used.
 - `sp pull`, `sp pair`, `sp devices` and `sp unpair` act on this machine's own server, so a paired device can't run them on it; `sp pull` refuses `--server`.
-- Plain HTTP on the network listener (`"tls": { "mode": "plain" }` in `server.json`) sends tokens and sessions unencrypted, so `sp serve` refuses it unless started with `sp serve --allow-insecure-http`.
+- `--allow-insecure-http` serves the network listener over plain HTTP, which sends tokens and sessions unencrypted. `sp serve` prints a warning when it does.
 
 ### Use it in a browser
 
@@ -221,7 +222,14 @@ npm run app
 cargo run --manifest-path src-tauri/Cargo.toml -p session-player-cli -- serve
 ```
 
-To work on layout and styling without the native shell, run that server, then `npm run dev`, and open http://localhost:1420. Vite passes `/api` to the server on port 47800, rewriting `Origin` so the server accepts it, and the page asks you to pair the browser (`sp pair`).
+To run beside a server that is already running on this machine, such as the service, give the dev build its own data folder and port. Nothing the service uses is touched:
+
+```bash
+cargo run --manifest-path src-tauri/Cargo.toml -p session-player-cli -- --data-dir ~/.sp-dev serve --port 47900
+npm run app -- -- --data-dir ~/.sp-dev
+```
+
+To work on layout and styling without the native shell, run a server, then `npm run dev`, and open http://localhost:1420. Vite passes `/api` to the server on port 47800, or on the port in `SP_PORT` (`SP_PORT=47900 npm run dev`), rewriting `Origin` so the server accepts it, and the page asks you to pair the browser (`sp pair`).
 
 ### Test
 

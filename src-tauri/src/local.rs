@@ -70,9 +70,15 @@ pub fn local_connection(probe: &LocalProbe) -> Result<Connection, String> {
     }
 }
 
-/// Runs `{sp} service {action}` and reads what it printed.
-pub fn run_service(sp: &Path, action: &str) -> Result<ServiceFacts, String> {
-    let output = Command::new(sp).args(["service", action]).output().map_err(|e| format!("Couldn't run {}: {e}", sp.display()))?;
+/// Runs `{sp} service {action}` and reads what it printed. `data_override` is the `--data-dir` the
+/// app was started with, if any, so the service belongs to that data folder.
+pub fn run_service(sp: &Path, action: &str, data_override: Option<&Path>) -> Result<ServiceFacts, String> {
+    let mut command = Command::new(sp);
+    command.args(["service", action]);
+    if let Some(dir) = data_override {
+        command.arg("--data-dir").arg(dir);
+    }
+    let output = command.output().map_err(|e| format!("Couldn't run {}: {e}", sp.display()))?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -85,6 +91,7 @@ pub struct StateParams<'a> {
     pub data: &'a Path,
     /// The bundled `sp`; None in a build without one, where only a running server is seen.
     pub sp: Option<&'a Path>,
+    pub data_override: Option<&'a Path>,
 }
 
 pub fn server_state(params: StateParams) -> LocalServerState {
@@ -92,26 +99,27 @@ pub fn server_state(params: StateParams) -> LocalServerState {
     if matches!(probe, LocalProbe::Live { .. }) {
         return local_state(&probe, None);
     }
-    let service = params.sp.and_then(|sp| run_service(sp, "status").ok());
+    let service = params.sp.and_then(|sp| run_service(sp, "status", params.data_override).ok());
     local_state(&probe, service.as_ref())
 }
 
 pub struct StartParams<'a> {
     pub data: &'a Path,
     pub sp: &'a Path,
+    pub data_override: Option<&'a Path>,
     /// How long to wait for the server's lock after the service manager says it started.
     pub wait: Duration,
 }
 
 /// `sp service install`, then waits until the server is live.
 pub fn install(params: StartParams) -> Result<LocalServerState, String> {
-    run_service(params.sp, "install")?;
+    run_service(params.sp, "install", params.data_override)?;
     wait_live(&params)
 }
 
 /// Starts the installed, stopped service, then waits until the server is live.
 pub fn start(params: StartParams) -> Result<LocalServerState, String> {
-    run_service(params.sp, "start")?;
+    run_service(params.sp, "start", params.data_override)?;
     wait_live(&params)
 }
 
@@ -131,8 +139,8 @@ fn wait_live(params: &StartParams) -> Result<LocalServerState, String> {
 
 /// After an update, the service may name an `sp` the app no longer has. When the service is
 /// installed and its unit file doesn't name `sp`, reinstalls it. Returns whether it did.
-pub fn refresh_after_update(sp: &Path) -> Result<bool, String> {
-    let facts = run_service(sp, "status")?;
+pub fn refresh_after_update(sp: &Path, data_override: Option<&Path>) -> Result<bool, String> {
+    let facts = run_service(sp, "status", data_override)?;
     if !facts.installed {
         return Ok(false);
     }
@@ -143,6 +151,6 @@ pub fn refresh_after_update(sp: &Path) -> Result<bool, String> {
     if unit.contains(&*sp.to_string_lossy()) {
         return Ok(false);
     }
-    run_service(sp, "install")?;
+    run_service(sp, "install", data_override)?;
     Ok(true)
 }

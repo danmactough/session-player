@@ -38,11 +38,11 @@ use tokio::sync::{Notify, broadcast, watch};
 use auth::{CheckParams, HostParams, Listener, Refusal, error_response, forbidden, unauthenticated};
 pub use pairing::SERVER_EXTENSIONS;
 
-/// The loopback listener's port unless `server.json` says otherwise. The external listener
+/// The loopback listener's port unless `sp serve --port` says otherwise. The external listener
 /// defaults to the next port, because a wildcard bind on a port conflicts with 127.0.0.1 on it.
 pub const DEFAULT_PORT: u16 = 47800;
 
-/// What `server.json` holds.
+/// What `sp serve`'s flags set.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServerConfig {
     /// The loopback listener (plain HTTP on 127.0.0.1). 0 binds any free port (tests only).
@@ -55,6 +55,34 @@ pub struct ServerConfig {
     /// strings and the generated certificate.
     pub advertise: Option<String>,
     pub tls: TlsMode,
+}
+
+impl ServerConfig {
+    /// The `sp serve` flags that give this configuration; flags for default values are left out.
+    pub fn to_args(&self) -> Vec<String> {
+        let default = ServerConfig::default();
+        let mut args = Vec::new();
+        if self.port != default.port {
+            args.extend(["--port".to_string(), self.port.to_string()]);
+        }
+        if self.external_port != default.external_port {
+            args.extend(["--external-port".to_string(), self.external_port.to_string()]);
+        }
+        if let Some(bind) = self.external_bind {
+            args.extend(["--bind".to_string(), bind.to_string()]);
+        }
+        if let Some(advertise) = &self.advertise {
+            args.extend(["--advertise".to_string(), advertise.clone()]);
+        }
+        match &self.tls {
+            TlsMode::SelfSigned => {}
+            TlsMode::OwnCert { cert, key } => {
+                args.extend(["--tls-cert".to_string(), cert.to_string_lossy().into_owned(), "--tls-key".to_string(), key.to_string_lossy().into_owned()]);
+            }
+            TlsMode::Plain => args.push("--allow-insecure-http".to_string()),
+        }
+        args
+    }
 }
 
 impl Default for ServerConfig {
@@ -81,8 +109,7 @@ pub struct ServeParams {
     /// The folder holding server.lock, server.token, devices.json and tls/.
     pub data: PathBuf,
     pub config: ServerConfig,
-    /// `sp serve --allow-insecure-http`: lets `TlsMode::Plain` serve off loopback. Never stored in
-    /// server.json, so plain HTTP is a choice made each time the server starts.
+    /// `sp serve --allow-insecure-http`: lets `TlsMode::Plain` serve off loopback.
     pub allow_insecure_http: bool,
 }
 
@@ -214,18 +241,17 @@ pub(crate) fn url_host(host: &str) -> String {
 
 /// Refuses an external listener devices couldn't use, or plain HTTP off loopback that wasn't
 /// asked for, and warns when it was.
-fn check_external(config: &ServerConfig, data: &Path, allow_insecure_http: bool) -> anyhow::Result<()> {
+fn check_external(config: &ServerConfig, allow_insecure_http: bool) -> anyhow::Result<()> {
     let Some(bind) = config.external_bind else { return Ok(()) };
     if bind.is_unspecified() && config.advertise.is_none() {
         anyhow::bail!(
-            "external_bind is {bind}, which isn't an address devices can connect to. Set advertise in {} to the host name or address they reach this machine at.",
-            data.join("server.json").display()
+            "--bind {bind} isn't an address devices can connect to. Pass --advertise with the host name or address they reach this machine at."
         );
     }
     if config.tls == TlsMode::Plain {
         if !allow_insecure_http {
             anyhow::bail!(
-                "server.json asks for plain HTTP off loopback (tls mode \"plain\"), which sends tokens and sessions unencrypted. Use a certificate, or start the server with sp serve --allow-insecure-http."
+                "Plain HTTP off loopback sends tokens and sessions unencrypted. Use a certificate (--tls-cert and --tls-key), or start the server with --allow-insecure-http."
             );
         }
         eprintln!("Warning: serving plain HTTP on {bind} (--allow-insecure-http): tokens and sessions cross the network unencrypted.");
@@ -238,7 +264,7 @@ fn check_external(config: &ServerConfig, data: &Path, allow_insecure_http: bool)
 pub fn serve(params: ServeParams) -> anyhow::Result<ServerHandle> {
     tls::install_provider();
     let ServeParams { ctx, data, config, allow_insecure_http } = params;
-    check_external(&config, &data, allow_insecure_http)?;
+    check_external(&config, allow_insecure_http)?;
     let mut lock = lockfile::acquire(&data)?;
     let token = random_token(32)?;
     write_private(&data.join("server.token"), token.as_bytes())?;

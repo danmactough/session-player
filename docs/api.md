@@ -22,12 +22,12 @@ The server opens up to two listeners:
 | Listener | Address | Default port | Protocol |
 |---|---|---|---|
 | Loopback | `127.0.0.1` | 47800 | plain HTTP |
-| External | `external_bind` in `server.json` | 47801 | HTTPS (or plain HTTP, see [TLS](#tls)) |
+| External | `--bind` | 47801 | HTTPS (or plain HTTP, see [TLS](#tls)) |
 
 - The loopback listener is always open.
-- The external listener opens only when `server.json` sets `external_bind` **and** either a device
-  is paired or a pairing offer is open. It closes about a second after neither is true. With no
-  `external_bind` the server never listens off loopback.
+- The external listener opens only when the server was started with `--bind` **and** either a device
+  is paired or a pairing offer is open. It closes about a second after neither is true. Without
+  `--bind` the server never listens off loopback.
 - The two never share a port: a wildcard bind on port P conflicts with `127.0.0.1:P`.
 - `hello` reports `loopback_only: true` unless the external listener is open right now.
 
@@ -307,7 +307,7 @@ crate adds `pull` (`src-tauri/client/src/pull.rs`).
 
 - `pair` creates a one-time offer and answers its [pairing string](#pairing-strings). It needs a
   running server: in process it answers 409. At most 5 offers are open at once (409 beyond that).
-  With `external_bind` set, it waits up to 2 seconds for the external listener and puts its real
+  With `--bind` given, it waits up to 2 seconds for the external listener and puts its real
   port in the string.
 - `connect` redeems an offer's secret and registers a device under `name`. Every failure (wrong,
   expired, already used, or wiped secret) is the same 401. Five wrong secrets wipe every open offer.
@@ -411,8 +411,8 @@ followed by base64url (no padding) JSON:
 { "address": "studio.example.ts.net", "port": 47801, "fingerprint": "3fa1…(64 hex)", "secret": "…" }
 ```
 
-- `address` is `advertise` from `server.json` (else the external bind address). With no
-  `external_bind` it is `127.0.0.1` and `port` is the loopback port, so the string only works on
+- `address` is `--advertise` (else the `--bind` address). Without
+  `--bind` it is `127.0.0.1` and `port` is the loopback port, so the string only works on
   the same machine (as for a browser on it).
 - `fingerprint` is the SHA-256 of the external listener's certificate (DER), lowercase hex. It is
   `null` when the listener serves plain HTTP.
@@ -424,60 +424,52 @@ gets back. `sp connect` saves it in `servers.json`.
 
 ## TLS
 
-The external listener serves HTTPS in one of three modes, set by `tls` in `server.json`:
+The external listener serves HTTPS in one of three modes, set by `sp serve` flags:
 
-| `tls` | Certificate |
+| Flags | Certificate |
 |---|---|
-| `{ "mode": "self_signed" }` (default) | Generated into `tls/` in the data folder |
-| `{ "mode": "own_cert", "cert": "<pem path>", "key": "<pem path>" }` | Yours |
-| `{ "mode": "plain" }` | None: plain HTTP. Tokens cross the network unencrypted |
+| none (default) | Generated into `tls/` in the data folder |
+| `--tls-cert <pem path> --tls-key <pem path>` | Yours |
+| `--allow-insecure-http` | None: plain HTTP. Tokens cross the network unencrypted |
 
-- `plain` serves only when the server is started with `sp serve --allow-insecure-http`, which
-  prints a warning. Without the flag, `sp serve` refuses to start. The flag isn't kept in
-  `server.json`, so plain HTTP is chosen each time the server starts.
+- `--allow-insecure-http` prints a warning at start. It can't be combined with `--tls-cert`.
 
 - Clients pin the certificate by the fingerprint in the pairing string. They accept exactly that
   certificate and still verify the handshake signature; they don't consult certificate
   authorities or check the host name.
 - The generated certificate keeps its fingerprint across restarts. It is regenerated when its set
-  of names changes (a new `advertise` or `external_bind`), and every device must then pair again.
+  of names changes (a new `--advertise` or `--bind`), and every device must then pair again.
 - A browser has no pinning, so on a self-signed certificate it shows a warning the user must
   accept once.
 - TLS uses rustls with the ring crypto provider.
 
-## Configuration: `server.json`
+## `sp serve` flags
 
-`sp serve` reads `server.json` from the data folder; without the file it uses the defaults below.
-Every field is required when the file exists.
+Every flag is optional. With none, the server listens on `127.0.0.1:47800` and nowhere else.
+`sp service install` takes the same flags and runs the service with them.
 
-```json
-{
-  "port": 47800,
-  "external_port": 47801,
-  "external_bind": "0.0.0.0",
-  "advertise": "studio.example.ts.net",
-  "tls": { "mode": "self_signed" }
-}
-```
-
-| Field | Default | Meaning |
+| Flag | Default | Meaning |
 |---|---|---|
-| `port` | 47800 | Loopback listener port |
-| `external_port` | 47801 | External listener port; must differ from `port` |
-| `external_bind` | `null` | Address to listen on off loopback; `null` never does |
-| `advertise` | `null` | Host name or address other machines reach the server at. Goes into pairing strings and the certificate, and is the only `Host` the external listener answers. Without it the bind address is used; with a wildcard bind (`0.0.0.0` or `::`) it is required, and `sp serve` refuses to start without it. An IPv6 address appears in brackets (`[fd00::1]:47801`) in `Host`, origins and pairing strings |
-| `tls` | `self_signed` | See [TLS](#tls) |
+| `--port <port>` | 47800 | Loopback listener port. Moves `--external-port` to the next port unless that is given |
+| `--external-port <port>` | 47801 | External listener port; must differ from `--port` |
+| `--bind <addr>` | none | Address to listen on off loopback; without it the server never does |
+| `--advertise <host>` | none | Host name or address other machines reach the server at. Goes into pairing strings and the certificate, and is the only `Host` the external listener answers. Without it the bind address is used; with a wildcard bind (`0.0.0.0` or `::`) it is required, and `sp serve` refuses to start without it. An IPv6 address appears in brackets (`[fd00::1]:47801`) in `Host`, origins and pairing strings |
+| `--tls-cert <file>`, `--tls-key <file>` | generated | See [TLS](#tls) |
+| `--allow-insecure-http` | off | See [TLS](#tls) |
+
+`--data-dir <folder>`, which every `sp` command takes, moves the data folder. `sp service`
+commands take `--label <name>`, the launchd label or systemd unit name; the default is
+`com.danmactough.sessionplayer.server` on a Mac and `session-player` on Linux.
 
 ## Files in the data folder
 
 The data folder is `~/Library/Application Support/com.danmactough.sessionplayer` on a Mac and
-`~/.local/share/com.danmactough.sessionplayer` on Linux, unless `SESSION_PLAYER_DATA_DIR` is set.
+`~/.local/share/com.danmactough.sessionplayer` on Linux, unless `sp` is given `--data-dir`.
 
 | File | Contents |
 |---|---|
 | `server.lock` | `{ "pid", "port" }` of the running server. Locked while it runs, so one server per data folder |
 | `server.token` | The local token, mode 0600, new on every start |
-| `server.json` | The configuration above |
 | `devices.json` | Paired devices: id, name, pairing time and the SHA-256 of each token. Mode 0600 |
 | `tls/` | The generated certificate and key |
 | `servers.json` | Servers this machine paired with (`sp connect`, the app): address, port, pinned fingerprint and device token. Mode 0600 |

@@ -11,7 +11,7 @@ mod terminals;
 // here, which holds that server's token. What stays in the shell is native: Finder, terminals,
 // other apps, dialogs, the updater, and managing the local server as a service.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -26,6 +26,8 @@ struct AppState {
     /// Where the server keeps its data (`server.lock`, `server.token`) and this app keeps
     /// `servers.json`: the same folder `sp` uses.
     data_dir: PathBuf,
+    /// The `--data-dir` this app was started with, which its `sp` calls pass on.
+    data_override: Option<PathBuf>,
     /// The log of Analyze and report runs; see `runlog`.
     log_path: PathBuf,
     /// The `sp` inside the app, which manages the local server as a service. None in a build
@@ -159,7 +161,7 @@ fn relay_close_stream(state: State<'_, Shared>, id: u64) {
 #[tauri::command]
 async fn local_server_state(state: State<'_, Shared>) -> Result<local::LocalServerState, String> {
     let shared = state.inner().clone();
-    blocking(move || Ok(local::server_state(local::StateParams { data: &shared.data_dir, sp: shared.sp.as_deref() }))).await
+    blocking(move || Ok(local::server_state(local::StateParams { data: &shared.data_dir, sp: shared.sp.as_deref(), data_override: shared.data_override.as_deref() }))).await
 }
 
 fn bundled_sp(state: &AppState) -> Result<PathBuf, String> {
@@ -171,7 +173,7 @@ fn bundled_sp(state: &AppState) -> Result<PathBuf, String> {
 async fn local_server_install(state: State<'_, Shared>) -> Result<local::LocalServerState, String> {
     let shared = state.inner().clone();
     let sp = bundled_sp(&shared)?;
-    blocking(move || local::install(local::StartParams { data: &shared.data_dir, sp: &sp, wait: START_WAIT })).await
+    blocking(move || local::install(local::StartParams { data: &shared.data_dir, sp: &sp, data_override: shared.data_override.as_deref(), wait: START_WAIT })).await
 }
 
 /// Starts the installed, stopped service and waits for it.
@@ -179,7 +181,7 @@ async fn local_server_install(state: State<'_, Shared>) -> Result<local::LocalSe
 async fn local_server_start(state: State<'_, Shared>) -> Result<local::LocalServerState, String> {
     let shared = state.inner().clone();
     let sp = bundled_sp(&shared)?;
-    blocking(move || local::start(local::StartParams { data: &shared.data_dir, sp: &sp, wait: START_WAIT })).await
+    blocking(move || local::start(local::StartParams { data: &shared.data_dir, sp: &sp, data_override: shared.data_override.as_deref(), wait: START_WAIT })).await
 }
 
 /// `{ url, token }` of the running local server.
@@ -327,11 +329,25 @@ fn install_menu(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-/// The folders `sp` uses: Tauri's `app_data_dir` and `app_log_dir`, unless
-/// `SESSION_PLAYER_DATA_DIR` points both elsewhere.
-fn folders(app: &tauri::App) -> tauri::Result<(PathBuf, PathBuf)> {
-    match std::env::var_os("SESSION_PLAYER_DATA_DIR").filter(|d| !d.is_empty()) {
-        Some(dir) => Ok((PathBuf::from(&dir), PathBuf::from(&dir).join("logs"))),
+/// The folder after `--data-dir` on the command line, which `npm run app -- -- --data-dir DIR` passes.
+fn data_override() -> Option<PathBuf> {
+    let mut args = std::env::args_os().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--data-dir" {
+            return args.next().map(PathBuf::from);
+        }
+        if let Some(dir) = arg.to_string_lossy().strip_prefix("--data-dir=") {
+            return Some(PathBuf::from(dir));
+        }
+    }
+    None
+}
+
+/// The folders `sp` uses: Tauri's `app_data_dir` and `app_log_dir`, unless `--data-dir` points
+/// both elsewhere.
+fn folders(app: &tauri::App, data_override: Option<&Path>) -> tauri::Result<(PathBuf, PathBuf)> {
+    match data_override {
+        Some(dir) => Ok((dir.to_path_buf(), dir.join("logs"))),
         None => Ok((app.path().app_data_dir()?, app.path().app_log_dir()?)),
     }
 }
@@ -345,20 +361,23 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(external_links())
         .setup(|app| {
-            let (data_dir, logs) = folders(app)?;
+            let data_override = data_override();
+            let (data_dir, logs) = folders(app, data_override.as_deref())?;
             std::fs::create_dir_all(&data_dir)?;
             let sp = cli::bundled();
             // After an update the service may still name the sp of an older app; reinstalling
             // points it at this one.
+            let refresh_override = data_override.clone();
             if let Some(sp) = sp.clone() {
                 std::thread::spawn(move || {
-                    if let Err(e) = local::refresh_after_update(&sp) {
+                    if let Err(e) = local::refresh_after_update(&sp, refresh_override.as_deref()) {
                         eprintln!("Couldn't refresh the server's service: {e}");
                     }
                 });
             }
             app.manage::<Shared>(Arc::new(AppState {
                 data_dir,
+                data_override,
                 log_path: logs.join("analyze.log"),
                 sp,
                 clients: relay::Clients::default(),

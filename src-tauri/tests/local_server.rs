@@ -22,9 +22,14 @@ fn fake_sp(dir: &Path) -> PathBuf {
         "#!/bin/sh\necho \"$@\" >> '{d}/sp.log'\ntouch '{d}/'\"$2\".done\ncat '{d}/status'\n",
         d = dir.display()
     );
-    std::fs::write(&sp, script).unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&sp, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // A shell writes the script so this process never holds it open for writing: a parallel test's
+    // fork would inherit that handle, and Linux then refuses to run the script ("Text file busy").
+    let written = std::process::Command::new("/bin/sh")
+        .args(["-c", r#"printf '%s' "$1" > "$2" && chmod 755 "$2""#, "sh", &script])
+        .arg(&sp)
+        .status()
+        .unwrap();
+    assert!(written.success(), "write the fake sp");
     sp
 }
 

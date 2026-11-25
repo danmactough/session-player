@@ -1,5 +1,6 @@
 import { createContext, useContext } from "react";
-import type { HelloResponse } from "../types";
+import type { ServerChoice } from "../components/ServerModal";
+import type { HelloResponse, ServerRef } from "../types";
 import type { Transport } from "./transport";
 
 /**
@@ -8,7 +9,7 @@ import type { Transport } from "./transport";
  */
 export interface ActiveServer {
   kind: "local" | "remote" | "origin";
-  /** What the user sees: "This computer", a paired server's saved name, or the page's host. */
+  /** What the user sees: "local", a paired server's saved name, or the page's host. */
   name: string;
   transport: Transport;
   hello: HelloResponse;
@@ -16,6 +17,10 @@ export interface ActiveServer {
 
 export interface ServerContextValue {
   server: ActiveServer;
+  /** The paired servers (app only; empty in a browser). */
+  paired: ServerRef[];
+  /** Switches to another server and remembers it; rejects with why it couldn't. */
+  connect: (choice: ServerChoice) => Promise<void>;
   /** Opens the server picker (app only). */
   switchServer: () => void;
 }

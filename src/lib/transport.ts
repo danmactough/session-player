@@ -68,8 +68,9 @@ export class FetchTransport implements Transport {
 
   /**
    * `token` null uses the browser's cookie; `baseUrl` "" is the page's own origin. `refresh`
-   * reads the credential again after a 401: the local server writes a new `server.token` each
-   * time it starts.
+   * reads the credential again after a 401 or a broken event stream: the local server writes a
+   * new `server.token` each time it starts, and in the app reading it starts a server when none
+   * runs.
    */
   constructor({ baseUrl, token, refresh }: { baseUrl: string; token: string | null; refresh?: () => Promise<{ baseUrl: string; token: string }> }) {
     this.baseUrl = baseUrl.replace(/\/$/, "");
@@ -147,8 +148,6 @@ export class FetchTransport implements Transport {
       const init = this.init("GET", last === null ? {} : { "last-event-id": String(last) });
       try {
         const res = await fetch(`${this.baseUrl}/api/v1/events`, { ...init, signal: controller.signal });
-        // A restarted local server has a new token; read it before the next attempt.
-        if (res.status === 401) await this.renew();
         if (!res.ok || !res.body) throw await errorFrom(res.status, await res.text().catch(() => ""));
         let opened = false;
         for await (const frame of sseFrames(res.body)) {
@@ -165,6 +164,8 @@ export class FetchTransport implements Transport {
       } catch {
         // Broken, refused or aborted; reconnect below unless closed.
       }
+      // Read before the next attempt: the server may have restarted, or stopped.
+      if (!stopped) await this.renew();
       if (!stopped) retry = setTimeout(() => void connect(), RETRY_MS);
     };
     void connect();

@@ -2,8 +2,8 @@
 
 use std::path::{Path, PathBuf};
 
-/// The `sp` beside the app's own program, in Contents/MacOS. Only a release
-/// build bundles one, so it is absent when running from `npm run app`.
+/// The `sp` beside the app's own program: in Contents/MacOS in a release build, or in the
+/// target folder, where `npm run app` builds it.
 pub fn bundled() -> Option<PathBuf> {
     let sp = std::env::current_exe().ok()?.parent()?.join("sp");
     sp.is_file().then_some(sp)

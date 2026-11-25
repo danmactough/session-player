@@ -6,9 +6,9 @@ import type { LocalServerState, ServerRef } from "../types";
 export type ServerChoice = { kind: "local" } | { kind: "remote"; name: string } | { kind: "origin" };
 
 /**
- * Picks the server the app works with: this computer's (installing or starting it as needed) or
- * a paired one, which can be added here with a pairing string from `sp pair` on that machine.
- * Shown at first run with no way to dismiss it, and from Settings to switch.
+ * Picks the server the app works with: this computer's or a paired one, which can be added here
+ * with a pairing string from `sp pair` on that machine. Shown from Settings to switch, and with
+ * no way to dismiss it when the app can't connect at launch.
  */
 export function ServerModal({
   local,
@@ -30,7 +30,7 @@ export function ServerModal({
   const [err, setErr] = useState<string | null>(initialError);
   const [pairing, setPairing] = useState("");
   const [name, setName] = useState("");
-  // What install or start answered; until then, what the parent found.
+  // What installing or starting the service answered; until then, what the parent found.
   const [started, setLocalState] = useState<LocalServerState | null>(null);
   const localState = started ?? local;
 
@@ -56,10 +56,11 @@ export function ServerModal({
     }
   };
 
-  const connectLocal = () =>
-    run("local", async () => {
-      if (localState?.state === "not_installed") setLocalState(await native.localServerInstall());
-      else if (localState?.state === "installed") setLocalState(await native.localServerStart());
+  const connectLocal = () => run("local", () => onChoose({ kind: "local" }));
+
+  const keepRunning = () =>
+    run("keep", async () => {
+      setLocalState(await native.localServerKeepRunning());
       await onChoose({ kind: "local" });
     });
 
@@ -75,14 +76,8 @@ export function ServerModal({
   const isCurrent = (c: ServerChoice) =>
     current?.kind === c.kind && (c.kind !== "remote" || (current.kind === "remote" && current.name === c.name));
 
-  const localLabel =
-    localState === null
-      ? "Checking…"
-      : localState.state === "running"
-        ? "Use this computer's server"
-        : localState.state === "installed"
-          ? "Start this computer's server"
-          : "Install and start a server on this computer";
+  // A server this app didn't start keeps running without it.
+  const canKeepRunning = localState !== null && !(localState.state === "running" && !localState.sidecar);
 
   return (
     <div className="sheet-backdrop" onClick={() => !busy && onCancel?.()}>
@@ -96,20 +91,29 @@ export function ServerModal({
           )}
         </div>
         <p className="sheet-note">
-          Session Player reads your sessions through a server: one on this computer, which keeps running in the
-          background, or one on another computer you have paired with.
+          Session Player reads your sessions through a server: one on this computer, or one on another computer you
+          have paired with.
         </p>
 
-        <h3 className="settings-head">This computer</h3>
+        <h3 className="settings-head">Local</h3>
         <p className="sheet-note">
-          {localState?.state === "not_installed" &&
-            "Installs the server as a login item for your user (no administrator access), starts it, and connects. It listens only on this computer."}
-          {localState?.state === "installed" && "The server is installed but not running. Starting it connects."}
-          {localState?.state === "running" && `The server is running on port ${localState.port}.`}
+          {localState === null && "Checking…"}
+          {localState?.state === "running" &&
+            (localState.sidecar
+              ? `The app is running the server on port ${localState.port}. It stops when you quit Session Player.`
+              : `The server is running on port ${localState.port}.`)}
+          {localState && localState.state !== "running" && "The app runs the server, which stops when you quit Session Player."}
+          {canKeepRunning &&
+            " To keep it running in the background, run it as a login item for your user (no administrator access)."}
         </p>
         <div className="sheet-foot">
-          <button className="primary" disabled={!!busy || localState === null || isCurrent({ kind: "local" })} onClick={() => void connectLocal()}>
-            {busy === "local" ? "Connecting…" : isCurrent({ kind: "local" }) ? "In use" : localLabel}
+          {canKeepRunning && (
+            <button className="ghost" disabled={!!busy} onClick={() => void keepRunning()}>
+              {busy === "keep" ? "Starting…" : "Keep running in the background"}
+            </button>
+          )}
+          <button className="primary" disabled={!!busy || isCurrent({ kind: "local" })} onClick={() => void connectLocal()}>
+            {busy === "local" ? "Connecting…" : isCurrent({ kind: "local" }) ? "In use" : "Use local"}
           </button>
         </div>
 

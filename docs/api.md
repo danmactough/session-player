@@ -457,6 +457,9 @@ Every flag is optional. With none, the server listens on `127.0.0.1:47800` and n
 | `--tls-cert <file>`, `--tls-key <file>` | generated | See [TLS](#tls) |
 | `--allow-insecure-http` | off | See [TLS](#tls) |
 
+`sp serve --exit-on-stdin-eof` also stops when its standard input closes, cancelling running jobs.
+The Mac app runs its sidecar this way. `sp service install` doesn't take it.
+
 `--data-dir <folder>`, which every `sp` command takes, moves the data folder. `sp service`
 commands take `--label <name>`, the launchd label or systemd unit name; the default is
 `com.danmactough.sessionplayer.server` on a Mac and `session-player` on Linux.

@@ -23,6 +23,7 @@ import { useReports } from "./lib/useReports";
 import { useAnalyzeQueue } from "./lib/useAnalyzeQueue";
 import { AnalysisView } from "./components/AnalysisView";
 import { Transcript } from "./components/Transcript";
+import { ServerPicker } from "./components/ServerPicker";
 import { SettingsSheet } from "./components/SettingsSheet";
 import { ShortcutsSheet } from "./components/ShortcutsSheet";
 import { ExportSheet } from "./components/ExportSheet";
@@ -971,6 +972,7 @@ export default function App() {
             <circle cx="12" cy="12" r="3" />
           </svg>
         </button>
+        <ServerPicker onError={(message) => showNotice(message, 8000)} />
         <button className="nav-button" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts" onClick={() => setHelp(true)}>
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <circle cx="12" cy="12" r="10" />

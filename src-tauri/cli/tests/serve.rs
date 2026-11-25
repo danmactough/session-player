@@ -5,8 +5,10 @@ mod tempdir;
 
 mod common;
 
+use std::process::Stdio;
+use std::time::{Duration, Instant};
 
-use common::{Machine, ok, pairing_string, stderr, stdout};
+use common::{Machine, loopback_config, ok, pairing_string, stderr, stdout};
 use session_player_client::{LocalProbe, PairingString, probe_local};
 use session_player_server::{ServerConfig, TlsMode};
 use tempdir::TempDir;
@@ -21,6 +23,33 @@ fn sp_serve_answers_hello_and_exits_cleanly_on_sigterm() {
     let status = server.terminate().expect("sp serve exits within 10 s of SIGTERM");
     assert!(status.success(), "sp serve exited with {status}\n{}", common::server_logs(&alpha.root));
     assert_eq!(probe_local(&alpha.data), LocalProbe::NotLive, "server.lock is released");
+}
+
+#[test]
+fn sp_serve_with_exit_on_stdin_eof_runs_until_its_standard_input_closes() {
+    let dir = TempDir::new("cli-serve-stdin");
+    let alpha = Machine::new(&dir, "alpha");
+    let mut args = vec!["serve".to_string()];
+    args.extend(loopback_config().to_args());
+    args.push("--exit-on-stdin-eof".to_string());
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let mut child = alpha.command(&args).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().expect("start sp serve");
+    wait_until("the server is live", || matches!(probe_local(&alpha.data), LocalProbe::Live { .. }));
+    assert!(child.try_wait().unwrap().is_none(), "an open pipe keeps it running");
+
+    drop(child.stdin.take());
+
+    wait_until("sp serve exits", || child.try_wait().unwrap().is_some());
+    assert!(child.wait().unwrap().success());
+    assert_eq!(probe_local(&alpha.data), LocalProbe::NotLive, "server.lock is released");
+}
+
+fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !done() {
+        assert!(Instant::now() < deadline, "timed out waiting until {what}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 #[test]

@@ -147,6 +147,10 @@ impl Ctx {
         }))
     }
 
+    pub fn running_jobs(&self) -> Vec<Job> {
+        self.jobs.running()
+    }
+
     pub fn paths(&self) -> &Paths {
         &self.paths
     }

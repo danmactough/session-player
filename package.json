@@ -10,6 +10,7 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "tauri": "tauri",
+    "preapp": "cargo build --manifest-path src-tauri/Cargo.toml -p session-player-cli",
     "app": "tauri dev",
     "bundle": "tauri build --bundles app",
     "test": "cd src-tauri && cargo test",

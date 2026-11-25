@@ -196,6 +196,29 @@ mark {
 .nav-gap {
   margin-top: auto;
 }
+/* Looks like a .nav-button; its menu opens to the right and upward, from the bottom of the strip. */
+.server-picker .menu-button {
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 9px;
+  color: var(--muted);
+  outline: none;
+  transition: background 0.12s, color 0.12s;
+}
+.server-picker .menu-button:focus-visible {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.server-picker .menu-button:hover,
+.server-picker.open .menu-button {
+  background: var(--hover);
+  color: var(--ink);
+}
+.server-picker .menu-list {
+  top: auto;
+  bottom: 0;
+  left: calc(100% + 6px);
+}
 
 /* ---------- Insights' left column ---------- */
 .build-area {
@@ -616,6 +639,12 @@ mark {
   border-radius: 5px;
   white-space: nowrap;
   cursor: pointer;
+}
+.menu-list li.menu-header {
+  padding: 4px 10px 3px 6px;
+  font: 10.5px var(--mono);
+  color: var(--faint);
+  cursor: default;
 }
 .menu-list li.active {
   background: var(--hover);

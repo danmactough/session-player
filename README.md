@@ -34,12 +34,14 @@ Download the latest `.dmg` from [Releases](https://github.com/danmactough/sessio
 
 ### Choose a server
 
-The app reads your sessions through a server, `sp serve`, which keeps running in the background so indexing, analysis and reports go on with the window closed. The first time the app opens, it asks which server to use:
+The app reads your sessions through a server, `sp serve`. When it opens, it uses the server already running on this computer. If none is running, it starts its own, which stops when you quit the app, along with any analysis or report still running. The server listens only on this computer.
 
-- **This computer.** The app installs the server as a login item for your user (a LaunchAgent; no administrator password), starts it, and connects. If it is installed but stopped, the app starts it. The server listens only on this computer until you pair another device with it.
+To change this, open **Settings** and switch servers:
+
+- **Keep running in the background.** The app installs the server as a login item for your user (a LaunchAgent; no administrator password) and starts it, so indexing, analysis and reports go on after you quit. If it is installed but stopped, the app starts it. To go back, run `sp service uninstall`, then reopen the app.
 - **A paired server.** Run `sp pair` on the other computer and paste the string it prints. The app then reads that computer's sessions. See [Work from another machine](#work-from-another-machine).
 
-The app shows one server at a time. To switch, open **Settings**. After an update moves the app, it rewrites the login item to use the new copy of `sp`.
+The app shows one server at a time. Once you've paired a server, a plug icon appears above the question mark at the bottom of the window's left edge. Hover over it to see which server you're connected to, and click it to switch. After an update moves the app, it rewrites the login item to use the new copy of `sp`.
 
 ### Add your sessions
 
@@ -216,11 +218,7 @@ npm install
 npm run app
 ```
 
-`npm run app` starts a dev build with hot reload. A dev build has no `sp` inside it, so its server dialog can't install or start a server. Run one yourself first:
-
-```bash
-cargo run --manifest-path src-tauri/Cargo.toml -p session-player-cli -- serve
-```
+`npm run app` starts a dev build with hot reload. It builds `sp` first, which the app runs as its server when none is running on this machine.
 
 To run beside a server that is already running on this machine, such as the service, give the dev build its own data folder and port. Nothing the service uses is touched:
 
@@ -331,6 +329,7 @@ src-tauri/cli/src/             the sp command; builds without the GUI stack
   markdown.rs                  a report as Markdown
 src-tauri/src/
   lib.rs                       Tauri commands: native features, the local server, paired servers
+  local.rs                     the app's sidecar server, and the server installed as a service
   relay.rs                     passes the page's requests to paired servers, so their tokens never reach the page
   apps.rs                      desktop apps that can open a session
   terminals.rs                 terminals that can run a resume command

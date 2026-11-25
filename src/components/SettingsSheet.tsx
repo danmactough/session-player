@@ -113,7 +113,7 @@ export function SettingsSheet({
         </div>
         {isApp && (
           <>
-            <h3 className="settings-head">Server</h3>
+            <h3 className="settings-head">Server Connection</h3>
             <div className="sheet-foot">
               <span className="server-name">{server.name}</span>
               <button className="ghost" onClick={switchServer}>
